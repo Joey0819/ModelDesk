@@ -1,6 +1,10 @@
 # ModelDesk 统一工作台
 
-ModelDesk 1.1.0：一个页面使用已有 ChatGPT 与 Google / Antigravity 登录，运行并排聊天、Council、CAMEL、CrewAI 和 MultiBot Chat 式接力群聊，并添加本地项目进行真实代码审查。网页地址保持 http://localhost:5173/，当前电脑安装入口为 `/Applications/ModelDesk.app`，构建产物位于相邻目录 `../llm-tools/releases/ModelDesk.app`。
+ModelDesk 2.0.0：一个页面使用已有 ChatGPT 与 Google / Antigravity 登录，运行并排聊天、Council、CAMEL、CrewAI 和 MultiBot Chat 式接力群聊，并添加本地项目进行真实代码审查。网页地址保持 http://localhost:5173/，当前电脑安装入口为 `/Applications/ModelDesk.app`，构建产物位于相邻目录 `../llm-tools/releases/ModelDesk.app`。
+
+## 多智能体平台
+
+左侧切换「平台资源」，可管理提示词、知识、记忆、智能体、流程、工具/MCP、数据迁移与原版应用。「智能体与流程」提供原生 Workforce/Flow 和 SDK 工作室；完整 MultiBot 原版直接在统一页显示。知识与项目上下文由每个任务明确选择。详见 [功能与验收表](docs/CAPABILITIES.md)。
 
 ## 使用
 
@@ -48,6 +52,10 @@ npm --prefix desktop ci
 
 # 不执行项目源码，使用专用缺陷示例核查四种审查引擎
 .venv/bin/python scripts/verify_project_workflows.py --workers 2
+
+# 平台、原生 SDK 和模型→工具真实链路
+.venv/bin/python scripts/verify_super_platform.py
+.venv/bin/python scripts/verify_platform_frameworks.py
 
 # 重建生产页面和实际 macOS 应用包
 .venv/bin/python scripts/package_modeldesk.py

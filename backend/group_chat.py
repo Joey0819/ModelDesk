@@ -72,6 +72,16 @@ async def run_group(manager, job):
             manager.emit(job, "log", text=f"群聊第 {round_index}/{job['rounds']} 轮：{model} 发言")
             message = {"model": model, "round": round_index, "content": ""}
             try:
+                if job.get("tools"):
+                    answer = await manager.tool_response(job, model, discussion_messages(job, model, history))
+                    message["content"] = answer["text"]
+                    if answer.get("incomplete"):
+                        message["incomplete"] = True
+                        result["partial_failure"] = True
+                    history.append({"speaker": model, "content": message["content"]})
+                    result["messages"].append(message)
+                    manager.emit(job, "message", **message)
+                    continue
                 payload = {"model": model, "messages": discussion_messages(job, model, history), "max_tokens": 1024}
                 async with httpx.AsyncClient(timeout=httpx.Timeout(180, connect=5), trust_env=False) as client:
                     response = await client.post(GATEWAY, json=payload)

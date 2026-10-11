@@ -83,3 +83,21 @@ test('actual group failure and length-limit events preserve their evidence after
   assert.equal(restored.result.messages[2].content, '后一轮成功发言');
   assert.strictEqual(applyEvent(restored, events[1]), restored);
 });
+
+test('flow route skip and actual native model provenance survive partial task event hydration', () => {
+  const event = { job_id: 'job', seq: 1, type: 'framework_task', id: 'fix', name: 'fix', agent: 'reviewer', model: 'gpt-6.1-sol', status: 'skipped', condition: { task: 'check', operator: 'contains', value: '需要修正' }, reason: '实际前序输出未满足条件', context: ['check'] };
+  const restored = hydrateJob({ id: 'job', status: 'cancelled', result: null, events: [event] });
+  assert.equal(restored.result.tasks[0].status, 'skipped');
+  assert.equal(restored.result.tasks[0].model, 'gpt-6.1-sol');
+  assert.deepEqual(restored.result.tasks[0].condition, event.condition);
+  assert.equal(restored.result.tasks[0].reason, event.reason);
+});
+
+test('context truncation and actual memory creation provenance survive authoritative final results', () => {
+  const references = [{ kind: 'knowledge', id: 'document', start_line: 3, end_line: 5 }];
+  const events = [{ job_id: 'job', seq: 1, type: 'stage', stage: 'context', data: { references, truncated: true } }, { job_id: 'job', seq: 2, type: 'stage', stage: 'memory_saved', data: { id: 'memory', scope: 'research' } }];
+  const restored = hydrateJob({ id: 'job', status: 'complete', result: { answer: 'done' }, events });
+  assert.deepEqual(restored.context_references, references);
+  assert.equal(restored.context_truncated, true);
+  assert.equal(restored.remembered_memory.id, 'memory');
+});

@@ -17,6 +17,40 @@ async function workbenchRequest(path, options = {}) {
   return response.json();
 }
 
+async function platformRequest(path, options = {}) {
+  let response;
+  try { response = await fetch(`${API_BASE}/api/platform${path}`, options); }
+  catch { throw new Error('平台服务无法连接。请检查本地服务状态。'); }
+  if (!response.ok) {
+    let detail; try { detail = (await response.json()).detail; } catch { /* Non-JSON response. */ }
+    if (Array.isArray(detail)) detail = detail.map((item) => item.msg).join('；');
+    throw new Error(typeof detail === 'string' ? detail : `平台请求失败（${response.status}）`);
+  }
+  return response.json();
+}
+
+const platformJson = (method, body) => ({ method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+export const platformApi = {
+  overview: () => platformRequest('/overview'),
+  list: (kind, archived = false) => platformRequest(`/${encodeURIComponent(kind)}?archived=${archived}`),
+  create: (kind, body) => platformRequest(`/${encodeURIComponent(kind)}`, platformJson('POST', body)),
+  update: (kind, id, body) => platformRequest(`/${encodeURIComponent(kind)}/${encodeURIComponent(id)}`, platformJson('PUT', body)),
+  archive: (kind, id) => platformRequest(`/${encodeURIComponent(kind)}/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  restore: (kind, id) => platformRequest(`/${encodeURIComponent(kind)}/${encodeURIComponent(id)}/restore`, { method: 'POST' }),
+  runFlow: (id, body) => platformRequest(`/flows/${encodeURIComponent(id)}/run`, platformJson('POST', body)),
+  uploadKnowledge: (file) => { const body = new FormData(); body.append('file', file); return platformRequest('/knowledge/upload', { method: 'POST', body }); },
+  search: (kind, body) => platformRequest(`/${encodeURIComponent(kind)}/search`, platformJson('POST', body)),
+  tools: () => platformRequest('/tools'),
+  invokeTool: (name, body) => platformRequest(`/tools/${encodeURIComponent(name)}/invoke`, platformJson('POST', body)),
+  discoverMcp: (id) => platformRequest(`/mcp/${encodeURIComponent(id)}/discover`, { method: 'POST' }),
+  callMcp: (id, body) => platformRequest(`/mcp/${encodeURIComponent(id)}/call`, platformJson('POST', body)),
+  importData: (body) => platformRequest('/data/import', platformJson('POST', body)),
+  exportUrl: () => `${API_BASE}/api/platform/data/export?include_jobs=true`,
+  originals: () => platformRequest('/originals'),
+  startOriginal: (id) => platformRequest(`/originals/${encodeURIComponent(id)}/start`, { method: 'POST' }),
+  sdkTemplates: () => platformRequest('/sdk/templates'),
+};
+
 export const workbenchApi = {
   status: () => workbenchRequest('/status'),
   listJobs: () => workbenchRequest('/jobs'),
@@ -28,8 +62,11 @@ export const workbenchApi = {
   listProjects: () => workbenchRequest('/projects'),
   addProject: (body) => workbenchRequest('/projects', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }),
   getProject: (id) => workbenchRequest(`/projects/${encodeURIComponent(id)}`),
+  updateProject: (id, body) => workbenchRequest(`/projects/${encodeURIComponent(id)}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }),
+  removeProject: (id) => workbenchRequest(`/projects/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   createSnapshot: (id, body) => workbenchRequest(`/projects/${encodeURIComponent(id)}/snapshots`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }),
   getSnapshot: (id, snapshot) => workbenchRequest(`/projects/${encodeURIComponent(id)}/snapshots/${encodeURIComponent(snapshot)}`),
+  listSnapshots: (id) => workbenchRequest(`/projects/${encodeURIComponent(id)}/snapshots`),
   createReview: (id, body) => workbenchRequest(`/projects/${encodeURIComponent(id)}/reviews`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }),
 };
 

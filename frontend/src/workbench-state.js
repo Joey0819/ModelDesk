@@ -15,6 +15,8 @@ export function applyEvent(job, event) {
   if (event.type === 'stage') {
     const keys = { responses: 'stage1', rankings: 'stage2', synthesis: 'stage3' };
     next.result = { ...job.result, [keys[event.stage] || event.stage]: event.data, ...(event.metadata ? { metadata: event.metadata } : {}) };
+    if (event.stage === 'context') { next.context_references = event.data?.references || []; next.context_truncated = Boolean(event.data?.truncated); }
+    if (event.stage === 'memory_saved') next.remembered_memory = event.data;
   }
   if (event.type === 'message') {
     const message = { model: event.model, round: event.round, content: event.content, ...(event.error !== undefined ? { error: event.error } : {}), ...(event.incomplete !== undefined ? { incomplete: event.incomplete } : {}) };
@@ -24,7 +26,7 @@ export function applyEvent(job, event) {
     next.result = { ...job.result, partial: true, messages: [...(job.result?.messages || []), { role: event.role, model: event.model, round: event.round, content: event.content }] };
   }
   if (event.type === 'framework_task') {
-    const task = { id: event.id, name: event.name, agent: event.agent, description: event.description, context: event.context, output: event.output };
+    const { type: _type, seq: _seq, job_id: _job, created_at: _created, ...task } = event;
     const tasks = [...(job.result?.tasks || [])];
     const index = tasks.findIndex((item) => item.id === task.id);
     if (index < 0) tasks.push(task); else tasks[index] = task;

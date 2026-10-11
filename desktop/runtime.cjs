@@ -36,15 +36,29 @@ function isWorkbenchURL(value) {
   return Boolean(url && url.protocol === 'http:' && ['localhost', '127.0.0.1'].includes(url.hostname) && url.port === '5173');
 }
 
+function isOriginalFrameURL(value) {
+  const url = parseURL(value);
+  return Boolean(url && url.protocol === 'http:' && ['localhost', '127.0.0.1'].includes(url.hostname) && url.port === '8501');
+}
+
 function isExportURL(value) {
   if (typeof value !== 'string') return false;
   const url = parseURL(value);
   if (!url || url.protocol !== 'http:' || !['localhost', '127.0.0.1'].includes(url.hostname) || url.port !== '8001' || url.hash) return false;
   const rawPath = value.match(/^[a-z][a-z0-9+.-]*:\/\/[^/?#]+([^?#]*)/i)?.[1];
   if (rawPath !== url.pathname) return false;
-  if (!/^\/api\/workbench\/jobs\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/export$/i.test(url.pathname)) return false;
   const query = Array.from(url.searchParams.entries());
+  if (url.pathname === '/api/platform/data/export') {
+    return query.length === 0 || (query.length === 1 && query[0][0] === 'include_jobs' && ['true', 'false'].includes(query[0][1]));
+  }
+  if (!/^\/api\/workbench\/jobs\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/export$/i.test(url.pathname)) return false;
   return query.length === 1 && query[0][0] === 'format' && ['md', 'json'].includes(query[0][1]);
+}
+
+function exportFormat(value) {
+  if (!isExportURL(value)) return null;
+  const url = new URL(value);
+  return url.pathname === '/api/platform/data/export' ? 'json' : url.searchParams.get('format');
 }
 
 function isExternalURL(value) {
@@ -70,4 +84,4 @@ function isTrustedWorkbenchIPC(event, contents) {
   }
 }
 
-module.exports = { DEFAULT_WORKSPACE, UI_URL, HEALTH_URLS, workspaceRoot, serviceEnvironment, isWorkbenchURL, isExportURL, isExternalURL, isStatusURL, isTrustedWorkbenchIPC };
+module.exports = { DEFAULT_WORKSPACE, UI_URL, HEALTH_URLS, workspaceRoot, serviceEnvironment, isWorkbenchURL, isOriginalFrameURL, isExportURL, exportFormat, isExternalURL, isStatusURL, isTrustedWorkbenchIPC };

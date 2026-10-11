@@ -1,46 +1,44 @@
-# ModelDesk 五项目能力与接入边界
+# ModelDesk 2.0 多智能体平台：功能入口与验收
 
-审计日期：2026-10-11。依据各项目当前官方仓库、官方文档和本机集成源码。本页定义功能覆盖与验收边界；框架已安装、模式可运行和整个框架所有 API 已映射到页面是不同的交付粒度。
+更新日期：2026-10-12。平台把统一工作流、完整原版界面和原生 SDK 工作室放在同一个导航中。下表区分实际运行过的路径与需要用户配置的外部服务；原生 SDK 可访问完整已安装框架，不把一个固定示例当作整个框架。
 
-## 五个项目各自解决的问题
+| 项目/模块 | 统一页面可用功能 | 完整入口与验收依据 |
+|---|---|---|
+| ChatHub | 并排模型、连续上下文、角色/系统提示、联网和工具、提示词库、历史、Markdown/JSON、数据导入导出、浅色/深色模式 | 保留已安装的原 Chrome 扩展，固定入口打开完整浏览器版；扩展的快捷键和网页厂商登录继续由 Chrome 执行。ChatHub 格式导入接受提示词和历史，不复制原导出中的账号密钥。 |
+| LLM Council | 成员/主席选择、独立回答、匿名互评和排名、综合结果、项目快照与知识上下文、第一阶段模型工具调用 | 复用实际三阶段协议；运行过程、匿名映射、部分失败和来源均保存。原三阶段与代码审查已真实模型验证。 |
+| CAMEL | 自定义角色/模型/工具、角色多轮、任务细化、任务规划、Critic、原生 Workforce 自动分解及配置任务管线 | 真实 `RolePlaying`/`Workforce`；任务细化/规划/selector、自动分解与明确任务依赖均已实测。更广的 toolkit、记忆/RAG/多模态/研究 API 在原生 SDK 工作室编写和运行；依赖按模块实际要求配置。 |
+| CrewAI | Agent/Task/Crew、角色与工具、前序上下文、顺序/分层、管理者、规划、原生 Memory、原生 Flow 条件路由 | 真实 `Crew`、`Memory` 与 `Flow.start/router/listen`；分支执行与跳过、实际规划及本机持久记忆已实测。其他原生 API、知识源、训练和 MCP DSL 可通过 SDK 工作室配置。 |
+| MultiBot Chat | 统一接力讨论、成员角色、共享话题、轮次、上下文、工具、项目/知识/记忆绑定 | **完整原版 Streamlit 界面已内嵌**：机器人管理、话题、账户、配置导入/同步以及六组工具。真实 GPT/Gemini、原规划器、计算、统计、网页正文、搜索和 Markdown 转换全部通过原版路径验证。 |
+| 项目 | 添加/编辑/解除登记，Git 工作区/暂存/提交/分支/指定文件，固定快照预览、证据位置审查、历史与导出；快照可用于普通团队和群聊 | 路径、凭据/二进制排除、内容指纹、过期检测、引用行范围核查。解除登记不删除代码。代码审查默认不执行项目代码或测试。 |
+| 知识库 | 文本/PDF/DOCX/Markdown/CSV/JSON/源码上传，编辑、归档/恢复、中文检索、文档指纹和行范围、任务绑定 | `jieba` 分词 + `rank_bm25.BM25Plus`；真实模型通过检索工具读取明确所选文档。属于词项 RAG，不将其称作语义 embedding；扫描 PDF 需要先 OCR。 |
+| 记忆 | 本机持久条目、命名空间、来源、显式选择/保存、归档/恢复；CrewAI 原生持久记忆 | 平台记忆与任务来源持久化；CrewAI 使用本机 LanceDB 与确定性词法哈希向量，无需供应商 embedding key。不同命名空间与任务工具授权已验证。 |
+| 工具/MCP | 11 种实际工具、参数表单/JSON、调用结果，MCP HTTP/SSE 发现、工具白名单、手动或智能体调用 | 官方 MCP Python SDK；附带持续运行的本机分析 MCP 服务（8371），完整 initialize/list_tools/call_tool 和模型调用已实测。外部服务器按其账号、权限和网络条件配置。 |
+| 智能体/流程库 | 自定义智能体、团队模板、任务依赖、条件分支、编辑/归档/恢复、重复运行、实时输出/取消/历史 | 配置进入真实框架。默认不继承模板中隐含的知识/项目授权，运行时明确选择资料。 |
+| SDK 工作室 | 原生 CAMEL/CrewAI 模板、代码编辑、模型与任务变量、RESULT 输出、明确执行确认、错误/运行记录/导出 | 两个原生 SDK 模板已通过真实模型调用。脚本以本机 Python 权限执行，修改代码/模板后确认会重置；不由智能体隐式调用。未配置的外部模型、服务或硬件会返回实际错误。 |
+| 数据迁移 | 平台资源与已结束任务历史备份，增量导入，跳过或重命名冲突，保留资源 UUID 引用、拒绝损坏历史 | 整包导出再导入实测通过；只保留任务历史，不启动导入任务。OAuth 凭据、私有运行令牌和原 ChatHub 供应商设置不迁移。原版 MultiBot 配置/账户由其原界面管理。 |
 
-| 项目 | 官方核心能力 | ModelDesk 接入基线 | 需要保留的能力边界 |
-|---|---|---|---|
-| ChatHub | 多机器人同时回答、模型对照、提示词库、本地历史、数据导入导出、Markdown 分享、网页访问及浏览器快捷入口。[官方仓库](https://github.com/chathub-dev/chathub#-features) | 统一页通过本机模型网关完成并行回答、上下文追问、模型选择、历史和 Markdown/JSON 导出；原 Chrome 扩展也已单独安装并验证两个模型回复。 | 统一页属于并行聊天适配入口。原扩展的提示词库、整库迁移、浏览器快捷入口和网页访问不自动继承；Chrome 扩展 API 也不直接变成 Electron API。 |
-| LLM Council | 多模型独立作答、匿名互评排序、主席综合三个阶段。[官方流程](https://github.com/karpathy/llm-council#llm-council) | 复用实际 Council 阶段函数，提供成员与主席选择、排名/匿名映射、部分失败信息和持久化结果。 | 原项目每次问题独立评审；普通聊天上下文与 Council 的评审协议需明确区分。排名是模型评审意见，代码缺陷仍需对应源码证据和人工确认。 |
-| CAMEL | 可配置角色的 `RolePlaying` 对话，任务说明/规划、critic、Agent 与工具；还包括 Workforce、记忆、RAG 和多模态工具。[RolePlaying 官方实现](https://github.com/camel-ai/camel/blob/master/camel/societies/role_playing.py)、[工具文档](https://docs.camel-ai.org/key_modules/tools) | 独立 CAMEL 环境实际运行双角色多轮对话。自定义角色名称、目标、背景、模型与轮次传入真实 RolePlaying/ChatAgent；可选原生 MathToolkit 与 FunctionTool 包装的文本统计，保存逐轮 transcript 和工具结果。 | 此入口为双角色对话，主输入提供任务；未接入 TaskSpecify/TaskPlanner/critic 开关、Workforce、全部 toolkits、训练、RAG 与长期记忆。配置可选和工具实际被模型调用分别验证。 |
-| CrewAI | Agent 的角色/目标/背景/工具，Task 的描述/输出/上下文，Crew 的任务编排；还有 Flows、记忆、知识源、规划与 MCP。[Agents](https://docs.crewai.com/en/concepts/agents)、[Tasks](https://docs.crewai.com/en/concepts/tasks)、[Crews](https://docs.crewai.com/en/concepts/crews)、[Flows](https://docs.crewai.com/en/concepts/flows) | 独立 CrewAI 环境实际构造 1–4 个 Agent、1–6 个 Task，可编辑角色/目标/背景/模型、任务描述/预期输出/前序任务上下文，执行 sequential 或配置管理者模型的 hierarchical 流程。受限算术与文本统计注册为真实 CrewAI tool，保存分步及最终输出。 | 任务依赖只允许引用已定义的前序任务；不是任意图形化 Flow 设计器。未接入知识库、长期记忆、全部官方工具或第三方 MCP。分层委派是否发生、工具是否调用，以实际任务结果为准。 |
-| MultiBot Chat | 多机器人对话、接力群聊、自定义机器人与全局/接力提示词、上下文数量、话题/历史、账户与配置同步、可扩展工具箱。[官方说明](https://github.com/gptzm/multibot-chat#multibot-chat) | 参照原版群聊流程实现本机接力协议：所选模型按顺序多轮发言，各自收到其他成员的引用记录；提供成员角色、全局/接力提示、上下文数量、话题隔离、历史与导出。调用既有本机网关；未导入上游 Streamlit 调度源码。 | 原版完整 Streamlit 界面、账户/云同步、机器人批量管理、六组工具与厂商专用适配未内嵌。“群聊可用”不代表这些原版功能都已接入；群聊当前也不附带项目快照。 |
+## 核心操作
 
-表中“接入基线”对应已有运行路径；本轮新增项目、角色/任务编辑和群聊功能以最终验证记录为准，不据此假定尚未完成的路径已通过。
+1. 在「平台资源」管理智能体、流程、知识、记忆和提示词。
+2. 在协作任务或流程运行前选择知识文档、记忆空间、项目快照和允许的工具；未选择的资料不会自动进入模型上下文。
+3. 「智能体与流程 → 流程库」配置任务依赖、分支、规划和记忆；「原生 SDK 工作室」使用没有专用表单的原生框架 API。
+4. 「原版应用」连接并显示完整 MultiBot；ChatHub 保留完整浏览器扩展入口。
+5. 从任务记录查看实际模型、工具结果、分支/跳过原因与引用来源，可停止并导出。
 
-## 本轮核心验收项
+## 实际验收文件
 
-1. 选择本机项目目录，显示项目文件与 Git 状态/差异；支持明确选取源码后发起审查。结果包含可核对的文件、行号、严重程度、说明和建议，并可从历史重开与导出。目录选择只是授权选择路径，文件范围和内容读取还由后端校验。
-2. 项目代码评审支持四种引擎：并行聊天、Council、CAMEL、CrewAI；评审任务保存项目、文件/差异快照、模型和引擎，避免重开历史时把新代码当作原分析证据。普通角色/团队任务另存其自定义配置；MultiBot 群聊目前未接入项目快照。
-3. CAMEL 自定义角色与轮次，CrewAI 自定义 Agent/Task/Process，MultiBot 自定义成员角色、系统提示、接力顺序和上下文。修改配置后，用真实引擎结果验证该配置生效。
-4. 工具明确列出可用范围、依赖和执行结果。项目源码读取、数学/统计或网页工具要通过真实工具接口执行；提示模型“你可以用工具”不足以证明工具接入。
-5. 任务取消、异常、刷新和服务重启后，保留已生成输出、任务状态和历史。失败的外部网页/搜索或未配置的知识/记忆能力显示具体状态。
+- `data/advanced-validation.json`：CAMEL 高级角色、Workforce、Crew 规划/原生记忆、Flow 的真实模型调用。
+- `data/platform-framework-validation.json`：知识/记忆/项目快照工具的实际 Workforce 和 Flow 调用；越权/结束后令牌撤销测试。
+- `data/super-platform-validation.json`：中文知识检索、记忆、真实 MCP、模型工具调用、两种原生 SDK、数据往返迁移与群聊工具。
+- `data/project-validation.json`：四种代码审查引擎的源码证据。
+- 本机运行报告和账户数据位于被忽略目录，不进入源码提交或桌面包。
 
-## MultiBot 原版复用调查
+## 认证、部署与来源
 
-`gptzm/multibot-chat` 是独立 Streamlit 应用。其 [OpenAI 引擎](https://github.com/gptzm/multibot-chat/blob/main/bot/chat_router.py)使用机器人配置中的 `base_url` 与 `model`；可以把这一原模块接到现有本机 OpenAI 兼容网关，不必向该项目复制 ChatGPT/Google OAuth 凭据。工具规划模型由 `MULTIBOT_BASE_LLM_MODEL`、`MULTIBOT_BASE_LLM_BASE_URL` 和 `MULTIBOT_BASE_LLM_API_KEY` 单独配置。[默认配置](https://github.com/gptzm/multibot-chat/blob/main/config.py)、[规划调用](https://github.com/gptzm/multibot-chat/blob/main/utils/base_llm.py)
+现有 ChatGPT 与 Google/Antigravity 登录通过本机网关使用。Claude、其他模型厂商、外部 MCP、云同步后端、训练硬件和各 toolkit 的专用依赖，按对应服务要求配置；平台不会伪造这些外部条件已具备。ChatHub 原扩展可使用其原有网页登录方式。
 
-原版提供六组工具：计算、统计、网页正文提取、AI 规划讨论、搜索、Markdown 转纯文本。[原版工具说明](https://github.com/gptzm/multibot-chat#群聊工具箱) 工具实现的共同入口为 `run(parameter, content, group_prompt, group_history)`，工具元信息来自各目录的 config.json；[ToolManager](https://github.com/gptzm/multibot-chat/blob/main/tools/tool_manager.py) 可以继续复用。
+当前桌面包针对本机，依赖相邻 `llm-tools` 中的隔离环境、原版源码、网关和本机数据；不包含 OAuth 凭据。服务均监听 loopback：8317 网关、8001 API、5173 页面、8371 本机 MCP、8501 原版 MultiBot。
 
-| 原版模块 | 复用方式与实际条件 |
-|---|---|
-| calculator / statistics / markdown_to_text | 主要是纯函数工具；可通过隔离运行环境调用原模块，并保留原许可证与来源。计算器存在 `eval`，但输入先经过算式提取，不能只凭出现 eval 就宣称它执行任意代码；适配时仍需限制输入规模与执行时长。[计算器源码](https://github.com/gptzm/multibot-chat/blob/main/tools/calculator/calculator.py) |
-| web_extractor / web_search | 原模块依赖网页网络、readability 与 DuckDuckGo。源码中的网页请求没有显式 timeout，适配层需有取消/超时控制；不可把未实际连通的搜索显示为已验证。[网页模块](https://github.com/gptzm/multibot-chat/blob/main/tools/web_extractor/web_extractor.py)、[搜索模块](https://github.com/gptzm/multibot-chat/blob/main/tools/web_search/web_search.py) |
-| chat_pilot | 依赖 Streamlit 的 `session_state.bot_manager` 与 `tool_manager`，还依赖基础模型的 function calling。单独导入文件不会自动获得完整工具规划与成员调度。[规划器源码](https://github.com/gptzm/multibot-chat/blob/main/tools/chat_pilot/chat_pilot.py) |
-| 原版完整界面 | 调查过保留独立源码/虚拟环境/账户数据、运行本机 Streamlit 并嵌入统一页的方案；本轮未安装或启用。当前交付采用上表的本机群聊协议，不提供原版账户、配置同步或全部工具界面。 |
+原始项目：[ChatHub](https://github.com/chathub-dev/chathub)、[LLM Council](https://github.com/karpathy/llm-council)、[CAMEL](https://github.com/camel-ai/camel)、[CrewAI](https://github.com/crewAIInc/crewAI)、[MultiBot Chat](https://github.com/gptzm/multibot-chat)。ChatHub/MultiBot 为 GPL-3.0，CAMEL 为 Apache-2.0，CrewAI/MCP SDK 为 MIT，保留相应源码与许可。Council 仓库未声明独立 LICENSE；未来对外分发应先明确许可。
 
-原 `app.py` 启动时默认进入登录页；`GUEST_USERNAMES` 是配置名单，空用户文件不会自动创建访客或免登录会话。原版独立账户需先初始化，其账户与供应商模型登录不是同一认证。[应用入口](https://github.com/gptzm/multibot-chat/blob/main/app.py)、[用户管理](https://github.com/gptzm/multibot-chat/blob/main/utils/user_manager.py) 如复用完整界面，本机账户文件、令牌/密钥、日志和机器人配置均保存在私有运行目录，不进入源码提交或桌面包。
-
-原版 [requirements.txt](https://github.com/gptzm/multibot-chat/blob/main/requirements.txt) 使用 Streamlit 1.41.1 与 OpenAI 1.55.3 等固定旧版本；应使用独立环境验证其依赖组合。`captcha` 由 streamlit-authenticator 0.4.1 转依赖带入；`readability.Document` 的依赖需在运行前确认。此审计没有把原项目“可安装”视为运行成功，也没有安装或导入任何用户凭据。
-
-## 来源与许可
-
-ChatHub 和 MultiBot Chat 的官方仓库声明 GPL-3.0；CAMEL 为 Apache-2.0；CrewAI 为 MIT。应保留各上游源码、许可证与改动来源。原版作为独立运行项目接入时，也不能把其许可证省略或宣称许可义务自动消失。[ChatHub LICENSE](https://github.com/chathub-dev/chathub/blob/main/LICENSE)、[MultiBot LICENSE](https://github.com/gptzm/multibot-chat/blob/main/LICENSE)、[CAMEL LICENSE](https://github.com/camel-ai/camel/blob/master/LICENSE)、[CrewAI LICENSE](https://github.com/crewAIInc/crewAI/blob/main/LICENSE)
-
-审计时 Karpathy LLM Council 的官方仓库文件树未见独立 LICENSE，GitHub API 的 license 字段也为 null，因此此文不把它标为 MIT 或其他已明确许可的项目。[官方仓库](https://github.com/karpathy/llm-council)、[仓库元数据](https://api.github.com/repos/karpathy/llm-council) 本机使用/开发继续按当前任务范围进行；若未来对外分发，应先明确相应许可和各上游的分发要求。
+MultiBot 原版基线 commit `38e000df1462927eb2b5fec12b4de5a9b82b41be` 保持无修改；可追踪兼容入口修复 readability 字节解码和旧搜索客户端，并使用原版 UI、规划器、调度与其他工具。其独立本机账户/配置存私有目录，没有复制供应商 OAuth 文件。

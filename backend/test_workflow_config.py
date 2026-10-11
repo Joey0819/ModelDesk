@@ -58,6 +58,47 @@ class WorkflowTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             validate_workflow(value, "chat", ["a", "b"])
 
+    def test_native_advanced_models_and_mode_boundaries(self):
+        value = configuration()
+        value["tasks"] = []
+        value.update(task_specify=True, task_planning=True, critic=True, critic_model="b")
+        team = validate_workflow(value, "camel", ["a", "b"])
+        self.assertTrue(team.critic)
+        value["critic_model"] = "unselected"
+        with self.assertRaises(ValueError):
+            validate_workflow(value, "camel", ["a", "b"])
+        value = configuration()
+        value.update(planning=True, planning_model="a", memory=True)
+        self.assertTrue(validate_workflow(value, "crewai", ["a", "b"]).memory)
+        value["critic"] = True
+        with self.assertRaises(ValueError):
+            validate_workflow(value, "crewai", ["a", "b"])
+        value = configuration()
+        self.assertEqual(len(validate_workflow(value, "camel_workforce", ["a", "b"]).tasks), 2)
+
+    def test_flow_condition_dag_and_resource_tool_bindings(self):
+        value = configuration()
+        value["tasks"][1]["when"] = {"task": "draft", "operator": "contains", "value": "approved"}
+        self.assertEqual(validate_workflow(value, "crewai_flow", ["a", "b"]).tasks[1].when.task, "draft")
+        with self.assertRaises(ValueError):
+            validate_workflow(value, "crewai", ["a", "b"])
+        value["tasks"][0]["when"] = {"task": "check", "operator": "equals", "value": "yes"}
+        with self.assertRaises(ValueError):
+            validate_workflow(value, "crewai_flow", ["a", "b"])
+        for name in ("knowledge_search", "project_read", "mcp_call"):
+            value = configuration()
+            value["agents"][0]["tools"] = [name]
+            with self.subTest(tool=name), self.assertRaises(ValueError):
+                validate_workflow(value, "crewai", ["a", "b"])
+        value = configuration()
+        value.update(knowledge_ids=["11111111-1111-4111-8111-111111111111"], memory_scope="team/research")
+        value["agents"][0]["tools"] = ["knowledge_search", "memory_save"]
+        self.assertEqual(validate_workflow(value, "crewai", ["a", "b"]).model_dump(mode="json")["knowledge_ids"], value["knowledge_ids"])
+        for scope in ("../secret", "team//secret", "team/../secret", "/global"):
+            value["memory_scope"] = scope
+            with self.subTest(scope=scope), self.assertRaises(ValueError):
+                validate_workflow(value, "crewai", ["a", "b"])
+
 
 if __name__ == "__main__":
     unittest.main()

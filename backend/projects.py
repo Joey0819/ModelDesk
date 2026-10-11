@@ -441,6 +441,20 @@ async def get_snapshot(project_id: str, snapshot_id: str):
     return await asyncio.to_thread(store.snapshot, project_id, snapshot_id)
 
 
+@router.get("/{project_id}/snapshots")
+async def list_snapshots(project_id: str):
+    store.get(project_id)
+    items = []
+    for path in (store.directory / "snapshots").glob("*.json"):
+        try:
+            value = json.loads(path.read_text())
+            if value.get("project_id") == project_id:
+                items.append({key: value.get(key) for key in ["id", "scope", "created_at", "coverage", "digest", "head"]})
+        except (ValueError, OSError):
+            continue
+    return sorted(items, key=lambda item: item["created_at"] or "", reverse=True)[:100]
+
+
 @router.post("/{project_id}/reviews", status_code=202)
 async def create_review(project_id: str, request: ReviewRequest):
     snapshot = await asyncio.to_thread(store.snapshot, project_id, request.snapshot_id, True)

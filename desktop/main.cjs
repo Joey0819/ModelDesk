@@ -3,7 +3,7 @@ const { execFile } = require('node:child_process');
 const { promisify } = require('node:util');
 const fs = require('node:fs');
 const path = require('node:path');
-const { UI_URL, HEALTH_URLS, workspaceRoot, serviceEnvironment, isWorkbenchURL, isExportURL, isExternalURL, isStatusURL, isTrustedWorkbenchIPC } = require('./runtime.cjs');
+const { UI_URL, HEALTH_URLS, workspaceRoot, serviceEnvironment, isWorkbenchURL, isOriginalFrameURL, isExportURL, exportFormat, isExternalURL, isStatusURL, isTrustedWorkbenchIPC } = require('./runtime.cjs');
 
 const execFileAsync = promisify(execFile);
 const statusPath = path.join(__dirname, 'status.html');
@@ -85,6 +85,20 @@ function installProjectPicker() {
       projectPickerInProgress = false;
     }
   });
+  ipcMain.handle('modeldesk:open-original-app', async (event, identifier) => {
+    const owner = mainWindow;
+    if (identifier !== 'chathub' || !owner || owner.isDestroyed() || !isTrustedWorkbenchIPC(event, owner.webContents)) return false;
+    try {
+      const root = workspaceRoot();
+      const controller = path.resolve(root, '../llm-council/scripts/original_apps.py');
+      await execFileAsync('/usr/bin/python3', [controller, 'start', 'chathub'], {
+        env: serviceEnvironment(), timeout: 15000, maxBuffer: 32 * 1024,
+      });
+      return true;
+    } catch {
+      return false;
+    }
+  });
 }
 
 function createWindow() {
@@ -123,9 +137,9 @@ function createWindow() {
       item.cancel();
       return;
     }
-    const format = new URL(chain[0]).searchParams.get('format');
+    const format = exportFormat(chain[0]);
     item.setSaveDialogOptions({
-      title: '导出协作结果',
+      title: '保存 ModelDesk 导出',
       buttonLabel: '保存',
       filters: [{ name: format === 'md' ? 'Markdown 文档' : 'JSON 数据', extensions: [format] }],
     });
@@ -151,7 +165,15 @@ function createWindow() {
     openExternal(url);
   });
   contents.on('will-redirect', (event, url) => {
+    if (event.isMainFrame === false && isOriginalFrameURL(url || event.url)) return;
     if (!isWorkbenchURL(url) && !isStatusURL(url, statusPath)) event.preventDefault();
+  });
+  contents.on('will-frame-navigate', details => {
+    if (details.isMainFrame || isWorkbenchURL(details.url) || isOriginalFrameURL(details.url)) return;
+    if (['about:blank', 'about:srcdoc'].includes(details.url) &&
+      (isWorkbenchURL(details.initiator?.url) || isOriginalFrameURL(details.initiator?.url))) return;
+    details.preventDefault();
+    openExternal(details.url);
   });
   contents.setWindowOpenHandler(({ url }) => {
     if (isExportURL(url)) {

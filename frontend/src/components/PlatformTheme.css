@@ -1,0 +1,24 @@
+.sidebar-footer .theme-toggle { margin: 0 0 14px; padding: 0 0 13px; border-bottom: 1px solid #e2e8f1; }
+.theme-toggle > span { display: flex; align-items: center; gap: 6px; font-size: 10px; }
+.theme-toggle small { font-size: 8px; color: #a1aec0; }
+.modeldesk[data-theme=dark] { --line: #354255; --ink: #dbe4f1; --muted: #a2afc4; --accent: #a7b5ff; --jade: #62b7a5; background: #1b2330; color: #dbe4f1; color-scheme: dark; }
+.modeldesk[data-theme=dark] .sidebar { background: #17212d; border-color: #334055; }
+.modeldesk[data-theme=dark] .workspace, .modeldesk[data-theme=dark] .platform-content, .modeldesk[data-theme=dark] .work-surface, .modeldesk[data-theme=dark] .configuration-bar { background: #1b2330; }
+.modeldesk[data-theme=dark] :is(.workspace-header,.account-panel,.response-pane,.final-answer,.new-task,.projects-entry,.composer,.review-scope-panel,.review-engine-panel,.snapshot-manifest,.project-add-modal,.resource-list-item.selected,.runtime-list,.job-monitor-table,.job-monitor-table button,.tool-invoke-panel,.platform-tool-catalog button,.original-app-list article,.migration-workspace>section,.workflow-editor,.actual-flow-routes,.group-message,.role-message,.review-item,.small-menu,.small-menu button,.model-popover,.model-selector) { background: #232e3d; border-color: #354258; }
+.modeldesk[data-theme=dark] :is(.project-list,.context-attachments,.tool-settings,.agent-workspace-tabs,.workflow-agent,.workflow-task,.pane-header,.saved-flow-run,.platform-resource-counts,.code-excerpt,.repository-changes pre,.code-excerpt-label,.sdk-run-approval,.sidebar-navigation-tabs) { background: #202a39; border-color: #354255; }
+.modeldesk[data-theme=dark] :is(.mode-navigation button.active,.platform-navigation button.active,.projects-entry.active,.model-options label.checked,.project-list-item.selected,.review-engine-options button.selected,.scope-options button.selected,.workflow-editor summary,.sidebar-navigation-tabs button.selected) { background: #2d3c59; color: #c0cbff; border-color: #4b6086; }
+.modeldesk[data-theme=dark] :is(.mode-navigation button.active small,.brand div>span,.header-title div>span,.configuration-bar .control-label,.platform-field>span,.resource-editor-heading p,.project-heading p,.context-attachments summary strong,.context-attachments summary span,.tool-settings>summary,.workflow-editor summary>span,.result-note) { color: #9aabc4; }
+.modeldesk[data-theme=dark] :is(h1,h2,h3,.brand strong,.project-list-item strong,.runtime-list strong,.resource-list-item strong,.job-monitor-table strong,.platform-tool-catalog strong,.original-app-list h2,.pane-header strong,.workflow-agent header strong,.workflow-task header strong,.markdown,.markdown strong,.prompt-text .markdown,.platform-job-inspector header strong) { color: #c8d5e9; }
+.modeldesk[data-theme=dark] :is(input:not([type=checkbox]),textarea,select,.subtle-button,.stop-button,.account-toggle) { background: #243246; color: #c8d7ec; border-color: #40516c; }
+.modeldesk[data-theme=dark] .composer textarea { background: #232e3d; }
+.modeldesk[data-theme=dark] :is(.icon-button,.sidebar-footer button,.history-title,.role-line strong,.review-item summary,.stage-navigation button,.platform-tool-options label,.platform-model-options label,.tool-call pre) { color: #a6b8d5; }
+.modeldesk[data-theme=dark] :is(.sdk-execution-output pre,.tool-invoke-panel pre,.tool-actual-result pre,.migration-report pre,.markdown pre,.execution-log,.code-line code) { color: #b6c6df; background: #1b2534; border-color: #354255; }
+.modeldesk[data-theme=dark] :is(.markdown code,.snapshot-file summary,.model-mark,.task-number,.workflow-errors) { background: #2b3c56; color: #bdcce4; }
+.modeldesk[data-theme=dark] :is(.error-banner,.output-error) { background: #412b31; border-color: #634047; color: #e5b7b1; }
+.modeldesk[data-theme=dark] :is(.connection-warning,.context-invalid,.group-incomplete-note) { background: #3a3225; border-color: #5c4d34; color: #d8c6a3; }
+.modeldesk[data-theme=dark] :is(.resource-notice,.review-no-findings,.migration-report) { background: #233c35; border-color: #375349; color: #9ed1bd; }
+.modeldesk[data-theme=dark] .sdk-run-approval label { color: #d4c2a4; }
+.modeldesk[data-theme=dark] .sdk-run-approval p { color: #a99b84; }
+.modeldesk[data-theme=dark] .code-line.highlighted { background: #5a4830; }
+.modeldesk[data-theme=dark] a { color: #a6b9f1; }
+.modeldesk[data-theme=dark] .theme-toggle { border-color: #354255; }

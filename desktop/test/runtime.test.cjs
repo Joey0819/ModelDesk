@@ -4,13 +4,23 @@ const { pathToFileURL } = require('node:url');
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
-const { workspaceRoot, serviceEnvironment, isWorkbenchURL, isExportURL, isExternalURL, isStatusURL, isTrustedWorkbenchIPC } = require('../runtime.cjs');
+const { workspaceRoot, serviceEnvironment, isWorkbenchURL, isOriginalFrameURL, isExportURL, exportFormat, isExternalURL, isStatusURL, isTrustedWorkbenchIPC } = require('../runtime.cjs');
 
 test('only the local workbench origin is allowed in the app window', () => {
   assert.equal(isWorkbenchURL('http://localhost:5173/agents?mode=camel'), true);
   assert.equal(isWorkbenchURL('http://127.0.0.1:5173/#council'), true);
   for (const url of ['https://localhost:5173/', 'http://localhost:5174/', 'http://localhost.evil.test:5173/', 'http://user:secret@localhost:5173/', 'file:///tmp/modeldesk.html', 'javascript:alert(1)']) {
     assert.equal(isWorkbenchURL(url), false, url);
+  }
+});
+
+test('upstream Streamlit origin is allowed only as a separate frame', () => {
+  for (const value of ['http://127.0.0.1:8501/', 'http://localhost:8501/?login=1']) {
+    assert.equal(isOriginalFrameURL(value), true);
+    assert.equal(isWorkbenchURL(value), false);
+  }
+  for (const value of ['https://localhost:8501/', 'http://localhost:8502/', 'http://evil.test:8501/', 'http://user:key@localhost:8501/', 'file:///tmp/app.py', 'chrome-extension://lbljnnfbdkefegcmacocckdiljgifdfp/app.html']) {
+    assert.equal(isOriginalFrameURL(value), false, value);
   }
 });
 
@@ -47,6 +57,19 @@ test('only exact local UUID exports with one supported format download inside th
     'file:///api/workbench/jobs/df9d3857-3d01-4c24-9e64-b9343e217f9a/export?format=md',
     'javascript:alert(1)',
   ]) assert.equal(isExportURL(url), false, url);
+});
+
+test('platform JSON backups download through a fixed local endpoint', () => {
+  const route = 'http://127.0.0.1:8001/api/platform/data/export';
+  for (const value of [route, `${route}?include_jobs=true`, `${route}?include_jobs=false`]) {
+    assert.equal(isExportURL(value), true, value);
+    assert.equal(exportFormat(value), 'json');
+    assert.equal(isExternalURL(value), false);
+  }
+  for (const value of [`${route}?include_jobs=1`, `${route}?include_jobs=true&include_jobs=false`, `${route}?include_jobs=true&token=secret`, `${route}?format=json`, `${route}/../export`, `${route}#private`, route.replace('127.0.0.1', 'example.com')]) {
+    assert.equal(isExportURL(value), false, value);
+    assert.equal(exportFormat(value), null);
+  }
 });
 
 test('internal page access cannot be redirected to another local file', () => {

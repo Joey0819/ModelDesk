@@ -37,3 +37,12 @@ test('later or circular task context is rejected', () => {
   workflow.tasks[0].context = ['review'];
   assert(workflowErrors(workflow, 'crewai', models).some((message) => message.includes('此前步骤')));
 });
+
+test('conditional flow references are removed when the condition source moves later', () => {
+  const workflow = defaultWorkflow('crewai_flow', models);
+  workflow.tasks[1].when = { task: 'draft', operator: 'contains', value: '修正' };
+  assert.deepEqual(workflowErrors(workflow, 'crewai_flow', models), []);
+  const reordered = moveTask(workflow.tasks, 1, -1);
+  assert.equal(reordered[0].when, null);
+  assert.deepEqual(reordered[0].context, []);
+});

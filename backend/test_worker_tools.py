@@ -28,7 +28,7 @@ class WorkerToolsTests(unittest.TestCase):
         output = YieldingOutput()
         with redirect_stdout(output), ThreadPoolExecutor(max_workers=4) as pool:
             list(pool.map(lambda number: emit("tool_result", output=number), range(24)))
-        events = [json.loads(line.removeprefix("MODELDESK_EVENT ")) for line in output.getvalue().splitlines()]
+        events = [json.loads(line.removeprefix("MODELDESK_EVENT ")) for line in output.getvalue().splitlines() if line.startswith("MODELDESK_EVENT ")]
         self.assertEqual(sorted(event["output"] for event in events), list(range(24)))
 
 

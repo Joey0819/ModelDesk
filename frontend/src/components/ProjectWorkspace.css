@@ -25,6 +25,10 @@
 .project-heading p { margin: 0; font-size: 10px; color: #97a1b1; overflow-wrap: anywhere; }
 .repository-state { display: flex; align-items: center; gap: 8px; flex-shrink: 0; font-size: 11px; color: #7b8ba2; }
 .repository-state code { font-size: 9px; color: #9ba8ba; background: #edf1f7; padding: 3px 5px; border-radius: 4px; }
+.project-registration-actions { margin-left: auto; display: flex; gap: 7px; flex-shrink: 0; }
+.project-registration-actions .subtle-button { font-size: 9px; height: 28px; padding: 0 8px; }
+.project-unregister-summary { font-size: 12px; color: #8496b0; line-height: 1.9; margin: 0 0 25px; overflow-wrap: anywhere; }
+@media (max-width: 1200px) { .project-heading { flex-wrap: wrap; } .project-registration-actions { margin-left: 0; } }
 .repository-changes { margin-top: 12px; }
 .repository-changes summary { font-size: 10px; color: #96a2b5; cursor: pointer; }
 .repository-changes pre { font-size: 10px; background: #f0f3f8; border: 1px solid #e5eaf2; border-radius: 6px; padding: 12px; white-space: pre-wrap; max-height: 150px; overflow-y: auto; color: #8695a9; }

@@ -13,6 +13,12 @@ export function Icon({ name, size = 20 }) {
     group: <><circle cx="12" cy="7" r="3"/><circle cx="4" cy="12" r="2"/><circle cx="20" cy="12" r="2"/><path d="M7 21v-3a5 5 0 0 1 10 0v3M1 20v-3a3 3 0 0 1 4-3m18 6v-3a3 3 0 0 0-4-3"/></>,
     folder: <path d="M3 6h7l2 3h9v11H3V6Z" />,
     code: <><path d="m7 6-5 6 5 6m10-12 5 6-5 6m-3-15-4 18"/></>,
+    layers: <><path d="m12 3 9 5-9 5-9-5 9-5Zm-9 9 9 5 9-5m-18 5 9 5 9-5"/></>,
+    library: <><rect x="3" y="4" width="4" height="16" rx="1"/><rect x="9" y="4" width="4" height="16" rx="1"/><path d="m15 5 4-1 4 15-4 1-4-15Z"/></>,
+    memory: <><rect x="6" y="6" width="12" height="12" rx="2"/><path d="M9 2v4m6-4v4M9 18v4m6-4v4M2 9h4m-4 6h4m12-6h4m-4 6h4"/></>,
+    dashboard: <><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></>,
+    moon: <path d="M20 15A9 9 0 0 1 9 4a9 9 0 1 0 11 11Z" />,
+    sun: <><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M2 12h2m16 0h2M5 5l1.5 1.5m11 11L19 19M5 19l1.5-1.5m11-11L19 5"/></>,
     plus: <path d="M12 5v14M5 12h14" />,
     send: <><path d="m4 4 17 8-17 8 4-8-4-8Z" /><path d="M8 12h13" /></>,
     stop: <rect x="6" y="6" width="12" height="12" rx="1" />,
@@ -30,6 +36,17 @@ export function Icon({ name, size = 20 }) {
 
 export function Markdown({ children }) {
   return <div className="markdown"><ReactMarkdown>{asText(children)}</ReactMarkdown></div>;
+}
+
+export function ResultProvenance({ job }) {
+  const lastStage = (name) => [...(job.events || [])].reverse().find((event) => event.type === 'stage' && event.stage === name)?.data;
+  const context = lastStage('context');
+  const candidates = job.context_references || context?.references || job.result?.references || [];
+  const references = Array.isArray(candidates) ? candidates : [];
+  const memory = job.remembered_memory || lastStage('memory_saved');
+  const truncated = job.context_truncated || context?.truncated;
+  if (!references.length && !memory) return null;
+  return <details className="result-source-record"><summary>来源与记忆记录{references.length > 0 && `（${references.length} 项来源）`}</summary>{truncated && <p className="context-invalid">上下文超过运行预算并被截断，以下引用范围不代表全部内容都已发送。</p>}{references.map((reference, index) => <article className="provenance-source" key={reference.id || index}><header><strong>{typeof reference === 'string' ? reference : reference.name || reference.project_name || (reference.kind === 'project' ? '代码快照' : '引用材料')}</strong><span>{{ knowledge: '知识文档', memory: '记忆', project: '项目代码' }[reference.kind] || '来源'}</span></header>{reference.start_line && <p>原文第 {reference.start_line}–{reference.end_line} 行{reference.chunk && `，片段 ${reference.chunk}`}</p>}{reference.scope && <p>记忆范围：{reference.scope}</p>}{reference.snapshot_id && <p>快照 {reference.snapshot_id} · 内容指纹 {reference.digest}</p>}{reference.coverage?.disclaimer && <p>{reference.coverage.disclaimer}</p>}{reference.content && <details><summary>引用内容</summary><pre>{reference.content}</pre></details>}</article>)}{memory && <p className="remembered-result">本次结果已保存为记忆：{memory.id} · 范围 {memory.scope}</p>}</details>;
 }
 
 function ResponsePane({ model, text, error, waiting, index }) {
@@ -53,7 +70,14 @@ function ToolCalls({ job }) {
 function GroupResult({ job }) {
   const messages = job.result?.messages || [];
   const partialFailure = job.result?.partial_failure || messages.some((message) => message.error || message.incomplete);
-  return <div className="group-transcript">{partialFailure && <div className="connection-warning"><strong>部分发言未完整返回</strong><span>失败或达到长度限制的发言已标记，已收到的内容保留。</span></div>}{messages.length ? messages.map((message, index) => <section className="group-message" key={index}><header><span className={`model-mark model-mark-${job.models.indexOf(message.model) % 3}`}>{message.model?.toLowerCase().includes('gemini') ? 'G' : 'O'}</span><strong>{modelLabel(message.model)}</strong><span>第 {message.round} 轮</span></header>{message.error && <div className="output-error">发言失败：{message.error}</div>}{message.content && <Markdown>{message.content}</Markdown>}{message.incomplete && <p className="result-note group-incomplete-note">本条发言达到输出长度限制，内容可能不完整。</p>}</section>) : <StagePending text={active(job) ? '群聊参与者正在阅读话题，准备依次发言' : '没有保存的群聊发言'} running={active(job)} />}</div>;
+  return <div className="group-transcript">{partialFailure && <div className="connection-warning"><strong>部分发言未完整返回</strong><span>失败或达到长度限制的发言已标记，已收到的内容保留。</span></div>}{messages.length ? messages.map((message, index) => <section className="group-message" key={index}><header><span className={`model-mark model-mark-${job.models.indexOf(message.model) % 3}`}>{message.model?.toLowerCase().includes('gemini') ? 'G' : 'O'}</span><strong>{modelLabel(message.model)}</strong><span>第 {message.round} 轮</span></header>{message.error && <div className="output-error">发言失败：{message.error}</div>}{message.content && <Markdown>{message.content}</Markdown>}{message.incomplete && <p className="result-note group-incomplete-note">本条发言达到输出长度限制，内容可能不完整。</p>}</section>) : <StagePending text={active(job) ? '群聊参与者正在阅读话题，准备依次发言' : '没有保存的群聊发言'} running={active(job)} />}<ToolCalls job={job} /></div>;
+}
+
+function WorkflowResult({ job }) {
+  const result = job.result || {};
+  const tasks = result.tasks || [];
+  const routes = result.routes || [];
+  return <div className="crew-output">{routes.length > 0 && <section className="actual-flow-routes"><header><strong>实际分支决策</strong><span>根据此前步骤的真实输出决定</span></header>{routes.map((route, index) => <div key={index}><strong>{route.task}</strong><span className={route.decision === 'skip' ? 'route-skipped' : 'route-run'}>{route.decision === 'skip' ? '跳过' : '执行'}</span><small>{route.reason || (route.condition ? JSON.stringify(route.condition) : '')}</small></div>)}</section>}{tasks.length > 0 && <div className="task-results">{tasks.map((task, index) => <details className={`review-item ${task.status === 'skipped' ? 'task-skipped' : ''}`} key={task.id || index}><summary><span className="task-number">{index + 1}</span>{task.description?.slice(0, 90) || task.name || task.agent || `协作任务 ${index + 1}`}<span className="task-execution-status">{task.status === 'skipped' ? '已跳过' : task.status === 'complete' ? '已完成' : ''}</span><Icon name="chevron" size={16} /></summary>{task.status === 'skipped' ? <p className="result-note skipped-task-reason">{task.reason || '本步骤按运行路由跳过，未执行任务。'}</p> : <Markdown>{task.output || task.result || task.raw || ''}</Markdown>}{(task.agent || task.model) && <p className="task-provenance">执行角色：{task.agent || '原生框架分配'}{task.model && ` · 模型：${task.model}`}</p>}{task.condition && <pre className="task-condition-record">{JSON.stringify(task.condition, null, 2)}</pre>}</details>)}</div>}{result.answer ? <section className="final-answer"><header><span className="final-label">{result.partial ? '部分协作结果' : result.process === 'workforce' ? '工作队结果' : result.process === 'flow' ? '流程结果' : '协作结果'}</span><span>{result.partial ? '完整任务流程尚未完成' : '任务流程已完成'}</span></header><Markdown>{result.answer}</Markdown></section> : <WorkerPending job={job} text="原生团队正在执行任务步骤" />}{result.workforce_events?.length > 0 && <details className="review-item"><summary>原生 Workforce 事件<span>{result.workforce_events.length} 条</span><Icon name="chevron" size={16} /></summary><pre className="execution-log">{JSON.stringify(result.workforce_events, null, 2)}</pre></details>}<ToolCalls job={job} /></div>;
 }
 
 function WorkerPending({ job, text }) {
@@ -81,12 +105,11 @@ export function JobOutput({ job }) {
   const result = job.result;
   if (job.mode === 'chat') {
     const replies = result?.responses || [];
-    return <div className="comparison-grid">{job.models.map((model, i) => { const reply = replies.find((r) => r.model === model); return <ResponsePane key={model} model={model} text={reply?.text || reply?.response} error={reply?.error} waiting={active(job) && !reply?.done} index={i} />; })}</div>;
+    return <><div className="comparison-grid">{job.models.map((model, i) => { const reply = replies.find((r) => r.model === model); return <ResponsePane key={model} model={model} text={reply?.text || reply?.response} error={reply?.error} waiting={active(job) && !reply?.done} index={i} />; })}</div><ToolCalls job={job} /></>;
   }
   if (job.mode === 'council') return <CouncilResult result={result} running={active(job)} />;
   if (job.mode === 'group') return <GroupResult job={job} />;
   if (job.mode === 'camel') return <div className="role-transcript">{result?.partial && <p className="result-note">已保留收到的部分角色发言，完整对话尚未完成。</p>}{result?.messages?.length ? result.messages.map((message, index) => { const role = { researcher: '研究员', reviewer: '审稿人' }[message.role] || message.role || '参与角色'; const reviewer = /review|审/.test(message.role || ''); return <section key={index} className={`role-message role-${reviewer ? 1 : 0}`}><div className="role-line"><span className="role-avatar">{role.slice(0, 1)}</span><strong>{role}</strong>{message.round && <span className="message-round">第 {message.round} 轮</span>}{message.model && <span>{modelLabel(message.model)}</span>}</div><Markdown>{message.content}</Markdown></section>; }) : <WorkerPending job={job} text="参与角色正在建立讨论" />}<ToolCalls job={job} /></div>;
-  const tasks = result?.tasks || [];
-  return <div className="crew-output">{tasks.length > 0 && <div className="task-results">{tasks.map((task, i) => <details className="review-item" key={i}><summary><span className="task-number">{i + 1}</span>{task.name || task.agent || task.description || `协作任务 ${i + 1}`}<Icon name="chevron" size={16} /></summary><Markdown>{task.output || task.result || task.raw || task}</Markdown></details>)}</div>}{result?.answer ? <section className="final-answer"><header><span className="final-label">{result.partial ? '部分协作结果' : '协作结果'}</span><span>{result.partial ? '完整任务流程尚未完成' : '任务流程已完成'}</span></header><Markdown>{result.answer}</Markdown></section> : <WorkerPending job={job} text="团队正在执行任务步骤" />}<ToolCalls job={job} /></div>;
+  return <WorkflowResult job={job} />;
 }
 

@@ -19,7 +19,7 @@ from typing import Literal
 import httpx
 from fastapi import APIRouter, Header, HTTPException, Query
 from fastapi.responses import Response, StreamingResponse
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from .council import (
     calculate_aggregate_rankings,
@@ -27,6 +27,7 @@ from .council import (
     stage2_collect_rankings,
     stage3_synthesize_final,
 )
+from .workflow_config import WorkflowConfig, validate_workflow
 
 
 PROJECT = Path(__file__).resolve().parents[1]
@@ -74,12 +75,28 @@ def provider_for(model):
 
 
 class JobRequest(BaseModel):
-    mode: Literal["chat", "council", "camel", "crewai"]
+    mode: Literal["chat", "council", "camel", "crewai", "group", "review"]
     prompt: str = Field(min_length=1, max_length=12000)
     models: list[str] = Field(min_length=1, max_length=4)
     chairman: str | None = Field(default=None, max_length=200)
     rounds: int = Field(default=2, ge=1, le=6)
     conversation_id: str | None = None
+    system_prompt: str = Field(default="", max_length=4000)
+    relay_prompt: str = Field(default="", max_length=2000)
+    roles: dict[str, str] = Field(default_factory=dict, max_length=4)
+    context_turns: int = Field(default=12, ge=1, le=40)
+    engine: Literal["chat", "council", "camel", "crewai"] | None = None
+    project_id: str | None = None
+    snapshot_id: str | None = None
+    workflow: WorkflowConfig | None = None
+
+    @model_validator(mode="after")
+    def role_limits(self):
+        if any(model not in self.models or len(role) > 2000 for model, role in self.roles.items()):
+            raise ValueError("角色仅能对应所选模型，且每个角色要求不得超过 2000 字符")
+        if self.workflow is not None:
+            self.workflow = validate_workflow(self.workflow, self.mode, self.models)
+        return self
 
     @field_validator("prompt")
     @classmethod
@@ -139,6 +156,9 @@ class JobManager:
                 continue
 
     def emit(self, job, event_type, **data):
+        # Engines may receive a derived review prompt; persist the public job,
+        # never overwrite its mode/user prompt with that internal engine input.
+        job = self.jobs.get(job["id"], job)
         if len(job["events"]) >= 12000 and event_type not in {"error", "cancelled", "complete"}:
             raise RuntimeError("任务输出过长，已停止。")
         event = {"type": event_type, "job_id": job["id"], "seq": len(job["events"]) + 1, "created_at": now(), **data}
@@ -159,7 +179,7 @@ class JobManager:
         timestamp = now()
         job = {
             "id": job_id,
-            "conversation_id": request.conversation_id if request.mode == "chat" and request.conversation_id else str(uuid.uuid4()),
+            "conversation_id": request.conversation_id if request.mode in {"chat", "group"} and request.conversation_id else str(uuid.uuid4()),
             "mode": request.mode,
             "prompt": request.prompt,
             "models": request.models,
@@ -171,7 +191,14 @@ class JobManager:
             "result": None,
             "error": None,
             "events": [],
+            "system_prompt": request.system_prompt,
+            "relay_prompt": request.relay_prompt,
+            "roles": request.roles,
+            "context_turns": request.context_turns,
+            "workflow": request.workflow.model_dump() if request.workflow else None,
         }
+        if request.mode == "review":
+            job.update(engine=request.engine, project_id=request.project_id, snapshot_id=request.snapshot_id)
         self.jobs[job_id] = job
         self.wakeups[job_id] = asyncio.Event()
         self.save(job)
@@ -182,7 +209,7 @@ class JobManager:
         prior = sorted((item for item in self.jobs.values() if item["mode"] == "chat" and item["conversation_id"] == job["conversation_id"] and item["status"] == "complete" and item["created_at"] < job["created_at"]), key=lambda item: item["created_at"])
         pairs = []
         budget = 16000 - len(job["prompt"])
-        for previous in reversed(prior[-6:]):
+        for previous in reversed(prior[-job.get("context_turns", 12):]):
             responses = previous["result"].get("responses", [])
             answer = next((item for item in responses if item["model"] == model and not item.get("error")), None)
             if answer:
@@ -200,7 +227,14 @@ class JobManager:
                 break
             budget -= size
             pairs.insert(0, [{"role": "user", "content": previous["prompt"]}, context])
-        return [message for pair in pairs for message in pair] + [{"role": "user", "content": job["prompt"]}]
+        messages = [message for pair in pairs for message in pair] + [{"role": "user", "content": job["prompt"]}]
+        system = job.get("_review_system_prompt") or job.get("system_prompt") or ""
+        role = job.get("roles", {}).get(model)
+        if role:
+            system += "\n你在本次任务中的角色要求：" + role
+        if system.strip():
+            messages.insert(0, {"role": "system", "content": system.strip()})
+        return messages
 
     async def run(self, job):
         try:
@@ -210,6 +244,13 @@ class JobManager:
                 lock = self.conversation_locks.setdefault(job["conversation_id"], asyncio.Lock())
                 async with lock:
                     result = await self.chat(job)
+            elif job["mode"] == "group":
+                from .group_chat import run_group
+                lock = self.conversation_locks.setdefault(job["conversation_id"], asyncio.Lock())
+                async with lock:
+                    result = await run_group(self, job)
+            elif job["mode"] == "review":
+                result = await self.review(job)
             elif job["mode"] == "council":
                 result = await self.council(job)
             else:
@@ -237,7 +278,7 @@ class JobManager:
             content = []
             finished = False
             try:
-                payload = {"model": model, "messages": self.chat_context(job, model), "stream": True, "max_tokens": 1024}
+                payload = {"model": model, "messages": self.chat_context(job, model), "stream": True, "max_tokens": job.get("_review_max_tokens", 1024)}
                 async with httpx.AsyncClient(timeout=httpx.Timeout(180, connect=5), trust_env=False) as client:
                     async with client.stream("POST", GATEWAY + "/chat/completions", json=payload) as response:
                         response.raise_for_status()
@@ -277,8 +318,10 @@ class JobManager:
 
     async def council(self, job):
         models = job["models"]
+        budget = job.get("_review_max_tokens")
+        system = job.get("_review_system_prompt")
         self.emit(job, "log", text="第一阶段：各模型独立回答")
-        first = await stage1_collect_responses(job["prompt"], models=models, max_tokens=512)
+        first = await stage1_collect_responses(job["prompt"], models=models, max_tokens=budget or 512, system_prompt=system)
         if not first:
             raise RuntimeError("议会成员均未返回回答，请检查模型登录权限或配额。")
         missing = [model for model in models if model not in {item["model"] for item in first}]
@@ -286,7 +329,7 @@ class JobManager:
         if missing:
             self.emit(job, "log", text="未返回回答的模型：" + "、".join(missing))
         self.emit(job, "log", text="第二阶段：匿名交叉评审")
-        second, labels = await stage2_collect_rankings(job["prompt"], first, models=models, max_tokens=1024)
+        second, labels = await stage2_collect_rankings(job["prompt"], first, models=models, max_tokens=budget or 1024, system_prompt=system)
         if not second:
             raise RuntimeError("匿名评审未返回结果，请检查模型登录权限或配额。")
         missing_reviewers = [model for model in models if model not in {item["model"] for item in second}]
@@ -295,13 +338,21 @@ class JobManager:
         if missing_reviewers:
             self.emit(job, "log", text="未返回评审的模型：" + "、".join(missing_reviewers))
         self.emit(job, "log", text="第三阶段：主席综合")
-        third = await stage3_synthesize_final(job["prompt"], first, second, chairman=job["chairman"], max_tokens=1024)
+        third = await stage3_synthesize_final(job["prompt"], first, second, chairman=job["chairman"], max_tokens=budget or 1024, system_prompt=system)
         if third.get("response", "").startswith("Error:"):
             raise RuntimeError("主席模型综合失败，请检查登录权限或配额。")
         self.emit(job, "stage", stage="synthesis", data=third)
         return {"stage1": first, "stage2": second, "stage3": third, "metadata": metadata}
 
+    async def review(self, job):
+        from .review import run_review
+        return await run_review(self, job)
+
     def worker_command(self, job, output):
+        if job.get("_review_input"):
+            return [str(TOOLS / (".venv-" + job["engine"]) / "bin/python"), "-u", str(PROJECT / "backend/workers/review_worker.py"), "--input", job["_review_input"], "--output", str(output)]
+        if job.get("_workflow_input"):
+            return [str(TOOLS / (".venv-" + job["mode"]) / "bin/python"), "-u", str(PROJECT / "backend/workers/workflow.py"), "--input", job["_workflow_input"], "--output", str(output)]
         mode = job["mode"]
         python = TOOLS / (".venv-" + mode) / "bin/python"
         script = TOOLS / "examples" / ("camel_dialogue.py" if mode == "camel" else "crewai_team.py")
@@ -333,20 +384,58 @@ class JobManager:
 
     async def worker(self, job):
         output = self.directory / (job["id"] + ".output")
-        command = self.worker_command(job, output)
+        input_path = self.directory / (job["id"] + ".workflow-input")
+        if job.get("workflow"):
+            input_path.write_text(json.dumps({key: job[key] for key in ["mode", "prompt", "models", "rounds", "workflow"]}, ensure_ascii=False))
+            input_path.chmod(0o600)
+            job["_workflow_input"] = str(input_path)
+        try:
+            command = self.worker_command(job, output)
+        except BaseException:
+            input_path.unlink(missing_ok=True)
+            job.pop("_workflow_input", None)
+            raise
         environment = {**os.environ, "CREWAI_TRACING_ENABLED": "false", "OTEL_SDK_DISABLED": "true", "PYTHONUNBUFFERED": "1"}
         creation = asyncio.create_task(asyncio.create_subprocess_exec(*command, cwd=TOOLS, env=environment, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT, start_new_session=True))
         try:
             process = await asyncio.shield(creation)
         except asyncio.CancelledError:
             # Even cancellation during process creation must reap this owned child.
-            process = await creation
-            await self.terminate(process)
+            try:
+                process = await creation
+                await self.terminate(process)
+            finally:
+                input_path.unlink(missing_ok=True)
+                job.pop("_workflow_input", None)
+            raise
+        except BaseException:
+            input_path.unlink(missing_ok=True)
+            job.pop("_workflow_input", None)
             raise
         self.processes[job["id"]] = process
         try:
             self.emit(job, "log", text=f"{job['mode']} 工作进程已启动，角色模型：" + "、".join(job["models"]))
             tail = []
+
+            def publish_line(line):
+                clean = re.sub(r"\x1b\[[0-9;]*m", "", line).strip()
+                if not clean or clean.startswith("Saved:"):
+                    return
+                if clean.startswith("MODELDESK_EVENT "):
+                    try:
+                        event = json.loads(clean[len("MODELDESK_EVENT "):])
+                        if event.get("type") in {"framework_message", "framework_task", "tool_result"}:
+                            event_type = event.pop("type")
+                            for reserved in ["job_id", "seq", "created_at"]:
+                                event.pop(reserved, None)
+                            self.emit(job, event_type, **event)
+                            return
+                    except (ValueError, TypeError):
+                        pass
+                tail.append(clean)
+                del tail[:-10]
+                if not re.search(r"token|authorization|bearer|api[_ -]?key|GOCSPX|sk-[\w-]+", clean, re.I):
+                    self.emit(job, "log", text=clean[:2000])
 
             async def read_logs():
                 buffer = ""
@@ -358,20 +447,13 @@ class JobManager:
                     buffer += decoder.decode(chunk)
                     lines = buffer.split("\n")
                     buffer = lines.pop()
-                    if len(buffer) > 4096:
-                        lines.append(buffer[:4096])
-                        buffer = ""
+                    if len(buffer) > 65536 or any(len(line) > 65536 for line in lines):
+                        raise RuntimeError("框架单条输出超过 64 KB，已停止任务；不会截断结构化事件。")
                     for line in lines:
-                        clean = re.sub(r"\x1b\[[0-9;]*m", "", line).strip()
-                        if not clean or clean.startswith("Saved:"):
-                            continue
-                        tail.append(clean)
-                        del tail[:-10]
-                        if not re.search(r"token|authorization|bearer|api[_ -]?key|GOCSPX|sk-[\w-]+", clean, re.I):
-                            self.emit(job, "log", text=clean[:2000])
+                        publish_line(line)
                 buffer += decoder.decode(b"", final=True)
                 if buffer.strip():
-                    tail.append(buffer.strip())
+                    publish_line(buffer)
                 await process.wait()
 
             async with asyncio.timeout(1200):
@@ -389,8 +471,22 @@ class JobManager:
             return result
         finally:
             await self.terminate(process)
+            if job.get("workflow") and output.exists():
+                try:
+                    partial = json.loads(output.read_text())
+                    if isinstance(partial, dict) and (isinstance(partial.get("messages"), list) or isinstance(partial.get("tasks"), list)):
+                        canonical = self.jobs[job["id"]]
+                        if canonical["status"] == "cancelled":
+                            canonical["result"] = partial
+                            self.emit(canonical, "stage", stage="workflow_partial", data=partial)
+                except (ValueError, OSError):
+                    pass
             self.processes.pop(job["id"], None)
             output.unlink(missing_ok=True)
+            input_path.unlink(missing_ok=True)
+            job.pop("_workflow_input", None)
+            if job.get("workflow"):
+                self.save(self.jobs[job["id"]])
 
     async def cancel(self, job_id):
         job = self.get(job_id)
@@ -449,11 +545,13 @@ def export_result(job):
                 result["metadata"] = event["metadata"]
         elif event["type"] == "complete":
             result = event["result"]
+        elif event["type"] == "message":
+            result.setdefault("messages", []).append({key: value for key, value in event.items() if key not in {"type", "job_id", "seq", "created_at"}})
     return result
 
 
 def markdown_export(job):
-    modes = {"chat": "多模型聊天", "council": "匿名评审 · LLM Council", "camel": "角色对话 · CAMEL", "crewai": "任务协作 · CrewAI"}
+    modes = {"chat": "多模型聊天", "council": "匿名评审 · LLM Council", "camel": "角色对话 · CAMEL", "crewai": "任务协作 · CrewAI", "group": "群聊讨论 · MultiBot Chat", "review": "本地项目代码评审"}
     statuses = {"queued": "等待开始", "running": "运行中", "complete": "已完成", "error": "失败", "cancelled": "已停止", "interrupted": "服务重启中断"}
     lines = [f"# {modes.get(job['mode'], job['mode'])}", "", f"任务：{job['prompt']}", "", f"时间（UTC）：{job['created_at']}", f"模型：{'、'.join(job['models'])}", f"状态：{statuses.get(job['status'], job['status'])}", ""]
     result = export_result(job)
@@ -508,6 +606,19 @@ def markdown_export(job):
             lines.extend([f"## {label}", "", text, ""])
         if result.get("answer"):
             lines.extend(["## 协作结果", "", result["answer"], ""])
+    elif job["mode"] == "group":
+        from .group_chat import markdown_group
+        lines.extend(markdown_group(result))
+    elif job["mode"] == "review":
+        lines.extend([f"项目：{job.get('project_name', job.get('project_id', ''))}", f"快照：{job.get('snapshot_id', '')}", "", "## 评审覆盖", "", json.dumps(result.get("coverage") or job.get("coverage") or {}, ensure_ascii=False, indent=2), "", "## 有代码证据的发现", ""])
+        for finding in result.get("findings", []):
+            lines.extend([f"### [{finding['severity']}] {finding['title']}", "", f"位置：{finding['file']}:{finding['line_start']}–{finding['line_end']}（{finding['side']}）", finding["body"], "", "证据原文：", "```", finding["evidence"], "```", "", "修复建议：" + finding["suggestion"], "来源模型：" + "、".join(finding["models"]), ""])
+        lines.extend(["## 未确认或被拒绝的声明", ""])
+        for claim in result.get("unconfirmed", []):
+            lines.extend([f"### {claim['model']}：{claim['reason']}", "", claim["claim"], ""])
+        if result.get("raw"):
+            lines.extend(["## 原始评审过程", "", markdown_export({**job, "mode": job["engine"], "result": result["raw"], "events": [], "error": None})])
+        lines.extend([result.get("verification", "发现仍需人工核实，未执行项目代码。"), ""])
     if job.get("error"):
         lines.extend(["## 运行错误", "", job["error"], ""])
     if job["status"] in {"cancelled", "interrupted", "error"}:
@@ -543,8 +654,8 @@ async def status():
         providers.append(provider)
     providers.append({"id": "claude", "label": "Claude", "authenticated": False, "available_models": [], "verified_models": [], "reason": "Claude 订阅 OAuth 未接入；可继续使用官方应用。"})
     tools = {}
-    for identifier, label in [("chat", "多模型聊天"), ("council", "LLM Council"), ("camel", "CAMEL"), ("crewai", "CrewAI")]:
-        installed = identifier in {"chat", "council"} or (TOOLS / (".venv-" + identifier) / "bin/python").exists()
+    for identifier, label in [("chat", "多模型聊天"), ("council", "LLM Council"), ("camel", "CAMEL"), ("crewai", "CrewAI"), ("group", "MultiBot Chat"), ("review", "代码评审")]:
+        installed = identifier in {"chat", "council", "group", "review"} or (TOOLS / (".venv-" + identifier) / "bin/python").exists()
         tools[identifier] = {"available": installed and gateway["online"], "label": label}
         if not installed:
             tools[identifier]["reason"] = "独立运行环境尚未安装"
@@ -554,8 +665,10 @@ async def status():
 
 
 @router.get("/jobs")
-async def list_jobs():
+async def list_jobs(project_id: str | None = None):
     jobs = sorted(manager.jobs.values(), key=lambda job: job["created_at"], reverse=True)
+    if project_id:
+        jobs = [job for job in jobs if job.get("project_id") == project_id]
     return [{key: value for key, value in job.items() if key not in {"events", "result"}} for job in jobs[:100]]
 
 
@@ -579,6 +692,10 @@ async def export_job(job_id: str, format: Literal["md", "json"] = Query(default=
 
 @router.post("/jobs", status_code=202)
 async def create_job(request: JobRequest):
+    if request.mode == "review":
+        raise HTTPException(422, "代码评审必须通过项目快照创建。")
+    if request.mode == "group" and len(request.models) < 2:
+        raise HTTPException(422, "群聊至少需要两个参与模型。")
     if request.mode in {"camel", "crewai"} and len(request.models) != 2:
         raise HTTPException(422, "CAMEL 和 CrewAI 需要分别为两个角色选择模型。")
     if request.mode == "council" and len(request.models) < 2:

@@ -25,6 +25,12 @@ export const workbenchApi = {
   cancelJob: (id) => workbenchRequest(`/jobs/${encodeURIComponent(id)}/cancel`, { method: 'POST' }),
   events: (id, after = 0) => new EventSource(`${API_BASE}/api/workbench/jobs/${encodeURIComponent(id)}/events?after=${after}`),
   exportUrl: (id, format) => `${API_BASE}/api/workbench/jobs/${encodeURIComponent(id)}/export?format=${encodeURIComponent(format)}`,
+  listProjects: () => workbenchRequest('/projects'),
+  addProject: (body) => workbenchRequest('/projects', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }),
+  getProject: (id) => workbenchRequest(`/projects/${encodeURIComponent(id)}`),
+  createSnapshot: (id, body) => workbenchRequest(`/projects/${encodeURIComponent(id)}/snapshots`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }),
+  getSnapshot: (id, snapshot) => workbenchRequest(`/projects/${encodeURIComponent(id)}/snapshots/${encodeURIComponent(snapshot)}`),
+  createReview: (id, body) => workbenchRequest(`/projects/${encodeURIComponent(id)}/reviews`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }),
 };
 
 export const api = {

@@ -91,6 +91,38 @@ class WorkbenchTests(unittest.IsolatedAsyncioTestCase):
         frames = [frame async for frame in self.manager.events(job["id"])]
         self.assertIn('"type": "cancelled"', frames[-1])
 
+    async def test_long_utf8_framework_event_eof_and_cancelled_partial(self):
+        content = "长文本 token 示例 " * 1300
+        configuration = {"agents": [{"id": "researcher", "role": "研究员", "goal": "review", "model": "a"}, {"id": "reviewer", "role": "审稿人", "goal": "check", "model": "b"}], "tasks": [], "process": "sequential"}
+        script = """import json,sys,time
+from pathlib import Path
+content = '长文本 token 示例 ' * 1300
+message = {'role':'审稿人','model':'b','round':1,'content':content}
+Path(sys.argv[1]).write_text(json.dumps({'models':['a','b'],'messages':[message],'partial':sys.argv[2]=='cancel'},ensure_ascii=False))
+text = 'MODELDESK_EVENT ' + json.dumps({'type':'framework_message',**message},ensure_ascii=False)
+print(text,end='\\n' if sys.argv[2]=='cancel' else '',flush=True)
+if sys.argv[2]=='cancel': time.sleep(60)
+"""
+        def command(job, output):
+            return [sys.executable, "-u", "-c", script, str(output), job["prompt"]]
+        with patch.object(self.manager, "worker_command", side_effect=command):
+            job = self.manager.create(JobRequest(mode="camel", prompt="cancel", models=["a", "b"], workflow=configuration))
+            for _ in range(200):
+                persisted = self.manager.get(job["id"])
+                if any(event["type"] == "framework_message" for event in persisted["events"]):
+                    break
+                await asyncio.sleep(0.01)
+            frame = next(event for event in persisted["events"] if event["type"] == "framework_message")
+            self.assertEqual(frame["content"], content)
+            cancelled = await self.manager.cancel(job["id"])
+            self.assertEqual(cancelled["result"]["messages"][0]["content"], content)
+            self.assertTrue(cancelled["result"]["partial"])
+            self.assertFalse((self.manager.directory / (job["id"] + ".workflow-input")).exists())
+            completed = await self.complete(JobRequest(mode="camel", prompt="eof", models=["a", "b"], workflow=configuration))
+            self.assertEqual(completed["status"], "complete")
+            eof_frame = next(event for event in completed["events"] if event["type"] == "framework_message")
+            self.assertEqual(eof_frame["content"], content)
+
     async def test_recovery_marks_abandoned_job_interrupted(self):
         blocker = asyncio.Event()
         async def blocked(job):

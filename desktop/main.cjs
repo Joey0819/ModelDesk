@@ -1,14 +1,15 @@
-const { app, BrowserWindow, Menu, shell, screen } = require('electron');
+const { app, BrowserWindow, Menu, shell, screen, ipcMain, dialog } = require('electron');
 const { execFile } = require('node:child_process');
 const { promisify } = require('node:util');
 const fs = require('node:fs');
 const path = require('node:path');
-const { UI_URL, HEALTH_URLS, workspaceRoot, serviceEnvironment, isWorkbenchURL, isExportURL, isExternalURL, isStatusURL } = require('./runtime.cjs');
+const { UI_URL, HEALTH_URLS, workspaceRoot, serviceEnvironment, isWorkbenchURL, isExportURL, isExternalURL, isStatusURL, isTrustedWorkbenchIPC } = require('./runtime.cjs');
 
 const execFileAsync = promisify(execFile);
 const statusPath = path.join(__dirname, 'status.html');
 let mainWindow;
 let startInProgress = false;
+let projectPickerInProgress = false;
 
 app.setName('ModelDesk');
 app.enableSandbox();
@@ -65,6 +66,27 @@ function openExternal(value) {
   if (isExternalURL(value)) void shell.openExternal(value).catch(() => {});
 }
 
+function installProjectPicker() {
+  ipcMain.handle('modeldesk:choose-project-directory', async event => {
+    const owner = mainWindow;
+    if (!owner || owner.isDestroyed() || !isTrustedWorkbenchIPC(event, owner.webContents) || projectPickerInProgress) return null;
+    projectPickerInProgress = true;
+    try {
+      const selection = await dialog.showOpenDialog(owner, {
+        title: '选择项目文件夹',
+        buttonLabel: '选择项目',
+        properties: ['openDirectory', 'dontAddToRecent'],
+      });
+      if (selection.canceled || owner.isDestroyed() || !isTrustedWorkbenchIPC(event, owner.webContents)) return null;
+      return selection.filePaths.length === 1 ? selection.filePaths[0] : null;
+    } catch {
+      return null;
+    } finally {
+      projectPickerInProgress = false;
+    }
+  });
+}
+
 function createWindow() {
   const { width: availableWidth, height: availableHeight } = screen.getPrimaryDisplay().workArea;
   const width = Math.min(1440, Math.max(1, availableWidth - 40));
@@ -85,6 +107,7 @@ function createWindow() {
       allowRunningInsecureContent: false,
       devTools: false,
       partition: 'persist:modeldesk-workbench',
+      preload: path.join(__dirname, 'preload.cjs'),
     },
   });
 
@@ -173,6 +196,7 @@ if (!app.requestSingleInstanceLock()) {
   app.whenReady().then(() => {
     app.setAboutPanelOptions({ applicationName: 'ModelDesk', applicationVersion: app.getVersion(), copyright: 'Local multi-model workbench' });
     installMenu();
+    installProjectPicker();
     createWindow();
     app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
   });

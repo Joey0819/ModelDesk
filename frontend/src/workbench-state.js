@@ -16,8 +16,22 @@ export function applyEvent(job, event) {
     const keys = { responses: 'stage1', rankings: 'stage2', synthesis: 'stage3' };
     next.result = { ...job.result, [keys[event.stage] || event.stage]: event.data, ...(event.metadata ? { metadata: event.metadata } : {}) };
   }
-  if (event.type === 'complete') { next.status = 'completed'; next.result = event.result; }
-  if (event.type === 'error') { next.status = 'failed'; next.error = event.message; }
+  if (event.type === 'message') {
+    const message = { model: event.model, round: event.round, content: event.content, ...(event.error !== undefined ? { error: event.error } : {}), ...(event.incomplete !== undefined ? { incomplete: event.incomplete } : {}) };
+    next.result = { ...job.result, partial_failure: Boolean(job.result?.partial_failure || event.error || event.incomplete), messages: [...(job.result?.messages || []), message] };
+  }
+  if (event.type === 'framework_message') {
+    next.result = { ...job.result, partial: true, messages: [...(job.result?.messages || []), { role: event.role, model: event.model, round: event.round, content: event.content }] };
+  }
+  if (event.type === 'framework_task') {
+    const task = { id: event.id, name: event.name, agent: event.agent, description: event.description, context: event.context, output: event.output };
+    const tasks = [...(job.result?.tasks || [])];
+    const index = tasks.findIndex((item) => item.id === task.id);
+    if (index < 0) tasks.push(task); else tasks[index] = task;
+    next.result = { ...job.result, partial: true, tasks };
+  }
+  if (event.type === 'complete') { next.status = 'complete'; next.result = event.result; }
+  if (event.type === 'error') { next.status = 'error'; next.error = event.message; }
   if (event.type === 'cancelled') next.status = 'cancelled';
   return next;
 }

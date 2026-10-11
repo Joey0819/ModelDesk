@@ -39,3 +39,47 @@ test('authoritative completed result replaces accumulated streaming fragments', 
   const restored = hydrateJob({ id: 'job', status: 'completed', result, events: [delta(1, '部分回答')] });
   assert.deepEqual(restored.result, result);
 });
+
+test('group discussion preserves model attribution and completed rounds after interruption', () => {
+  const messages = [
+    { job_id: 'job', seq: 1, type: 'message', model: 'gpt-6.1-sol', round: 1, content: '提出方案' },
+    { job_id: 'job', seq: 2, type: 'message', model: 'gemini-3-flash', round: 1, content: '质询前面的方案' },
+    { job_id: 'job', seq: 3, type: 'message', model: 'gpt-6.1-sol', round: 2, content: '修改方案' },
+  ];
+  const restored = hydrateJob({ id: 'job', mode: 'group', status: 'cancelled', result: null, events: messages });
+  assert.deepEqual(restored.result.messages, messages.map(({ model, round, content }) => ({ model, round, content })));
+  assert.strictEqual(applyEvent(restored, messages[2]), restored);
+});
+
+test('custom framework roles and completed tasks remain visible before a final result', () => {
+  const events = [
+    { job_id: 'job', seq: 1, type: 'framework_message', role: '统计审查员', model: 'gemini-3-flash', round: 2, content: '检查独立样本与重复测量' },
+    { job_id: 'job', seq: 2, type: 'framework_task', id: 'stats', name: 'stats', agent: 'analyst', description: '计算', context: [], output: '结果 42' },
+    { job_id: 'job', seq: 3, type: 'tool_result', tool: 'arithmetic', input: '6*7', output: 42 },
+  ];
+  const restored = hydrateJob({ id: 'job', status: 'interrupted', result: null, events });
+  assert.equal(restored.result.partial, true);
+  assert.equal(restored.result.messages[0].role, '统计审查员');
+  assert.equal(restored.result.tasks[0].output, '结果 42');
+  assert.equal(restored.events.filter((event) => event.type === 'tool_result')[0].output, 42);
+});
+
+test('terminal event uses canonical backend status names', () => {
+  assert.equal(applyEvent({ id: 'job', events: [] }, { job_id: 'job', type: 'complete', result: {} }).status, 'complete');
+  assert.equal(applyEvent({ id: 'job', events: [] }, { job_id: 'job', type: 'error', message: 'failed' }).status, 'error');
+});
+
+test('actual group failure and length-limit events preserve their evidence after refresh', () => {
+  const events = [
+    { job_id: 'job', seq: 1, type: 'message', model: 'gpt-6.1-sol', round: 1, content: '', error: '模型网关返回 HTTP 403；请检查登录权限或配额。' },
+    { job_id: 'job', seq: 2, type: 'message', model: 'gemini-3-flash', round: 1, content: '已收到的部分发言', incomplete: true },
+    { job_id: 'job', seq: 3, type: 'message', model: 'gpt-6.1-sol', round: 2, content: '后一轮成功发言' },
+  ];
+  const restored = hydrateJob({ id: 'job', mode: 'group', status: 'cancelled', result: null, events });
+  assert.equal(restored.result.partial_failure, true);
+  assert.equal(restored.result.messages[0].error, events[0].error);
+  assert.equal(restored.result.messages[1].incomplete, true);
+  assert.equal(restored.result.messages[1].content, '已收到的部分发言');
+  assert.equal(restored.result.messages[2].content, '后一轮成功发言');
+  assert.strictEqual(applyEvent(restored, events[1]), restored);
+});

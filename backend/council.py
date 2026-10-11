@@ -5,7 +5,7 @@ from .openrouter import query_models_parallel, query_model
 from .config import COUNCIL_MODELS, CHAIRMAN_MODEL, TITLE_MODEL
 
 
-async def stage1_collect_responses(user_query: str, models: List[str] = None, max_tokens: int = None) -> List[Dict[str, Any]]:
+async def stage1_collect_responses(user_query: str, models: List[str] = None, max_tokens: int = None, system_prompt: str = None) -> List[Dict[str, Any]]:
     """
     Stage 1: Collect individual responses from all council models.
 
@@ -16,6 +16,8 @@ async def stage1_collect_responses(user_query: str, models: List[str] = None, ma
         List of dicts with 'model' and 'response' keys
     """
     messages = [{"role": "user", "content": user_query}]
+    if system_prompt:
+        messages.insert(0, {"role": "system", "content": system_prompt})
 
     # Query all models in parallel
     responses = await query_models_parallel(models or COUNCIL_MODELS, messages, max_tokens=max_tokens)
@@ -37,6 +39,7 @@ async def stage2_collect_rankings(
     stage1_results: List[Dict[str, Any]],
     models: List[str] = None,
     max_tokens: int = None,
+    system_prompt: str = None,
 ) -> Tuple[List[Dict[str, Any]], Dict[str, str]]:
     """
     Stage 2: Each model ranks the anonymized responses.
@@ -95,6 +98,8 @@ FINAL RANKING:
 Now provide your evaluation and ranking:"""
 
     messages = [{"role": "user", "content": ranking_prompt}]
+    if system_prompt:
+        messages.insert(0, {"role": "system", "content": system_prompt})
 
     # Get rankings from all council models in parallel
     responses = await query_models_parallel(models or COUNCIL_MODELS, messages, max_tokens=max_tokens)
@@ -120,6 +125,7 @@ async def stage3_synthesize_final(
     stage2_results: List[Dict[str, Any]],
     chairman: str = None,
     max_tokens: int = None,
+    system_prompt: str = None,
 ) -> Dict[str, Any]:
     """
     Stage 3: Chairman synthesizes final response.
@@ -161,6 +167,8 @@ Your task as Chairman is to synthesize all of this information into a single, co
 Provide a clear, well-reasoned final answer that represents the council's collective wisdom:"""
 
     messages = [{"role": "user", "content": chairman_prompt}]
+    if system_prompt:
+        messages.insert(0, {"role": "system", "content": system_prompt})
 
     # Query the chairman model
     selected_chairman = chairman or CHAIRMAN_MODEL

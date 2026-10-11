@@ -4,7 +4,7 @@ const { pathToFileURL } = require('node:url');
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
-const { workspaceRoot, serviceEnvironment, isWorkbenchURL, isExportURL, isExternalURL, isStatusURL } = require('../runtime.cjs');
+const { workspaceRoot, serviceEnvironment, isWorkbenchURL, isExportURL, isExternalURL, isStatusURL, isTrustedWorkbenchIPC } = require('../runtime.cjs');
 
 test('only the local workbench origin is allowed in the app window', () => {
   assert.equal(isWorkbenchURL('http://localhost:5173/agents?mode=camel'), true);
@@ -70,4 +70,23 @@ test('the internal error page script is covered by its exact CSP hash', () => {
   const hash = crypto.createHash('sha256').update(script).digest('base64');
   assert.equal(page.includes(`script-src 'sha256-${hash}'`), true);
   assert.equal(page.includes('href="modeldesk-action://retry"'), true);
+});
+
+test('native project picker IPC accepts only this window and its trusted main frame', () => {
+  const contents = {
+    mainFrame: { processId: 21, routingId: 7 },
+    isDestroyed: () => false,
+    getURL: () => 'http://localhost:5173/?tab=projects',
+  };
+  const event = { sender: contents, senderFrame: { processId: 21, routingId: 7, url: 'http://localhost:5173/?tab=projects' } };
+  assert.equal(isTrustedWorkbenchIPC(event, contents), true);
+  assert.equal(isTrustedWorkbenchIPC({ ...event, sender: {} }, contents), false);
+  assert.equal(isTrustedWorkbenchIPC({ ...event, senderFrame: { ...event.senderFrame, routingId: 8 } }, contents), false);
+  assert.equal(isTrustedWorkbenchIPC({ ...event, senderFrame: { ...event.senderFrame, url: 'https://remote.example/' } }, contents), false);
+  assert.equal(isTrustedWorkbenchIPC({ ...event, senderFrame: null }, contents), false);
+  contents.getURL = () => 'file:///Users/example/status.html';
+  assert.equal(isTrustedWorkbenchIPC(event, contents), false);
+  contents.getURL = () => 'http://localhost:5173/';
+  contents.isDestroyed = () => true;
+  assert.equal(isTrustedWorkbenchIPC(event, contents), false);
 });

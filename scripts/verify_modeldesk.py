@@ -18,7 +18,7 @@ def main():
     if not npm:
         raise SystemExit("Node.js/npm is required to verify ModelDesk")
     commands = [
-        [sys.executable, "-m", "unittest", "backend.test_workbench", "-v"],
+        [sys.executable, "-m", "unittest", "discover", "-s", "backend", "-p", "test_*.py", "-v"],
         [npm, "--prefix", "frontend", "test"],
         [npm, "--prefix", "frontend", "run", "lint"],
         [npm, "--prefix", "desktop", "test"],

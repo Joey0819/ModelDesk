@@ -57,4 +57,17 @@ function isStatusURL(value, statusPath) {
   return Boolean(url && url.protocol === 'file:' && url.pathname === pathToFileURL(statusPath).pathname && !url.host);
 }
 
-module.exports = { DEFAULT_WORKSPACE, UI_URL, HEALTH_URLS, workspaceRoot, serviceEnvironment, isWorkbenchURL, isExportURL, isExternalURL, isStatusURL };
+function isTrustedWorkbenchIPC(event, contents) {
+  try {
+    const frame = event?.senderFrame;
+    const mainFrame = contents?.mainFrame;
+    return Boolean(contents && !contents.isDestroyed() && event.sender === contents &&
+      frame && mainFrame && Number.isInteger(frame.processId) && Number.isInteger(frame.routingId) &&
+      frame.processId === mainFrame.processId && frame.routingId === mainFrame.routingId &&
+      isWorkbenchURL(frame.url) && isWorkbenchURL(contents.getURL()));
+  } catch {
+    return false;
+  }
+}
+
+module.exports = { DEFAULT_WORKSPACE, UI_URL, HEALTH_URLS, workspaceRoot, serviceEnvironment, isWorkbenchURL, isExportURL, isExternalURL, isStatusURL, isTrustedWorkbenchIPC };

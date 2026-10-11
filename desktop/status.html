@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'sha256-umLglxUVWF33ZnXr73pUaVz94wnCK//cFdypLZW4uh8='; img-src 'self'; base-uri 'none'; form-action 'none'">
+  <title>ModelDesk</title>
+  <style>
+    * { box-sizing: border-box; } body { margin: 0; background: #f7f7f4; color: #272d3e; font: 16px -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif; display: grid; place-items: center; min-height: 100vh; }
+    main { width: min(540px, 90vw); background: #fff; border: 1px solid #e4e7eb; border-radius: 24px; padding: 44px; box-shadow: 0 24px 70px #222b4510; }
+    .logo { width: 58px; height: 58px; border-radius: 17px; display: grid; place-items: center; color: white; font-size: 25px; font-weight: 700; background: #5369dd; }
+    .eyebrow { margin: 26px 0 10px; color: #818795; font-size: 12px; letter-spacing: 2px; } h1 { font-size: 26px; margin: 0 0 16px; } p { color: #737b8b; line-height: 1.8; margin: 0 0 22px; }
+    .progress { height: 5px; overflow: hidden; border-radius: 3px; background: #edf0fa; } .progress::after { content: ''; display: block; width: 40%; height: 100%; background: #5369dd; animation: progress 1.3s ease-in-out infinite alternate; }
+    a { display: inline-block; border-radius: 10px; padding: 12px 20px; background: #5369dd; color: white; text-decoration: none; } .hint { font-size: 12px; margin-top: 26px; margin-bottom: 0; }
+    .error { display: none; } body[data-state="error"] .starting { display: none; } body[data-state="error"] .error { display: block; } @keyframes progress { to { transform: translateX(150%); } }
+  </style>
+</head>
+<body>
+  <main>
+    <div class="logo">M</div><div class="eyebrow">MODELDESK</div>
+    <section class="starting"><h1>正在打开你的模型工作台</h1><p>正在启动本地认证网关与协作服务。首次打开可能需要片刻。</p><div class="progress"></div></section>
+    <section class="error"><h1>本地工作台尚未就绪</h1><p>请确认原来的 llm-tools 和 llm-council 文件夹仍在，并且本地运行依赖已安装。准备好后可以重新连接。</p><a href="modeldesk-action://retry">重新连接</a></section>
+    <p class="hint">ModelDesk 使用这台 Mac 上的现有登录和运行环境。关闭窗口会保留共享服务。</p>
+  </main>
+  <script>document.body.dataset.state = new URLSearchParams(location.search).get('state') === 'error' ? 'error' : 'starting';</script>
+</body>
+</html>

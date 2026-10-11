@@ -8,7 +8,8 @@ from .config import OPENROUTER_API_KEY, OPENROUTER_API_URL
 async def query_model(
     model: str,
     messages: List[Dict[str, str]],
-    timeout: float = 120.0
+    timeout: float = 120.0,
+    max_tokens: Optional[int] = None,
 ) -> Optional[Dict[str, Any]]:
     """
     Query a single model via OpenRouter API.
@@ -30,6 +31,8 @@ async def query_model(
         "model": model,
         "messages": messages,
     }
+    if max_tokens is not None:
+        payload["max_tokens"] = max_tokens
 
     try:
         async with httpx.AsyncClient(timeout=timeout) as client:
@@ -55,7 +58,8 @@ async def query_model(
 
 async def query_models_parallel(
     models: List[str],
-    messages: List[Dict[str, str]]
+    messages: List[Dict[str, str]],
+    max_tokens: Optional[int] = None,
 ) -> Dict[str, Optional[Dict[str, Any]]]:
     """
     Query multiple models in parallel.
@@ -70,7 +74,7 @@ async def query_models_parallel(
     import asyncio
 
     # Create tasks for all models
-    tasks = [query_model(model, messages) for model in models]
+    tasks = [query_model(model, messages, max_tokens=max_tokens) for model in models]
 
     # Wait for all to complete
     responses = await asyncio.gather(*tasks)

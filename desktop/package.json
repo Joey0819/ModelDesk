@@ -1,0 +1,19 @@
+{
+  "name": "modeldesk-desktop",
+  "productName": "ModelDesk",
+  "version": "1.0.0",
+  "description": "A local desktop window for the ModelDesk multi-model workbench.",
+  "private": true,
+  "main": "main.cjs",
+  "scripts": {
+    "start": "electron .",
+    "test": "node --test test/*.test.cjs",
+    "icon": "node scripts/icon.cjs",
+    "package": "npm run test && npm run icon && node scripts/package.cjs"
+  },
+  "devDependencies": {
+    "@electron/packager": "20.3.0",
+    "electron": "44.7.0",
+    "sharp": "0.35.5"
+  }
+}

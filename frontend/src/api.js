@@ -4,6 +4,29 @@
 
 const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8001';
 
+async function workbenchRequest(path, options = {}) {
+  let response;
+  try { response = await fetch(`${API_BASE}/api/workbench${path}`, options); }
+  catch { throw new Error('工作台服务无法连接。请启动本地服务后重试。'); }
+  if (!response.ok) {
+    let detail;
+    try { const body = await response.json(); detail = body.detail || body.error; } catch { /* Non-JSON response. */ }
+    if (Array.isArray(detail)) detail = detail.map((item) => item.msg).join('；');
+    throw new Error(typeof detail === 'string' ? detail : `请求失败（${response.status}）`);
+  }
+  return response.json();
+}
+
+export const workbenchApi = {
+  status: () => workbenchRequest('/status'),
+  listJobs: () => workbenchRequest('/jobs'),
+  getJob: (id) => workbenchRequest(`/jobs/${encodeURIComponent(id)}`),
+  createJob: (body) => workbenchRequest('/jobs', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }),
+  cancelJob: (id) => workbenchRequest(`/jobs/${encodeURIComponent(id)}/cancel`, { method: 'POST' }),
+  events: (id, after = 0) => new EventSource(`${API_BASE}/api/workbench/jobs/${encodeURIComponent(id)}/events?after=${after}`),
+  exportUrl: (id, format) => `${API_BASE}/api/workbench/jobs/${encodeURIComponent(id)}/export?format=${encodeURIComponent(format)}`,
+};
+
 export const api = {
   /**
    * List all conversations.

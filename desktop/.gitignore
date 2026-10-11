@@ -1,0 +1,6 @@
+node_modules/
+dist/
+assets/ModelDesk.iconset/
+assets/ModelDesk.icns
+assets/ModelDesk-1024.png
+.DS_Store

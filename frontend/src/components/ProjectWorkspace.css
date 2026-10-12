@@ -336,3 +336,19 @@
 .review-context-memory { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; margin: 12px 0; font-size: 12px; color: var(--ink); }
 .review-context-memory input { accent-color: var(--accent); }
 .review-context-memory small { color: var(--muted); font-size: 11px; }
+.project-workspace { container-type: inline-size; container-name: project-workspace; }
+@container project-workspace (max-width: 790px) {
+  .project-layout { flex-direction: column; }
+  .project-list { display: block; width: auto; border-right: 0; border-bottom: 1px solid var(--line); padding: 12px 20px; overflow: hidden; }
+  .project-list-heading { display: flex; padding: 0 0 7px; }
+  .project-list-search { margin-bottom: 7px; padding: 8px 11px; }
+  .project-list-entries { display: flex; gap: 8px; overflow-x: auto; }
+  .project-list-item { width: 230px; min-width: 230px; margin: 0; padding: 9px; }
+  .project-list-item strong { white-space: normal; font-size: 13px; line-height: 1.5; }
+  .project-list-item small { display: block; }
+  .project-list-item em, .project-list-add { display: none; }
+  .project-content { padding: 20px; }
+  .project-review-list { max-height: 170px; overflow-y: auto; }
+  .selected-review > header { align-items: start; flex-direction: column; }
+  .review-engine-options { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}

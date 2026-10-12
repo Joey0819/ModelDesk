@@ -28,7 +28,7 @@
 
 官方布局参考：[Codex 功能页中的 Projects / Recents](https://learn.chatgpt.com/docs/features)、[Claude Artifacts 模板与并排成果](https://support.claude.com/en/articles/17153992-what-are-artifacts-and-how-do-i-use-them)、[Cursor Agents Window 跨项目工作区](https://cursor.com/docs/agent/agents-window)、[Dify 明确输入、配置和 Test Run 的快速开始](https://docs.dify.ai/en/quick-start)。以上支持交互方向，不表示这些产品的所有能力已被复制。
 
-本轮检查覆盖后端 70 项、前端状态/真实组件渲染 49 项和桌面策略 11 项，并检查 lint 与生产构建。真实浏览器验收：GPT/Gemini 聊天 → CrewAI/Council 接续代号；Council 三阶段完整完成；新会话两模型均不继承代号；同项目代码审查引用旧记录并标注旧快照。复制已通过剪贴板回读，单份导出端点附件正文正确，设置刷新、项目搜索、成果放大和窄屏浮层已验证。2.1.0 应用包已重建、安装并校验版本/签名/ASAR 一致性。2026-10-13 解锁后已实测安装版原生窗口、保存的 Council 成果恢复和单份 Markdown 原生保存对话框弹出。之后 macOS 窗口捕获返回 ScreenCaptureKit -3812，自动操作无法继续；已请求用户点击保存，文件落盘仍待核验。导出端点正确或对话框弹出不等同保存成功。上游 TLS 曾间歇失败，Council 加入有限传输重试与诊断，本次完整成功不保证以后网络稳定。
+本轮检查覆盖后端 70 项、前端状态/真实组件渲染 49 项和桌面策略 11 项，并检查 lint 与生产构建。真实浏览器验收：GPT/Gemini 聊天 → CrewAI/Council 接续代号；Council 三阶段完整完成；新会话两模型均不继承代号；同项目代码审查引用旧记录并标注旧快照。复制已通过剪贴板回读，单份导出端点附件正文正确，设置刷新、项目搜索、成果放大和窄屏浮层已验证。2.1.0 应用包已重建、安装并校验版本/签名/ASAR 一致性。2026-10-13 解锁后已实测安装版主窗口、Council 历史成果恢复和单份 Markdown 原生保存对话框。之后 macOS 窗口捕获返回 ScreenCaptureKit -3812，自动操作无法继续；最终保存点击由用户手动完成。Downloads 中的 主席结论 Markdown（任务 `1a4d3a8d-890b-43dd-a933-56b0f00cb5e4`，实际文件路径见验收记录） 已核验落盘：430 bytes、SHA256 与预期一致，逐字节等于本次实际 `council:synthesis` 导出正文，含“杉桥7392”和三条清单。记录见 `data/ux-native-validation.json`。这证明本次单成果 Markdown 保存成功；不表示全流程自动保存，也不覆盖本轮尚未验收的整任务 JSON 原生落盘或取消保存操作。上游 TLS 曾间歇失败，Council 加入有限传输重试与诊断，本次完整成功不保证以后网络稳定。
 
 ## 2.0.1：Workforce 失败处理
 

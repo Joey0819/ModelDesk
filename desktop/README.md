@@ -4,7 +4,7 @@ ModelDesk 2.1.0 是 Apple Silicon macOS 应用。它为统一模型工作台提�
 
 ## 使用
 
-安装版本入口为 `/Applications/ModelDesk.app`，构建输出为 `/Users/chengneng/Project/Skills/llm-tools/releases/ModelDesk.app`。2.1.0 实际应用包已重建并安装，版本、ad-hoc 签名与发布/安装 ASAR 一致性检查通过，安装记录位于 `../data/modeldesk-install-2.1.0.json`。本轮浏览器 UI 已实际验收；2026-10-13 解锁后已在安装版实际打开原生窗口、恢复 Council 历史成果并弹出单份 Markdown 原生保存对话框。随后 ScreenCaptureKit -3812 阻止继续自动操作；文件落盘仍待用户点击保存后核验，详见 `../data/ux-native-validation.json`。主进程会调用 `/usr/bin/python3` 执行 `llm-tools/scripts/services.py start`，等待认证网关、工作台 API 和网页就绪后打开 `http://localhost:5173/`。关闭窗口保留这些共享服务，ChatHub 和浏览器仍可使用。统一页首次进入快速开始，宽屏提供左侧导航、中间会话和可调整宽度的成果面板，窄屏用覆盖面板打开成果；草稿和当前会话保存在本机。
+安装版本入口为 `/Applications/ModelDesk.app`，构建输出为 `/Users/chengneng/Project/Skills/llm-tools/releases/ModelDesk.app`。2.1.0 实际应用包已重建并安装，版本、ad-hoc 签名与发布/安装 ASAR 一致性检查通过，安装记录位于 `../data/modeldesk-install-2.1.0.json`。本轮浏览器 UI 已实际验收；2026-10-13 解锁后已在安装版实际打开主窗口、恢复 Council 历史成果并弹出单份 Markdown 原生保存对话框。随后 ScreenCaptureKit -3812 阻止继续自动操作，最后的保存点击由用户手动完成。单成果 Markdown 已在 Downloads 落盘，430 bytes，SHA256 与预期一致，正文逐字节等于本次实际 `council:synthesis` 导出，含“杉桥7392”和三条清单，详见 `../data/ux-native-validation.json`。本轮未验收整任务 JSON 的原生落盘或取消保存；不把用户手动保存表述为全流程自动保存。主进程会调用 `/usr/bin/python3` 执行 `llm-tools/scripts/services.py start`，等待认证网关、工作台 API 和网页就绪后打开 `http://localhost:5173/`。关闭窗口保留这些共享服务，ChatHub 和浏览器仍可使用。统一页首次进入快速开始，宽屏提供左侧导航、中间会话和可调整宽度的成果面板，窄屏用覆盖面板打开成果；草稿和当前会话保存在本机。
 
 如果移动安装目录，启动时设置绝对路径 `MODEL_DESK_WORKSPACE` 指向新的 `llm-tools`。默认路径仍是当前已配置目录。依赖包括 macOS 的 Python 3、已安装的 Node/npm、现有虚拟环境、已配置的本地登录网关与已构建前端。桌面启动会为子进程补齐 `/usr/local/bin` 和 `/opt/homebrew/bin` 到 PATH。
 

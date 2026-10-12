@@ -160,25 +160,84 @@ def remember_result(job):
                      metadata={"job_id": job["id"], "models": job["models"], "source": "explicit_remember"})
 
 
-async def public_url(value):
+FAKE_DNS_NETWORK = ipaddress.ip_network("198.18.0.0/15")
+
+
+async def doh_addresses(hostname):
+    """Resolve a proxy's synthetic DNS answer using a fixed verified resolver."""
+    async with httpx.AsyncClient(timeout=6, follow_redirects=False, trust_env=False) as client:
+        responses = await asyncio.gather(*(client.get(
+            "https://1.1.1.1/dns-query", params={"name": hostname, "type": record},
+            headers={"Accept": "application/dns-json", "Host": "cloudflare-dns.com"},
+            extensions={"sni_hostname": "cloudflare-dns.com"}) for record in ("A", "AAAA")))
+    addresses = []
+    for response, record_type in zip(responses, (1, 28)):
+        response.raise_for_status()
+        if len(response.content) > 65536:
+            raise ValueError("DNS response exceeds limit")
+        payload = response.json()
+        if not isinstance(payload, dict) or payload.get("Status") != 0 or payload.get("TC"):
+            raise ValueError("Public DNS did not resolve this domain")
+        questions = payload.get("Question") or []
+        if not isinstance(questions, list) or len(questions) != 1 or not isinstance(questions[0], dict):
+            raise ValueError("Malformed DNS question")
+        question = questions[0]
+        if not isinstance(question.get("name"), str) or question["name"].rstrip(".").lower() != hostname.lower() or question.get("type") != record_type:
+            raise ValueError("DNS answer does not match the requested domain")
+        for answer in payload.get("Answer", []):
+            if answer.get("type") in (1, 28):
+                addresses.append(ipaddress.ip_address(answer["data"]))
+    return addresses
+
+
+async def public_target(value):
     try:
         url = urlsplit(value)
         if url.scheme not in {"http", "https"} or not url.hostname or url.username or url.password or url.port not in {None, 80, 443}:
             raise ValueError()
-        addresses = await asyncio.to_thread(socket.getaddrinfo, url.hostname, url.port or 443, type=socket.SOCK_STREAM)
-        if not addresses or any(not ipaddress.ip_address(item[4][0]).is_global for item in addresses):
+        hostname = url.hostname.rstrip(".").encode("idna").decode("ascii")
+        try:
+            literal = ipaddress.ip_address(hostname)
+        except ValueError:
+            literal = None
+            if "." not in hostname or hostname.endswith((".localhost", ".local", ".internal", ".home", ".lan")):
+                raise ValueError()
+        if literal is not None:
+            addresses = [literal]
+        else:
+            resolved = await asyncio.to_thread(socket.getaddrinfo, hostname, url.port or 443, type=socket.SOCK_STREAM)
+            addresses = [ipaddress.ip_address(item[4][0]) for item in resolved]
+            # Synthetic proxy addresses are never used for a connection. Only
+            # this exact pool triggers independent DNS; ordinary private DNS
+            # answers and literal benchmark addresses remain rejected.
+            if addresses and all(address.version == 4 and address in FAKE_DNS_NETWORK for address in addresses):
+                addresses = await doh_addresses(hostname)
+        if not addresses or any(not address.is_global or address.is_multicast or address.is_reserved for address in addresses):
             raise ValueError()
-    except (ValueError, OSError) as error:
+    except httpx.HTTPError as error:
+        raise HTTPException(503, "公网 DNS 校验暂时不可用，请稍后重试；未向未验证地址发起连接。") from error
+    except (ValueError, OSError, KeyError, TypeError) as error:
         raise HTTPException(422, "网页工具只接受不含凭据的公开 HTTP(S) 地址") from error
+    addresses = sorted(set(addresses), key=lambda address: (address.version, int(address)))
+    return url, hostname, addresses
+
+
+async def public_url(value):
+    await public_target(value)
     return value
 
 
 async def web_fetch(url):
     from trafilatura import extract
     for _ in range(4):
-        await public_url(url)
-        async with httpx.AsyncClient(timeout=20, follow_redirects=False, trust_env=True) as client:
-            async with client.stream("GET", url, headers={"User-Agent": "ModelDesk/2.0 research-reader"}) as response:
+        parsed, hostname, addresses = await public_target(url)
+        # Pin the connection to a checked public IP. Host and TLS SNI retain
+        # the original domain, including normal certificate verification.
+        pinned = httpx.URL(url).copy_with(host=str(addresses[0]))
+        host_header = (f"[{hostname}]" if ":" in hostname else hostname) + (f":{parsed.port}" if parsed.port else "")
+        async with httpx.AsyncClient(timeout=20, follow_redirects=False, trust_env=False) as client:
+            async with client.stream("GET", pinned, headers={"User-Agent": "ModelDesk/2.0 research-reader", "Host": host_header},
+                                     extensions={"sni_hostname": hostname}) as response:
                 if response.is_redirect:
                     from urllib.parse import urljoin
                     url = urljoin(url, response.headers.get("location", ""))

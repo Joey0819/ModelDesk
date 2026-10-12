@@ -24,13 +24,22 @@ export function applyEvent(job, event) {
   }
   if (event.type === 'framework_message') {
     next.result = { ...job.result, partial: true, messages: [...(job.result?.messages || []), { role: event.role, model: event.model, round: event.round, content: event.content }] };
+    if (['research', 'finalization', 'finalization_error'].includes(event.phase)) {
+      const { type: _type, seq: _seq, job_id: _job, created_at: _created, ...diagnostic } = event;
+      next.result.format_diagnostics = [...(job.result?.format_diagnostics || []), { ...diagnostic, raw: event.raw ?? event.content }];
+    }
   }
   if (event.type === 'framework_task') {
     const { type: _type, seq: _seq, job_id: _job, created_at: _created, ...task } = event;
-    const tasks = [...(job.result?.tasks || [])];
-    const index = tasks.findIndex((item) => item.id === task.id);
-    if (index < 0) tasks.push(task); else tasks[index] = task;
-    next.result = { ...job.result, partial: true, tasks };
+    if (event.native_event) {
+      // Native callbacks describe worker/task lifecycle, not finished task outputs.
+      next.result = { ...job.result, partial: true, process: 'workforce', workforce_events: [...(job.result?.workforce_events || []), event.native_event] };
+    } else {
+      const tasks = [...(job.result?.tasks || [])];
+      const index = task.id ? tasks.findIndex((item) => item.id === task.id) : -1;
+      if (index < 0) tasks.push(task); else tasks[index] = task;
+      next.result = { ...job.result, partial: true, tasks };
+    }
   }
   if (event.type === 'complete') { next.status = 'complete'; next.result = event.result; }
   if (event.type === 'error') { next.status = 'error'; next.error = event.message; }

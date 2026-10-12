@@ -1,9 +1,12 @@
 import asyncio
+import ipaddress
 import json
 from pathlib import Path
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
+
+import httpx
 
 from fastapi import HTTPException
 
@@ -22,6 +25,89 @@ class PlatformTests(unittest.IsolatedAsyncioTestCase):
     def tearDown(self):
         self.patch.stop()
         self.temp.cleanup()
+
+    async def test_fake_dns_uses_checked_public_addresses_without_accepting_private_targets(self):
+        fake = [(2, 1, 6, "", ("198.18.0.42", 443))]
+        lookup = AsyncMock(return_value=[ipaddress.ip_address("93.184.216.34")])
+        with patch.object(platform.socket, "getaddrinfo", return_value=fake), patch.object(platform, "doh_addresses", lookup):
+            _, host, addresses = await platform.public_target("https://example.com/path")
+            self.assertEqual(host, "example.com")
+            self.assertEqual(str(addresses[0]), "93.184.216.34")
+            lookup.assert_awaited_once_with("example.com")
+            for target in ["http://198.18.0.42", "http://localhost", "http://host.local"]:
+                with self.assertRaises(HTTPException):
+                    await platform.public_target(target)
+            self.assertEqual(lookup.await_count, 1)
+        for answer in [[(2, 1, 6, "", ("10.0.0.1", 443))], fake + [(2, 1, 6, "", ("127.0.0.1", 443))]]:
+            with patch.object(platform.socket, "getaddrinfo", return_value=answer), patch.object(platform, "doh_addresses", lookup):
+                with self.assertRaises(HTTPException):
+                    await platform.public_target("https://example.com/")
+                self.assertEqual(lookup.await_count, 1)
+        lookup.return_value = [ipaddress.ip_address("93.184.216.34"), ipaddress.ip_address("::1")]
+        with patch.object(platform.socket, "getaddrinfo", return_value=fake), patch.object(platform, "doh_addresses", lookup):
+            with self.assertRaises(HTTPException):
+                await platform.public_target("https://example.com/")
+
+    async def test_dns_bootstrap_uses_fixed_verified_endpoint_and_checks_query(self):
+        captured = []
+        def handle(request):
+            captured.append(request)
+            record = 1 if request.url.params["type"] == "A" else 28
+            answer = "93.184.216.34" if record == 1 else "2606:2800:220:1:248:1893:25c8:1946"
+            return httpx.Response(200, json={"Status": 0, "TC": False,
+                "Question": [{"name": "example.com.", "type": record}], "Answer": [{"type": record, "data": answer}]})
+        real_client = httpx.AsyncClient
+        def client(**kwargs):
+            self.assertFalse(kwargs["trust_env"])
+            self.assertFalse(kwargs["follow_redirects"])
+            self.assertNotEqual(kwargs.get("verify"), False)
+            return real_client(transport=httpx.MockTransport(handle), **kwargs)
+        with patch.object(platform.httpx, "AsyncClient", side_effect=client):
+            addresses = await platform.doh_addresses("example.com")
+        self.assertEqual(len(addresses), 2)
+        self.assertTrue(all(address.is_global for address in addresses))
+        self.assertTrue(all(request.url.host == "1.1.1.1" and request.headers["host"] == "cloudflare-dns.com" and request.extensions["sni_hostname"] == "cloudflare-dns.com" for request in captured))
+        bad = httpx.MockTransport(lambda request: httpx.Response(200, json={"Status": 0, "Question": [{"name": "other.example", "type": 1}], "Answer": [{"type": 1, "data": "93.184.216.34"}]}))
+        with patch.object(platform.httpx, "AsyncClient", side_effect=lambda **kwargs: real_client(transport=bad, **kwargs)):
+            with self.assertRaises(ValueError):
+                await platform.doh_addresses("example.com")
+
+    async def test_fetch_pins_ip_with_host_and_sni_and_rejects_private_redirect(self):
+        captured = []
+        def handle(request):
+            captured.append(request)
+            return httpx.Response(302, headers={"location": "http://127.0.0.1/private"})
+        real_client = httpx.AsyncClient
+        def client(**kwargs):
+            self.assertFalse(kwargs["trust_env"])
+            self.assertNotEqual(kwargs.get("verify"), False)
+            return real_client(transport=httpx.MockTransport(handle), **kwargs)
+        public = [(2, 1, 6, "", ("93.184.216.34", 443))]
+        with patch.object(platform.socket, "getaddrinfo", return_value=public), patch.object(platform.httpx, "AsyncClient", side_effect=client):
+            with self.assertRaises(HTTPException):
+                await platform.web_fetch("https://example.com/original")
+        self.assertEqual(len(captured), 1)
+        self.assertEqual(captured[0].url.host, "93.184.216.34")
+        self.assertEqual(captured[0].headers["Host"], "example.com")
+        self.assertEqual(captured[0].extensions["sni_hostname"], "example.com")
+
+    async def test_multicast_and_reserved_nat64_targets_are_never_public_destinations(self):
+        for value in ["http://224.0.0.1", "http://[ff02::1]", "http://[64:ff9b::7f00:1]"]:
+            with self.assertRaises(HTTPException):
+                await platform.public_target(value)
+        fake = [(2, 1, 6, "", ("198.18.0.42", 443))]
+        for address in ["224.0.0.1", "ff02::1", "64:ff9b::7f00:1"]:
+            with patch.object(platform.socket, "getaddrinfo", return_value=fake), patch.object(platform, "doh_addresses", AsyncMock(return_value=[ipaddress.ip_address(address)])):
+                with self.assertRaises(HTTPException):
+                    await platform.public_target("https://example.com/")
+
+    async def test_dns_service_timeout_is_distinct_from_rejected_private_url(self):
+        fake = [(2, 1, 6, "", ("198.18.0.42", 443))]
+        with patch.object(platform.socket, "getaddrinfo", return_value=fake), patch.object(platform, "doh_addresses", AsyncMock(side_effect=httpx.ReadTimeout("fixture"))):
+            with self.assertRaises(HTTPException) as caught:
+                await platform.public_target("https://example.com/")
+        self.assertEqual(caught.exception.status_code, 503)
+        self.assertIn("未验证地址", caught.exception.detail)
 
     async def test_recoverable_resources_persist_without_overwriting_others(self):
         one = self.store.put("prompts", {"name": "科研评审", "content": "核对证据与结论", "tags": ["科研"]})

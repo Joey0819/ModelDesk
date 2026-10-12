@@ -535,6 +535,7 @@ class JobManager:
             job.pop("_sdk_input", None)
             raise
         self.processes[job["id"]] = process
+        succeeded = False
         try:
             self.emit(job, "log", text=f"{job['mode']} 工作进程已启动，角色模型：" + "、".join(job["models"]))
             tail = []
@@ -590,6 +591,7 @@ class JobManager:
                 raise RuntimeError("CAMEL 没有返回对话。")
             if job["mode"] == "crewai" and not result.get("answer"):
                 raise RuntimeError("CrewAI 没有返回最终答案。")
+            succeeded = True
             return result
         finally:
             await self.terminate(process)
@@ -598,7 +600,15 @@ class JobManager:
                     partial = json.loads(output.read_text())
                     if isinstance(partial, dict) and (isinstance(partial.get("messages"), list) or isinstance(partial.get("tasks"), list)):
                         canonical = self.jobs[job["id"]]
-                        if canonical["status"] == "cancelled":
+                        if not succeeded or canonical["status"] == "cancelled":
+                            # A failed native task still contains useful work.
+                            # Preserve it before deleting the private output;
+                            # the parent will retain the actual error status.
+                            partial["partial"] = True
+                            if job["mode"] == "camel_workforce":
+                                for step in partial.get("tasks", []):
+                                    if isinstance(step, dict) and step.get("status") in {"running", "pending"}:
+                                        step["status"] = "interrupted" if step["status"] == "running" else "not_started"
                             canonical["result"] = partial
                             self.emit(canonical, "stage", stage="workflow_partial", data=partial)
                 except (ValueError, OSError):
@@ -648,10 +658,11 @@ manager = JobManager()
 
 
 def export_result(job):
-    """Reconstruct interrupted/cancelled partial results from persisted events."""
+    """Reconstruct only observed partial outputs from persisted events."""
     if job.get("result") is not None:
         return job["result"]
     result = {}
+    native_tasks = {}
     for event in job.get("events", []):
         if event["type"] == "delta":
             responses = result.setdefault("responses", [])
@@ -661,6 +672,8 @@ def export_result(job):
                 responses.append(response)
             response["text"] += event.get("text", "")
         elif event["type"] == "stage":
+            if event.get("stage") == "workflow_partial" and isinstance(event.get("data"), dict):
+                result = copy.deepcopy(event["data"])
             key = {"responses": "stage1", "rankings": "stage2", "synthesis": "stage3"}.get(event["stage"])
             if key:
                 result[key] = event["data"]
@@ -670,6 +683,38 @@ def export_result(job):
             result = event["result"]
         elif event["type"] == "message":
             result.setdefault("messages", []).append({key: value for key, value in event.items() if key not in {"type", "job_id", "seq", "created_at"}})
+        elif event["type"] == "framework_message":
+            result.setdefault("messages", []).append({key: value for key, value in event.items() if key not in {"type", "job_id", "seq", "created_at"}})
+        elif event["type"] == "framework_task":
+            native = event.get("native_event")
+            if isinstance(native, dict):
+                result.setdefault("workforce_events", []).append(copy.deepcopy(native))
+                identifier = native.get("task_id")
+                if not identifier:
+                    continue
+                item = native_tasks.setdefault(identifier, {"id": identifier, "name": identifier})
+                if native.get("description"):
+                    item["description"] = native["description"]
+                if native.get("worker_id"):
+                    item["worker_id"] = native["worker_id"]
+                if native.get("event_type") not in {"task_completed", "task_failed"}:
+                    continue
+                failed = native["event_type"] == "task_failed"
+                item.update(status="failed" if failed else "complete",
+                            output=native.get("error_message" if failed else "result_summary") or "")
+                tasks = result.setdefault("tasks", [])
+                existing = next((task for task in tasks if isinstance(task, dict) and task.get("id") == identifier), None)
+                if existing is None:
+                    tasks.append(copy.deepcopy(item))
+                else:
+                    existing.update(copy.deepcopy(item))
+                if failed:
+                    result["failure"] = {"task_id": identifier, "reason": item["output"], "worker_id": item.get("worker_id")}
+            elif event.get("output"):
+                item = {key: value for key, value in event.items() if key not in {"type", "job_id", "seq", "created_at"}}
+                result.setdefault("tasks", []).append(item)
+    if result and job.get("status") != "complete":
+        result["partial"] = True
     return result
 
 
@@ -754,7 +799,8 @@ def markdown_export(job):
         lines.extend(["## 运行错误", "", job["error"], ""])
     for field, label in [("specified_task", "细化后的任务"), ("planned_task", "规划后的任务"), ("critic", "Critic 选择"),
                          ("planning", "任务规划"), ("routes", "条件路由"), ("memory", "原生记忆来源"),
-                         ("workforce_events", "Workforce 调度记录"), ("worker_roles", "工作者对应关系")]:
+                         ("workforce_events", "Workforce 调度记录"), ("worker_roles", "工作者对应关系"),
+                         ("format_diagnostics", "原生结果格式与收尾")]:
         if result.get(field):
             lines.extend([f"## {label}", "", "```json", json.dumps(result[field], ensure_ascii=False, indent=2), "```", ""])
     if job.get("context_references"):

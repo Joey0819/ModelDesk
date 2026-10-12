@@ -22,3 +22,13 @@
 .modeldesk[data-theme=dark] .code-line.highlighted { background: #5a4830; }
 .modeldesk[data-theme=dark] a { color: #a6b9f1; }
 .modeldesk[data-theme=dark] .theme-toggle { border-color: #354255; }
+.modeldesk[data-theme=dark] .workflow-failure { background: #352c2b; border-color: #67483b; color: #dfc5b6; }
+.modeldesk[data-theme=dark] .workflow-failure header strong { color: #e9b6a4; }
+.modeldesk[data-theme=dark] :is(.workflow-failure header span,.workflow-failure blockquote,.workflow-failure .failure-next-step,.workflow-failure details small,.failure-prepare-note) { color: #baa798; }
+.modeldesk[data-theme=dark] :is(.workflow-failure details,.failure-tool-summary) { border-color: #554339; }
+.modeldesk[data-theme=dark] :is(.workflow-tool-overview,.workflow-tools-empty,.task-full-description) { color: #a2b3cc; }
+.modeldesk[data-theme=dark] .workflow-tool-overview strong { color: #cad6e9; }
+.modeldesk[data-theme=dark] .workflow-iteration > small { color: #a2b3cc; }
+.modeldesk[data-theme=dark] :is(.format-record-note,.format-diagnostic-entry > summary,.format-diagnostic-metadata) { color: #a2b3cc; }
+.modeldesk[data-theme=dark] .format-diagnostic-entry { border-color: #354255; }
+.modeldesk[data-theme=dark] :is(.failed-task-output-label,.task-execution-status.task-status-failed) { color: #e5b2a2; }

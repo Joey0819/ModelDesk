@@ -226,6 +226,43 @@
 .workflow-editor[open] > summary svg { transform: rotate(180deg); }
 .workflow-editor fieldset { border: 0; padding: 16px; margin: 0; }
 .workflow-editor fieldset:disabled { opacity: .65; }
+.workflow-config-block { margin-bottom: 21px; }
+.workflow-config-block .workflow-editor { margin-bottom: 0; }
+.workflow-tool-overview { display: flex; flex-wrap: wrap; gap: 7px 22px; margin: 10px 3px 0; font-size: 11px; line-height: 1.8; color: #697b94; }
+.workflow-tool-overview > span { display: inline-flex; flex-wrap: wrap; gap: 8px; }
+.workflow-tool-overview strong { color: #455c78; font-weight: 550; }
+.workflow-tools-empty { font-size: 11px; line-height: 1.85; color: #77879f; margin: 6px 3px 0; }
+.workflow-failure { background: #fff9f5; border: 1px solid #eddbcf; border-radius: 8px; padding: 18px 20px; margin-bottom: 21px; color: #654b40; }
+.workflow-failure > header { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+.workflow-failure header > div { display: grid; gap: 5px; }
+.workflow-failure header strong { font-size: 14px; font-weight: 600; color: #8d493b; }
+.workflow-failure header span { font-size: 11px; color: #8a7365; }
+.workflow-failure header button { font-size: 11px; white-space: nowrap; }
+.workflow-failure > p { margin: 9px 0; font-size: 12px; line-height: 1.9; }
+.workflow-failure blockquote { border-left: 2px solid #d1ac94; padding-left: 13px; margin: 13px 0; font-size: 12px; line-height: 1.9; color: #83604c; }
+.workflow-failure .failure-next-step { color: #5d6572; }
+.failure-tool-summary { display: flex; flex-wrap: wrap; gap: 6px 17px; padding: 11px 0; border-top: 1px solid #eddfd5; margin-top: 14px; font-size: 11px; line-height: 1.8; }
+.failure-tool-summary > strong { font-weight: 550; }
+.workflow-failure details { border-top: 1px solid #eddfd5; }
+.workflow-failure details > summary { display: flex; flex-wrap: wrap; gap: 8px; cursor: pointer; padding: 10px 0; font-size: 11px; line-height: 1.8; }
+.workflow-failure details > summary small { font-size: 10px; color: #968477; overflow-wrap: anywhere; }
+.workflow-failure details p { margin: 0 0 10px; font-size: 12px; line-height: 1.9; overflow-wrap: anywhere; }
+.workflow-failure pre { font-family: inherit; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 380px; overflow: auto; margin: 0 0 12px; font-size: 11px; line-height: 1.9; }
+.failure-prepare-note { display: block; font-size: 10px; color: #8b7769; margin-top: 8px; line-height: 1.8; }
+.failed-task-output-label { font-size: 11px; color: #ab695a; margin: 0 20px 10px; }
+.task-execution-status.task-status-failed { color: #af665d; }
+.task-full-description { margin: 0 20px 12px; font-size: 11px; line-height: 1.9; color: #7d8fa8; }
+.format-diagnostic-records { margin-top: 18px; }
+.format-record-note { margin: 0; padding: 0 20px 12px; font-size: 11px; color: #7b8da5; line-height: 1.9; }
+.format-diagnostic-entry { border-top: 1px solid #e3e7ef; }
+.format-diagnostic-entry > summary { display: flex; flex-wrap: wrap; gap: 8px 16px; padding: 13px 20px; cursor: pointer; font-size: 11px; color: #667c99; }
+.format-diagnostic-entry > summary strong { font-weight: 550; }
+.format-diagnostic-entry > summary > span { margin-left: 0; font-size: 10px; }
+.format-diagnostic-entry > summary > svg { margin-left: auto; }
+.format-diagnostic-entry[open] > summary > svg { transform: rotate(180deg); }
+.format-diagnostic-metadata { display: flex; flex-wrap: wrap; gap: 6px 17px; padding: 0 20px 12px; font-size: 10px; color: #7b8da5; line-height: 1.8; }
+.format-diagnostic-entry > .output-error { margin: 0 20px 12px; }
+.format-diagnostic-entry > .execution-log { max-height: 380px; margin-top: 0; }
 .workflow-toolbar { display: flex; gap: 9px; align-items: center; margin-bottom: 17px; flex-wrap: wrap; }
 .workflow-toolbar > span { font-size: 9px; color: #a2adc0; margin-right: auto; }
 .workflow-toolbar button, .workflow-agent header button, .workflow-task header button { background: transparent; border: 0; color: #92a1b9; font-size: 9px; padding: 2px 4px; }
@@ -258,6 +295,8 @@
 .workflow-iteration { display: flex !important; align-items: center; gap: 12px; margin-top: 18px; }
 .workflow-iteration span { margin: 0 !important; }
 .workflow-iteration input { width: 57px !important; padding: 4px 7px !important; }
+.workflow-iteration { flex-wrap: wrap; }
+.workflow-iteration > small { font-size: 10px; line-height: 1.8; color: #7d8fa8; }
 .workflow-errors { margin-top: 13px; padding: 10px 12px; border: 1px solid #eee1cc; border-radius: 5px; background: #fffaf1; }
 .workflow-errors p { font-size: 10px; color: #ae9774; margin: 0 0 4px; }
 .workflow-errors p:last-child { margin: 0; }

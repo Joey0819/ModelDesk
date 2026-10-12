@@ -137,6 +137,45 @@ if sys.argv[2]=='cancel': time.sleep(60)
         self.assertEqual(loaded["events"][-1]["type"], "error")
         self.assertIn("服务重启", loaded["error"])
 
+    async def test_failed_native_worker_retains_partial_before_cleanup_and_export(self):
+        configuration = {"agents": [{"id": "researcher", "role": "研究员", "goal": "review", "model": "a"}], "tasks": []}
+        script = """import json,sys
+from pathlib import Path
+partial={'tasks':[{'id':'research','status':'failed','output':'无法核查原帖：未启用联网工具'}], 'messages':[], 'partial':True,
+         'failure':{'task_id':'research','reason':'未启用联网工具'}}
+Path(sys.argv[1]).write_text(json.dumps(partial,ensure_ascii=False))
+print('RuntimeError: 未启用联网工具',flush=True)
+sys.exit(1)
+"""
+        with patch.object(self.manager, "worker_command", side_effect=lambda job, output: [sys.executable, "-u", "-c", script, str(output)]):
+            failed = await self.complete(JobRequest(mode="camel_workforce", prompt="核查原帖", models=["a"], workflow=configuration))
+        self.assertEqual(failed["status"], "error")
+        self.assertTrue(failed["result"]["partial"])
+        self.assertEqual(failed["result"]["tasks"][0]["status"], "failed")
+        self.assertIn("未启用联网工具", workbench.markdown_export(failed))
+        self.assertFalse(any(event["type"] == "complete" for event in failed["events"]))
+        self.assertEqual(failed["events"][-1]["type"], "error")
+        loaded = JobManager(self.manager.directory)
+        loaded.recover()
+        self.assertEqual(loaded.get(failed["id"])["result"], failed["result"])
+        self.assertFalse((self.manager.directory / (failed["id"] + ".output")).exists())
+        self.assertFalse((self.manager.directory / (failed["id"] + ".workflow-input")).exists())
+
+    def test_old_failed_workforce_exports_observed_native_failure_without_final_answer(self):
+        task_id = "native-parent.1"
+        job = {"id": str(uuid.uuid4()), "mode": "camel_workforce", "status": "error", "result": None,
+               "events": [
+                   {"type": "framework_task", "native_event": {"event_type": "task_created", "task_id": task_id, "description": "核查原帖"}},
+                   {"type": "framework_task", "native_event": {"event_type": "task_failed", "task_id": task_id, "worker_id": "native-worker", "error_message": "本次没有联网工具，未核实"}},
+                   {"type": "error", "message": "原生任务未完成"}]}
+        recovered = workbench.export_result(job)
+        self.assertTrue(recovered["partial"])
+        self.assertEqual(recovered["tasks"][0]["description"], "核查原帖")
+        self.assertEqual(recovered["tasks"][0]["status"], "failed")
+        self.assertEqual(recovered["failure"]["reason"], "本次没有联网工具，未核实")
+        self.assertNotIn("answer", recovered)
+        self.assertIsNone(job["result"])
+
     async def test_truncated_stream_does_not_report_complete_answer(self):
         real_client = httpx.AsyncClient
         partial = {"choices": [{"delta": {"content": "unfinished"}, "finish_reason": None}]}
@@ -214,6 +253,12 @@ if sys.argv[2]=='cancel': time.sleep(60)
         self.assertIn("## 审稿人", camel)
         self.assertIn("reviewer-question", camel)
         self.assertIn("researcher-reply", camel)
+        formatted = workbench.markdown_export({**base, "mode": "camel_workforce", "status": "error", "result": {
+            "tasks": [], "answer": "", "partial": True,
+            "format_diagnostics": [{"phase": "research", "raw": "已查到的原始证据", "finish_reasons": ["tool_calls"]}]}})
+        self.assertIn("原生结果格式与收尾", formatted)
+        self.assertIn("已查到的原始证据", formatted)
+        self.assertIn("未完整完成", formatted)
         crew = workbench.markdown_export({**base, "mode": "crewai", "result": {"tasks": ["draft-task", "review-task"], "answer": "final-answer"}})
         for text in ["draft-task", "review-task", "final-answer"]:
             self.assertIn(text, crew)

@@ -1,6 +1,6 @@
 # ModelDesk 统一工作台
 
-ModelDesk 2.0.0：一个页面使用已有 ChatGPT 与 Google / Antigravity 登录，运行并排聊天、Council、CAMEL、CrewAI 和 MultiBot Chat 式接力群聊，并添加本地项目进行真实代码审查。网页地址保持 http://localhost:5173/，当前电脑安装入口为 `/Applications/ModelDesk.app`，构建产物位于相邻目录 `../llm-tools/releases/ModelDesk.app`。
+ModelDesk 2.0.1：一个页面使用已有 ChatGPT 与 Google / Antigravity 登录，运行并排聊天、Council、CAMEL、CrewAI 和 MultiBot Chat 式接力群聊，并添加本地项目进行真实代码审查。网页地址保持 http://localhost:5173/，当前电脑安装入口为 `/Applications/ModelDesk.app`，构建产物位于相邻目录 `../llm-tools/releases/ModelDesk.app`。
 
 ## 多智能体平台
 
@@ -16,6 +16,22 @@ ModelDesk 2.0.0：一个页面使用已有 ChatGPT 与 Google / Antigravity 登�
 4. 运行中可停止任务，从历史打开或导出 Markdown / JSON。中断的框架任务可展开运行记录，完整结果是否生成会明确显示。
 
 多模型聊天和群聊延续同一话题上下文，可设置角色、系统提示与上下文数量；Council、CAMEL 与 CrewAI 每次输入启动一项独立任务。框架角色可启用数学计算、文本统计工具，运行记录显示实际调用结果；模板保存在本机。更广泛的框架 API 覆盖情况见 [五项目能力边界](docs/CAPABILITIES.md)。
+
+## Workforce 失败与重试
+
+Workforce 规划依据各角色实际启用的工具与任务要求。角色缺少所需能力、工具拒绝访问或原生任务返回失败时，任务仍显示失败；空的最终答复不会被当作成功。已产生的步骤、部分输出和原生失败原因保留在历史中，刷新、服务重启以及 Markdown/JSON 导出可以继续复核；既有历史也可从保存的原生事件恢复失败信息。
+
+工具阶段结束后，如果结果缺少有效的 `TaskResult` 格式，可由同一模型进行一次有范围限制的结果整理：只使用实际任务、近期对话与已返回的工具证据，关闭工具调用，保留证据截断标记。整理结果必须通过严格结构校验；格式仍无效、输出被截断或关键要求未满足时继续报告失败，并保留 `structured_output_invalid` 等诊断及原始输出。这个阶段整理已有证据，不重新执行研究任务。
+
+临时传输问题由 SDK 最多重试两次，不重放已经执行的角色或工具流程。任务本身的失败不会因重试而改成成功。可查看各角色工具、编辑任务与配置后创建新任务；系统不会自动开启工具或扩大资料授权。工具可用性检查和失败提示帮助定位问题，不能保证所有任务或外部服务都能完成。
+
+网页工具兼容代理把公开域名解析为 `198.18.0.0/15` 假地址的情况：仅当域名的本机解析结果全部落入该范围时，才通过固定 Cloudflare DoH 地址重新查询 A/AAAA，并要求返回地址全部为公网地址。实际网页连接固定到已检查的 IP，同时保留原域名 Host、TLS SNI 和证书验证，每次重定向重新校验；本机代理设置保持原状。[Cloudflare DoH JSON](https://developers.cloudflare.com/1.1.1.1/encryption/dns-over-https/make-api-requests/dns-json/)、[HTTPX SNI 扩展](https://www.python-httpx.org/advanced/extensions/)
+
+当前已通过 13 项工作进程测试、31 项界面状态与配置测试及 14 项公开网页目标测试（含 5 项新增回归）。原始 Reddit 来源核查在 15 次实际网页调用后仍未找到符合所述日期与评分的原帖证据；Reddit 的 JavaScript/登录限制也影响访问。页面以 `source_unverified` 诊断展示该任务，原始失败状态、完整输出及工具记录已保存，其结构化结果已成功解析，失败不再被误述为工具权限或结果格式问题。
+
+另一个明确要求「原创教学示例、不得声称已核实 Reddit 原帖」的原生管线已完成：GPT `gpt-6.1-sol` 提纲/起草，Gemini `gemini-3.8-flash-high` 审稿，三个步骤均通过严格 `TaskResult` 校验，最终正文约 3300 字符。这个成功结果证明教学生成与审稿流程可运行；原始 Reddit 来源仍未核实。两项实际验收分别保存在 `data/workforce-recovery-validation.json` 与 `data/workforce-recovery-validation-source-unverified.json`。
+
+2.0.1 应用包已重建并安装，签名校验通过；最终发布流程再次重建生产页面和应用包，并核对安装包与发布包的一致性。
 
 ## 添加项目与审查代码
 

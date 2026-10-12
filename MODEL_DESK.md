@@ -64,7 +64,7 @@ Workforce 规划依据各角色实际启用的工具与任务要求。角色缺�
 
 自动检查覆盖后端 70 项、前端状态与真实组件渲染 49 项、桌面导航/下载策略 11 项，另检查 lint 与生产构建。浏览器真实验收中，GPT `gpt-6.1-sol` 与 Gemini `gemini-3.8-flash-high` 从聊天接续到 CrewAI 与 Council，均在未重发代号的后续任务中正确沿用“杉桥7392”；Council 全部三个阶段完成且没有部分失败。新建独立会话的两模型均回复“没有历史代号”。项目评审实际引用同项目已完成记录，新快照将旧快照标注为已变化，返回两条带准确行号的发现。复制经过剪贴板回读，单份成果下载端点返回正确附件正文；设置刷新、模板预填、项目搜索、成果放大和窄窗口布局已通过实际界面验证。证据见 `data/ux-validation.json`、`data/ux-council-final.json` 与相邻 `llm-tools/reports/modeldesk-2.1-*.jpg`。
 
-2.1.0 实际应用包已重建并安装到 `/Applications/ModelDesk.app`，版本、签名与 ASAR 一致性检查通过。当前 Mac 锁屏阻止原生窗口及保存对话框操作，这两项尚未实测；不能把端点附件响应当作原生文件已保存。Council 曾遇到上游 TLS 超时，现已提供有限传输重试与各模型诊断；一次成功重试不表示上游网络问题已永久消除。
+2.1.0 实际应用包已重建并安装到 `/Applications/ModelDesk.app`，版本、签名与 ASAR 一致性检查通过。2026-10-13 解锁后，已在已安装桌面版实际打开窗口、恢复 Council 历史成果，并点击单份 Markdown 导出弹出“保存 ModelDesk 导出”原生对话框。随后 macOS ScreenCaptureKit 返回 invalid parameter（-3812），阻止继续读取与操作保存窗口；当前已请求用户点击保存，尚未核验文件落盘。不能把对话框弹出或端点响应当作文件保存成功。实测状态记录于 `data/ux-native-validation.json`。Council 曾遇到上游 TLS 超时，现已提供有限传输重试与各模型诊断；一次成功重试不表示上游网络问题已永久消除。
 
 ## 界面参考
 

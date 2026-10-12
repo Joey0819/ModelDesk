@@ -1,0 +1,128 @@
+/* A conversation keeps its own scroll; documents keep a separate reading pane. */
+.modeldesk { --shell-paper: #fff; --shell-wash: #f5f7fb; --shell-soft: #eef2f8; font-size: 14px; }
+.modeldesk[data-theme=dark] { --shell-paper: #232e3d; --shell-wash: #1b2330; --shell-soft: #2c3a4e; }
+.modeldesk .sidebar { width: 264px; flex-basis: 264px; padding: 18px 14px 12px; min-height: 0; }
+.modeldesk .brand { padding: 0 9px 17px; }
+.modeldesk .brand strong { font-size: 20px; }
+.modeldesk .brand div > span { font-size: 11px; letter-spacing: 0; }
+.modeldesk .sidebar-navigation-tabs { margin-bottom: 12px; flex-shrink: 0; }
+.modeldesk .sidebar-navigation-tabs button { font-size: 12px; padding: 9px 3px; }
+.modeldesk .new-task { min-height: 38px; height: 38px; margin-bottom: 8px; flex-shrink: 0; font-size: 13px; }
+.modeldesk .projects-entry { min-height: 42px; padding: 9px 11px; margin-bottom: 8px; flex-shrink: 0; }
+.modeldesk .projects-entry strong { font-size: 13px; }
+.modeldesk .projects-entry small { font-size: 11px; }
+.modeldesk .sidebar-primary-navigation { min-height: 0; flex: 0 0 auto; max-height: 28vh; overflow-y: auto; overflow-x: hidden; scrollbar-width: thin; }
+.modeldesk .mode-navigation { gap: 2px; }
+.modeldesk .mode-navigation button { padding: 8px 10px; min-height: 36px; }
+.modeldesk .mode-navigation button strong { font-size: 13px; font-weight: 500; }
+.more-modes > button { width: 100%; color: var(--muted); }
+.more-modes > button > svg:last-child { margin-left: auto; }
+.mode-switcher { padding: 5px 0 5px 8px; }
+.modeldesk .mode-switcher button { width: 100%; font-size: 12px; padding: 9px 5px; }
+.mode-switcher small { display: none !important; }
+.advanced-resource-navigation > summary { cursor: pointer; display: flex; align-items: center; gap: 9px; padding: 10px; font-size: 12px; color: var(--muted); list-style: none; }
+.advanced-resource-navigation > summary > svg:last-child { margin-left: auto; }
+.modeldesk .platform-navigation button { padding: 10px; font-size: 13px; }
+.modeldesk .history-heading { padding: 17px 9px 8px; flex-shrink: 0; font-size: 12px; }
+.history-search { display: flex; align-items: center; gap: 7px; border: 1px solid var(--line); border-radius: 6px; background: var(--shell-paper); padding: 0 9px; color: var(--muted); margin: 0 2px 8px; flex-shrink: 0; }
+.history-search input { width: 100%; height: 31px; min-width: 0; border: 0; background: transparent; color: var(--ink); font-size: 12px; outline: none; }
+.modeldesk .history-list { flex: 1 1 160px; min-height: 90px; }
+.modeldesk .history-item { padding: 10px 9px; margin-bottom: 5px; }
+.modeldesk .history-title { white-space: normal; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-height: 1.55; font-size: 13px; color: var(--ink); overflow-wrap: anywhere; }
+.modeldesk .history-meta { font-size: 10px; margin-top: 7px; }
+.history-mode { display: block; font-size: 10px; color: var(--muted); margin-top: 4px; }
+.modeldesk .sidebar-footer { margin-top: 8px; padding: 9px 8px 0; flex-shrink: 0; }
+.modeldesk .sidebar-footer > span { display: none; }
+.modeldesk .sidebar-footer .theme-toggle { margin: 0 0 6px; padding: 0 0 6px; }
+.modeldesk .theme-toggle > span, .modeldesk .sidebar-footer button { font-size: 11px; }
+.modeldesk .gateway-indicator { margin: 5px 0 8px; }
+.workspace-shell { display: flex; flex: 1; min-width: 0; min-height: 0; overflow: hidden; }
+.workspace-shell > .workspace { width: 100%; min-height: 0; }
+.workspace-shell.artifacts-visible > .workspace { width: calc(100% - var(--artifact-width)); }
+.modeldesk .workspace-header { height: 68px; flex-basis: 68px; padding: 0 24px; gap: 14px; }
+.modeldesk .header-title { min-width: 0; gap: 10px; flex: 1; }
+.modeldesk .header-title > div { min-width: 0; }
+.modeldesk .header-title h1 { font-size: 17px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 490px; }
+.modeldesk .header-title div > span { font-size: 11px; margin-top: 2px; }
+.modeldesk .header-actions { gap: 7px; flex-shrink: 0; }
+.modeldesk .header-actions .account-toggle, .modeldesk .header-actions > .subtle-button:not([aria-expanded]), .modeldesk .header-actions .export-control { display: none; }
+.modeldesk .header-actions .subtle-button { font-size: 12px; height: 33px; }
+.modeldesk .subtle-button.selected { color: var(--accent); background: var(--shell-soft); }
+.context-toolbar { display: flex; align-items: center; gap: 12px; flex: 0 0 auto; min-height: 44px; padding: 7px 24px; border-bottom: 1px solid var(--line); background: var(--shell-paper); }
+.conversation-memory { display: flex; gap: 6px; align-items: center; font-size: 12px; color: var(--ink); white-space: nowrap; cursor: pointer; }
+.conversation-memory input { width: 13px; height: 13px; accent-color: var(--accent); }
+.conversation-memory > svg { color: var(--jade); }
+.conversation-turns { color: var(--muted); font-size: 11px; white-space: nowrap; }
+.context-source-trigger, .current-models { display: flex; align-items: center; gap: 6px; background: none; border: 0; color: var(--muted); font-size: 12px; padding: 4px 0; white-space: nowrap; }
+.context-source-trigger { margin-left: auto; }
+.context-source-trigger b { background: var(--shell-soft); padding: 0 4px; border-radius: 3px; font-size: 10px; }
+.workbench-settings { flex: 0 0 auto; max-height: min(52vh, 500px); overflow-y: auto; background: var(--shell-paper); border-bottom: 1px solid var(--line); padding: 12px 24px; scrollbar-width: thin; }
+.settings-heading { display: flex; gap: 10px; align-items: center; padding-bottom: 8px; }
+.settings-heading strong { font-size: 13px; }
+.settings-heading > span { color: var(--muted); font-size: 11px; }
+.settings-heading > button { margin-left: auto; }
+.modeldesk .workbench-settings .configuration-bar { padding: 8px 0 12px; flex-wrap: wrap; min-height: 0; border: 0; background: none; }
+.modeldesk .workbench-settings .context-attachments, .modeldesk .workbench-settings .tool-settings, .modeldesk .workbench-settings .workflow-editor { margin: 7px 0; }
+.modeldesk .workbench-settings .workflow-tool-overview { font-size: 11px; }
+.modeldesk .work-surface { padding: 24px clamp(20px, 3vw, 44px) 30px; scroll-behavior: smooth; overflow-x: hidden; }
+.modeldesk .job-detail { max-width: 900px; margin: 0 auto; }
+.modeldesk .prompt-text .markdown { font-size: 14px; color: var(--ink); line-height: 1.8; }
+.prompt-actions { display: flex; align-items: center; gap: 8px; margin-top: 9px; }
+.prompt-actions .subtle-button { font-size: 11px; height: 27px; border: 0; background: transparent; color: var(--muted); padding: 0 5px; }
+.modeldesk .markdown { font-size: 14px; line-height: 1.85; overflow-wrap: anywhere; }
+.conversation-previous { max-width: 900px; margin: 0 auto 22px; }
+.previous-turn { border-bottom: 1px solid var(--line); margin-bottom: 10px; padding: 10px 0; }
+.previous-turn > summary { display: flex; align-items: center; gap: 9px; cursor: pointer; color: var(--muted); list-style: none; }
+.previous-turn > summary > span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; color: var(--ink); }
+.previous-turn > summary > small { font-size: 10px; white-space: nowrap; }
+.previous-turn-body { padding-top: 12px; }
+.modeldesk .composer-wrap { padding: 8px 20px 12px; flex-shrink: 0; background: var(--shell-wash); }
+.modeldesk .composer { max-width: 900px; margin: auto; box-shadow: none; border-color: var(--line); }
+.modeldesk .composer textarea { font-size: 14px; line-height: 1.7; min-height: 74px; max-height: 200px; padding: 13px 15px 5px; }
+.modeldesk .composer-footer { padding: 8px 14px 12px; }
+.modeldesk .composer-footer > span { font-size: 10px; }
+.modeldesk .composer-note { max-width: 900px; margin: 8px auto 0; display: flex; align-items: center; gap: 14px; font-size: 10px; }
+.composer-note > button { border: 0; background: none; font-size: 10px; color: var(--muted); padding: 0; }
+.composer-note > button:first-of-type { margin-left: auto; }
+.artifact-dock { flex: 0 0 var(--artifact-width); width: var(--artifact-width); min-width: 0; min-height: 0; position: relative; }
+.artifact-resizer { position: absolute; left: -4px; top: 0; bottom: 0; width: 8px; z-index: 8; cursor: col-resize; touch-action: none; }
+.artifact-resizer:hover, .artifact-resizer:focus-visible { background: #496fce40; outline: none; }
+.modeldesk .empty-workspace h2 { font-size: 25px; text-align: center; }
+.modeldesk .empty-workspace > p, .modeldesk .example-prompt { font-size: 14px; }
+.modeldesk .account-panel { margin: 12px 24px 0; }
+.modeldesk button:focus-visible, .modeldesk summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+@media (max-width: 1180px) {
+  .workspace-shell.artifacts-visible > .workspace { width: 100%; }
+  .artifact-dock { display: none; }
+  .mobile-artifacts-open .artifact-dock { display: block; position: fixed; right: 0; top: 0; bottom: 0; width: min(92vw, 540px); z-index: 35; box-shadow: -20px 0 80px #18233325; }
+  .artifact-resizer { display: none; }
+}
+@media (max-width: 900px) {
+  .modeldesk .workspace-header { padding: 0 18px; }
+  .context-toolbar { padding: 7px 18px; gap: 8px; }
+  .conversation-turns { display: none; }
+  .modeldesk .sidebar { width: 264px; }
+}
+@media (max-width: 700px) {
+  .modeldesk .workspace-header { height: 64px; flex-basis: 64px; padding: 0 12px; }
+  .modeldesk .mode-header-icon { display: none; }
+  .modeldesk .header-title h1 { font-size: 15px; max-width: 42vw; }
+  .modeldesk .header-actions .subtle-button { font-size: 11px; padding: 0 7px; }
+  .modeldesk .work-surface { padding: 20px 14px; }
+  .context-toolbar { padding: 6px 12px; }
+  .current-models { display: none; }
+  .conversation-memory { font-size: 11px; }
+  .modeldesk .composer-wrap { padding: 7px 10px 10px; }
+  .modeldesk .composer-footer > span { font-size: 9px; max-width: 58%; }
+  .modeldesk .workbench-settings { padding: 10px 14px; max-height: 52vh; }
+  .settings-heading > span { display: none; }
+}
+@media (prefers-reduced-motion: reduce) { .modeldesk .work-surface { scroll-behavior: auto; } }
+
+.quick-modes { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 3px; }
+.modeldesk .quick-modes button { justify-content: center; padding: 8px 4px; gap: 5px; }
+.modeldesk .quick-modes button strong { font-size: 12px; }
+.modeldesk .sidebar .brand { padding-bottom: 13px; }
+.modeldesk .sidebar-footer .theme-toggle { border: 0; padding: 0; }
+.modeldesk .history-mode { display: none; }
+.modeldesk .history-item { padding: 9px; }

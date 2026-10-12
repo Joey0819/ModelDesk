@@ -184,3 +184,155 @@
 @media (max-width: 1200px) { .project-list { width: 170px; } .project-content { padding-left: 22px; padding-right: 22px; } .review-engine-options { grid-template-columns: repeat(2, minmax(0, 1fr)); } .project-heading { align-items: start; } .repository-state { flex-wrap: wrap; max-width: 160px; justify-content: end; } }
 @media (max-width: 1000px) { .project-layout { flex-direction: column; } .project-list { width: auto; border-right: 0; border-bottom: 1px solid #e3e7ef; padding: 8px 18px; display: flex; align-items: center; gap: 8px; overflow-x: auto; flex-shrink: 0; } .project-list-heading, .project-list-empty, .project-list-add { display: none; } .project-list-item { width: auto; min-width: 140px; margin: 0; padding: 8px; } .project-list-item small, .project-list-item em { display: none; } .project-list-item strong { font-size: 11px; white-space: nowrap; } .project-content { padding-top: 22px; } }
 @media (max-width: 520px) { .project-content { padding: 20px 17px 30px; } .project-heading { flex-direction: column; gap: 10px; } .repository-state { max-width: none; } .project-heading h2 { font-size: 17px; } .review-scope-panel, .review-engine-panel, .snapshot-manifest { padding: 16px; } .scope-options button { padding: 6px 9px; font-size: 9px; } .scope-preview-action { align-items: start; } .scope-preview-action > span { max-width: 110px; } .snapshot-manifest > header { flex-wrap: wrap; } .coverage-summary { gap: 10px; font-size: 9px; } .code-excerpt-label { flex-wrap: wrap; gap: 4px; } .review-submit-bar { align-items: start; } .review-submit-bar > div { max-width: 170px; } .review-model-chooser label { padding: 5px; font-size: 9px; } .selected-review > header { align-items: start; flex-direction: column; } .review-result-tabs { gap: 16px; } .review-result-tabs button { font-size: 10px; } .code-finding { padding: 16px; } .finding-location { flex-wrap: wrap; } .finding-location > span { margin-left: 0; } .project-add-modal { padding: 20px; } .project-path-input { flex-direction: column; } .project-path-input button { height: 31px; justify-content: center; } .unconfirmed-reviews summary span { display: block; margin-left: 0; margin-top: 3px; } }
+
+/* The project list stays readable while the selected project owns the work area. */
+.project-list { width: 280px; padding: 20px 16px; }
+.project-list-heading { padding: 0 1px 13px; }
+.project-list-heading strong { font-size: 13px; font-weight: 600; color: #516581; }
+.project-list-heading strong > span { margin-left: 5px; color: #8999b0; font-weight: 400; }
+.project-list-search { width: 100%; min-width: 0; padding: 10px 11px; border: 1px solid #dce4f0; border-radius: 7px; background: #fff; color: #4c617d; font-size: 12px; margin-bottom: 14px; }
+.project-list-item { gap: 11px; padding: 14px 11px; margin-bottom: 5px; border-radius: 8px; }
+.project-list-item > span:not(.nav-running) { flex: 1; min-width: 0; }
+.project-list-item strong { color: #405875; font-size: 14px; font-weight: 550; line-height: 1.6; overflow-wrap: anywhere; }
+.project-list-item small { color: #72829a; font-size: 11px; line-height: 1.6; margin-top: 4px; }
+.project-list-item em { font-size: 11px; color: #7d8ea7; margin-top: 7px; }
+.project-list-item.selected { background: #eaf1fd; }
+.project-list-item.selected strong, .project-list-item.selected > svg { color: #3c64a5; }
+.project-list-item:hover { background: #edf2fb; }
+.project-list-add { color: #5b759d; font-size: 12px; padding: 11px; }
+.project-list-empty { color: #72849d; font-size: 12px; line-height: 1.8; }
+.project-content { padding: 27px 32px 40px; }
+.project-content > .project-heading, .project-content > .project-view-tabs, .project-content > .project-progress-steps, .project-content > .review-scope-panel, .project-content > .review-engine-panel, .project-content > .project-snapshot-preview, .project-content > .project-empty-snapshot, .project-content > .project-management-options, .project-content > .project-review-history { max-width: 1000px; margin-left: auto; margin-right: auto; }
+.project-heading { gap: 20px; align-items: flex-start; }
+.project-heading > div:first-child { min-width: 0; flex: 1; }
+.project-heading h2 { font-size: 24px; color: #30455f; font-weight: 600; line-height: 1.5; overflow-wrap: anywhere; }
+.project-heading p { font-size: 12px; color: #78879b; line-height: 1.7; }
+.repository-state { font-size: 12px; color: #6f8098; max-width: 230px; flex-wrap: wrap; justify-content: end; }
+.repository-state code { font-size: 11px; color: #6f8098; }
+.project-view-tabs { gap: 22px; margin-top: 20px; margin-bottom: 21px; }
+.project-view-tabs > button { font-size: 14px; color: #76879e; padding: 13px 2px; }
+.project-view-tabs button > span { font-size: 12px; }
+.project-view-tabs .new-review-link { font-size: 12px; }
+.project-progress-steps { display: flex; align-items: center; gap: 18px; list-style: none; padding: 0 0 19px; margin-top: 0; color: #8391a6; }
+.project-progress-steps li { display: flex; align-items: center; gap: 7px; font-size: 12px; }
+.project-progress-steps li + li::before { content: ''; width: 22px; height: 1px; background: #dce4f0; margin-right: 10px; }
+.project-progress-steps .done { color: #5f887b; }
+.project-progress-steps .current { color: #496fce; }
+.step-marker { display: grid; place-items: center; width: 20px; height: 20px; border: 1px solid #dce4f0; border-radius: 50%; font-size: 11px; }
+.current .step-marker { border-color: #b1c5ee; background: #edf3ff; }
+.review-scope-panel, .review-engine-panel { padding: 24px; border-color: #dce4f0; border-radius: 10px; margin-bottom: 18px; }
+.review-scope-panel h3, .review-engine-panel h3 { font-size: 17px; font-weight: 600; color: #314961; margin-bottom: 6px; }
+.review-scope-panel header p, .review-engine-panel header p { font-size: 13px; color: #738399; line-height: 1.7; }
+.review-scope-select { display: flex; align-items: center; gap: 18px; font-size: 13px; color: #61758f; }
+.review-scope-select select { flex: 1; max-width: 390px; border: 1px solid #dbe4f0; border-radius: 7px; color: #425b7b; background: #fbfcff; font-size: 13px; padding: 10px 12px; }
+.scope-description { font-size: 12px; color: #74859c; line-height: 1.8; margin: 10px 0 20px; }
+.scope-preview-action { gap: 13px; }
+.scope-preview-action > span { font-size: 12px; color: #7e8ba0; line-height: 1.7; }
+.review-ready-summary { display: flex; align-items: center; gap: 13px; background: #f5f8fd; padding: 14px 16px; border-radius: 7px; margin-bottom: 19px; color: #6282b2; }
+.review-ready-summary > div { min-width: 0; }
+.review-ready-summary strong { display: block; color: #405d83; font-size: 14px; font-weight: 550; }
+.review-ready-summary span { display: block; color: #75869d; font-size: 12px; margin-top: 5px; overflow-wrap: anywhere; }
+.project-snapshot-preview { border: 1px solid #d5e1f3; background: #f8faff; border-radius: 9px; margin: 0 0 18px; padding: 0 18px; }
+.project-snapshot-preview > summary { display: flex; align-items: center; gap: 12px; cursor: pointer; list-style: none; padding: 17px 0; color: #6983b0; }
+.project-snapshot-preview > summary::-webkit-details-marker { display: none; }
+.project-snapshot-preview summary > span:first-of-type { flex: 1; min-width: 0; }
+.project-snapshot-preview summary strong { display: block; color: #435f85; font-size: 14px; font-weight: 550; }
+.project-snapshot-preview summary small { display: block; font-size: 12px; color: #768ba8; margin-top: 5px; line-height: 1.7; }
+.snapshot-preview-link { font-size: 12px; }
+.project-snapshot-preview[open] > summary > svg:last-child { transform: rotate(180deg); }
+.project-snapshot-preview .snapshot-manifest { margin-bottom: 18px; }
+.project-empty-snapshot { padding: 20px; border: 1px solid #e7d9be; background: #fffcf5; border-radius: 8px; margin-bottom: 18px; }
+.project-empty-snapshot strong { font-size: 14px; color: #806746; }
+.project-empty-snapshot p { font-size: 13px; color: #8b795f; line-height: 1.8; margin: 8px 0 14px; }
+.review-advanced-options { border-top: 1px solid #e4eaf3; margin-top: 19px; padding-top: 15px; }
+.review-advanced-options > summary, .project-management-options > summary { display: flex; align-items: center; justify-content: space-between; gap: 10px; color: #6d819d; font-size: 13px; cursor: pointer; list-style: none; }
+.review-advanced-options > summary::-webkit-details-marker, .project-management-options > summary::-webkit-details-marker { display: none; }
+.review-advanced-options[open] > summary, .project-management-options[open] > summary { margin-bottom: 17px; }
+.review-advanced-options[open] > summary > svg, .project-management-options[open] > summary > svg { transform: rotate(180deg); }
+.review-engine-options strong { font-size: 13px; }
+.review-engine-options span { font-size: 11px; line-height: 1.7; }
+.review-model-chooser > strong, .review-model-chooser label { font-size: 12px; }
+.review-model-chooser small, .more-review-models > summary, .review-model-filter { font-size: 11px; }
+.review-model-chooser input { width: 13px; height: 13px; }
+.review-prompt-label > span { font-size: 13px; color: #6c809c; margin-bottom: 9px; }
+.review-prompt-label textarea { font-size: 13px; color: #4d637f; line-height: 1.8; min-height: 78px; }
+.review-selection-warning { font-size: 12px; color: #957846; line-height: 1.8; }
+.review-submit-bar { flex-wrap: wrap; }
+.review-submit-bar strong { font-size: 12px; color: #617995; }
+.review-submit-bar span { font-size: 12px; color: #7c8da4; line-height: 1.7; }
+.project-management-options { border-top: 1px solid #dce4f0; margin-top: 24px; padding-top: 17px; }
+.project-registration-actions { margin-left: 0; }
+.project-registration-actions .subtle-button { height: 34px; font-size: 12px; padding: 0 12px; }
+.repository-changes > strong { font-size: 12px; color: #7a8ba4; }
+.repository-changes pre { font-size: 12px; color: #687b94; }
+.project-review-list { display: flex; flex-direction: column; gap: 0; border: 1px solid #dde5f1; border-radius: 8px; padding: 0; overflow: hidden; }
+.project-review-list > button { min-width: 0; width: 100%; border: 0; border-top: 1px solid #e2e9f2; border-radius: 0; padding: 14px 17px; }
+.project-review-list > button:first-child { border-top: 0; }
+.project-review-list strong { font-size: 13px; line-height: 1.7; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.project-review-list button > span, .project-review-list small { font-size: 12px; }
+.selected-review > header { flex-wrap: wrap; }
+.selected-review header > div:first-child > strong { font-size: 17px; }
+.selected-review header > div:first-child > span { font-size: 12px; }
+.selected-review header > div:last-child { flex-wrap: wrap; }
+.review-result-tabs button { font-size: 13px; }
+.review-evidence-note, .review-coverage-note, .review-no-findings p { font-size: 12px; color: #71859d; }
+.code-finding h3 { font-size: 16px; line-height: 1.6; }
+.finding-location, .finding-evidence pre, .code-excerpt pre { font-size: 12px; }
+.finding-evidence > strong, .finding-suggestion > strong, .code-finding footer { font-size: 12px; }
+.project-empty h2 { color: #344d6c; font-size: 24px; }
+.project-empty p { color: #72859e; font-size: 14px; line-height: 1.8; margin-bottom: 22px; }
+.project-empty small { font-size: 12px; color: #8796ab; }
+.project-start-steps { display: flex; gap: 20px; list-style: none; padding: 0; margin: 0 0 30px; }
+.project-start-steps li { display: flex; align-items: center; gap: 8px; color: #6980a1; font-size: 13px; }
+.project-start-steps li > span { display: grid; place-items: center; width: 22px; height: 22px; border: 1px solid #cfddf0; border-radius: 50%; font-size: 11px; }
+.project-add-modal { max-height: calc(100dvh - 40px); overflow-y: auto; }
+.project-add-modal h2 { font-size: 20px; }
+.project-add-modal header p, .project-add-modal label > span, .directory-picker-note { font-size: 13px; color: #71839c; line-height: 1.8; }
+.project-add-modal input { font-size: 14px; }
+.project-workspace button:focus-visible, .project-workspace summary:focus-visible, .project-workspace input:focus-visible, .project-workspace select:focus-visible { outline: 2px solid #496fce; outline-offset: 3px; }
+@media (max-width: 1200px) { .project-list { width: 245px; } .project-content { padding: 24px; } .review-engine-options { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 1000px) {
+  .project-layout { flex-direction: column; }
+  .project-list { display: block; width: auto; border-right: 0; border-bottom: 1px solid #dde5f1; padding: 14px 22px; overflow: hidden; }
+  .project-list-heading { display: flex; padding: 0 0 8px; }
+  .project-list-search { margin-bottom: 7px; padding: 8px 11px; }
+  .project-list-entries { display: flex; gap: 8px; overflow-x: auto; }
+  .project-list-item { width: 240px; min-width: 240px; padding: 10px; margin: 0; }
+  .project-list-item strong { font-size: 13px; white-space: normal; line-height: 1.5; }
+  .project-list-item small { display: block; font-size: 11px; }
+  .project-list-item em { display: none; }
+  .project-list-add { display: none; }
+  .project-list-empty { display: block; padding: 5px 0; margin: 0; }
+  .project-content { padding-top: 23px; }
+  .project-heading { flex-direction: row; }
+}
+@media (max-width: 600px) {
+  .project-list { padding: 12px 17px; }
+  .project-list-heading { display: none; }
+  .project-list-item { width: 210px; min-width: 210px; }
+  .project-content { padding: 20px 17px 30px; }
+  .project-heading { flex-direction: column; gap: 9px; }
+  .project-heading h2 { font-size: 21px; }
+  .repository-state { justify-content: start; max-width: none; }
+  .review-scope-panel, .review-engine-panel { padding: 19px; }
+  .project-progress-steps { gap: 9px; }
+  .project-progress-steps li { font-size: 11px; gap: 5px; }
+  .project-progress-steps li + li::before { width: 8px; margin-right: 3px; }
+  .scope-preview-action { flex-wrap: wrap; }
+  .scope-preview-action > button { width: 100%; justify-content: center; }
+  .snapshot-preview-link { display: none; }
+  .project-start-steps { gap: 11px; }
+  .project-start-steps li { font-size: 12px; }
+}
+
+.modeldesk[data-theme=dark] .project-workspace :is(.project-snapshot-preview,.review-ready-summary,.project-review-list > button) { background: #243246; border-color: #3b4d68; }
+.modeldesk[data-theme=dark] .project-workspace :is(.project-list-item:hover,.project-review-list > button.selected) { background: #2d3c59; }
+.modeldesk[data-theme=dark] .project-workspace :is(.project-snapshot-preview strong,.review-ready-summary strong,.project-list-heading strong,.project-review-list strong) { color: #c9d7eb; }
+.modeldesk[data-theme=dark] .project-workspace :is(.project-progress-steps,.project-start-steps li,.scope-description,.scope-preview-action > span,.review-scope-panel header p,.review-engine-panel header p,.project-snapshot-preview small,.snapshot-preview-link,.review-advanced-options > summary,.project-management-options > summary,.review-ready-summary span,.project-list-item small,.project-list-item em,.project-add-modal label > span,.directory-picker-note,.review-prompt-label > span,.review-submit-bar span,.review-submit-bar strong,.review-evidence-note,.review-coverage-note) { color: #a4b5ce; }
+.modeldesk[data-theme=dark] .project-workspace :is(.project-progress-steps .step-marker,.project-snapshot-preview,.project-management-options,.review-advanced-options,.project-review-list) { border-color: #3b4d68; }
+.modeldesk[data-theme=dark] .project-workspace .current .step-marker { background: #2d3c59; }
+.modeldesk[data-theme=dark] .project-workspace .project-empty-snapshot { background: #3a3225; border-color: #5c4d34; }
+.modeldesk[data-theme=dark] .project-workspace .project-empty-snapshot :is(strong,p) { color: #d8c6a3; }
+.review-context-memory { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; margin: 12px 0; font-size: 12px; color: var(--ink); }
+.review-context-memory input { accent-color: var(--accent); }
+.review-context-memory small { color: var(--muted); font-size: 11px; }

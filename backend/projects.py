@@ -390,6 +390,8 @@ class ReviewRequest(BaseModel):
     chairman: str | None = None
     rounds: int = Field(default=2, ge=1, le=6)
     prompt: str = Field(default="检查所选范围中的真实缺陷，给出可核对的文件与行号。", max_length=12000)
+    conversation_id: str | None = None
+    context_turns: int = Field(default=12, ge=1, le=40)
 
 
 store = ProjectStore()
@@ -471,7 +473,7 @@ async def create_review(project_id: str, request: ReviewRequest):
             raise ValueError("选择的模型不在本地网关列表中")
         if request.engine in {"camel", "crewai"} and not (workbench.TOOLS / (".venv-" + request.engine) / "bin/python").exists():
             raise ValueError("该评审框架尚未安装")
-        job_request = workbench.JobRequest(mode="review", prompt=request.prompt or "检查代码中的真实缺陷。", models=request.models, chairman=request.chairman, rounds=request.rounds, project_id=project_id, snapshot_id=request.snapshot_id, engine=request.engine)
+        job_request = workbench.JobRequest(mode="review", prompt=request.prompt or "检查代码中的真实缺陷。", models=request.models, chairman=request.chairman, rounds=request.rounds, project_id=project_id, snapshot_id=request.snapshot_id, engine=request.engine, conversation_id=request.conversation_id, context_turns=request.context_turns)
     except (ValueError, httpx.HTTPError) as exc:
         raise HTTPException(422, workbench.public_error(exc)) from exc
     job = workbench.manager.create(job_request)

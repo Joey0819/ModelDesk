@@ -11,21 +11,17 @@ MAX_CONTEXT_CHARS = 24000
 
 
 def topic_history(manager, job):
-    previous = sorted((item for item in manager.jobs.values()
-                       if item.get("mode") == "group"
-                       and item.get("conversation_id") == job["conversation_id"]
-                       and item["id"] != job["id"]
-                       and item["created_at"] < job["created_at"]),
-                      key=lambda item: item["created_at"])
+    # The manager already attached bounded, cited history to this turn's
+    # prompt. Only current-turn participants belong in the live relay below.
+    if job.get("_conversation_context_prepared"):
+        return []
+    from .conversations import build_history
+    previous = build_history(manager.jobs, job)["turns"]
     history = []
     for item in previous:
         history.append({"speaker": "用户", "content": item["prompt"]})
-        messages = (item.get("result") or {}).get("messages")
-        if messages is None:
-            messages = [event for event in item.get("events", []) if event["type"] == "message"]
-        for message in messages:
-            if message.get("content") and not message.get("error"):
-                history.append({"speaker": message["model"], "content": message["content"]})
+        for message in item["deliverables"]:
+            history.append({"speaker": message.get("model") or message.get("role") or item["mode"], "content": message["content"]})
     return history
 
 
@@ -42,7 +38,8 @@ def discussion_messages(job, model, history):
         system.append("接力要求：" + job["relay_prompt"])
     quoted = []
     budget = MAX_CONTEXT_CHARS - len(job["prompt"])
-    for entry in reversed(history[-job.get("context_turns", 12):]):
+    window = history if job.get("_conversation_context_prepared") else history[-job.get("context_turns", 12):]
+    for entry in reversed(window):
         text = f"[{entry['speaker']}]\n{entry['content']}"
         if len(text) > budget:
             # Preserve an explicit bounded quote rather than silently assigning it
@@ -67,6 +64,7 @@ async def run_group(manager, job):
     history = topic_history(manager, job)
     result = {"models": job["models"], "rounds": job["rounds"], "messages": [], "partial_failure": False}
     job["result"] = result
+    manager.jobs.get(job["id"], job)["result"] = result
     for round_index in range(1, job["rounds"] + 1):
         for model in job["models"]:
             manager.emit(job, "log", text=f"群聊第 {round_index}/{job['rounds']} 轮：{model} 发言")

@@ -5,7 +5,7 @@ from .openrouter import query_models_parallel, query_model
 from .config import COUNCIL_MODELS, CHAIRMAN_MODEL, TITLE_MODEL
 
 
-async def stage1_collect_responses(user_query: str, models: List[str] = None, max_tokens: int = None, system_prompt: str = None) -> List[Dict[str, Any]]:
+async def stage1_collect_responses(user_query: str, models: List[str] = None, max_tokens: int = None, system_prompt: str = None, diagnostics: Dict[str, Any] = None) -> List[Dict[str, Any]]:
     """
     Stage 1: Collect individual responses from all council models.
 
@@ -20,7 +20,7 @@ async def stage1_collect_responses(user_query: str, models: List[str] = None, ma
         messages.insert(0, {"role": "system", "content": system_prompt})
 
     # Query all models in parallel
-    responses = await query_models_parallel(models or COUNCIL_MODELS, messages, max_tokens=max_tokens)
+    responses = await query_models_parallel(models or COUNCIL_MODELS, messages, max_tokens=max_tokens, diagnostics=diagnostics)
 
     # Format results
     stage1_results = []
@@ -28,7 +28,9 @@ async def stage1_collect_responses(user_query: str, models: List[str] = None, ma
         if response is not None:  # Only include successful responses
             stage1_results.append({
                 "model": model,
-                "response": response.get('content', '')
+                "response": response.get('content', ''),
+                **({"incomplete": True} if response.get("incomplete") else {}),
+                **({"transport_retries": response["transport_retries"]} if response.get("transport_retries") else {})
             })
 
     return stage1_results
@@ -40,6 +42,7 @@ async def stage2_collect_rankings(
     models: List[str] = None,
     max_tokens: int = None,
     system_prompt: str = None,
+    diagnostics: Dict[str, Any] = None,
 ) -> Tuple[List[Dict[str, Any]], Dict[str, str]]:
     """
     Stage 2: Each model ranks the anonymized responses.
@@ -102,7 +105,7 @@ Now provide your evaluation and ranking:"""
         messages.insert(0, {"role": "system", "content": system_prompt})
 
     # Get rankings from all council models in parallel
-    responses = await query_models_parallel(models or COUNCIL_MODELS, messages, max_tokens=max_tokens)
+    responses = await query_models_parallel(models or COUNCIL_MODELS, messages, max_tokens=max_tokens, diagnostics=diagnostics)
 
     # Format results
     stage2_results = []
@@ -113,7 +116,9 @@ Now provide your evaluation and ranking:"""
             stage2_results.append({
                 "model": model,
                 "ranking": full_text,
-                "parsed_ranking": parsed
+                "parsed_ranking": parsed,
+                **({"incomplete": True} if response.get("incomplete") else {}),
+                **({"transport_retries": response["transport_retries"]} if response.get("transport_retries") else {})
             })
 
     return stage2_results, label_to_model
@@ -126,6 +131,7 @@ async def stage3_synthesize_final(
     chairman: str = None,
     max_tokens: int = None,
     system_prompt: str = None,
+    diagnostics: Dict[str, Any] = None,
 ) -> Dict[str, Any]:
     """
     Stage 3: Chairman synthesizes final response.
@@ -172,7 +178,7 @@ Provide a clear, well-reasoned final answer that represents the council's collec
 
     # Query the chairman model
     selected_chairman = chairman or CHAIRMAN_MODEL
-    response = await query_model(selected_chairman, messages, max_tokens=max_tokens)
+    response = await query_model(selected_chairman, messages, max_tokens=max_tokens, diagnostics=diagnostics)
 
     if response is None:
         # Fallback if chairman fails
@@ -183,7 +189,9 @@ Provide a clear, well-reasoned final answer that represents the council's collec
 
     return {
         "model": selected_chairman,
-        "response": response.get('content', '')
+        "response": response.get('content', ''),
+        **({"incomplete": True} if response.get("incomplete") else {}),
+        **({"transport_retries": response["transport_retries"]} if response.get("transport_retries") else {})
     }
 
 

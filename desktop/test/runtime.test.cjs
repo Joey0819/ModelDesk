@@ -72,6 +72,16 @@ test('platform JSON backups download through a fixed local endpoint', () => {
   }
 });
 
+test('selected real artifacts use the same fixed local export route without file paths or extra query fields', () => {
+  const route = 'http://localhost:8001/api/workbench/jobs/df9d3857-3d01-4c24-9e64-b9343e217f9a/export';
+  for (const id of ['task:review', 'chat:openai/gpt', 'council:synthesis', 'review:findings', 'failure:child', 'format:0']) {
+    const value = `${route}?format=md&artifact_id=${encodeURIComponent(id)}`;
+    assert.equal(isExportURL(value), true, value);
+    assert.equal(exportFormat(value), 'md');
+  }
+  for (const suffix of ['format=json&artifact_id=task:review', 'format=md&artifact_id=unknown:x', 'format=md&artifact_id=task:review&path=auth.json', 'format=md&artifact_id=task:review&artifact_id=task:draft', 'format=md&artifact_id=task:%0Aheader', 'format=md&artifact_id=']) assert.equal(isExportURL(`${route}?${suffix}`), false, suffix);
+});
+
 test('internal page access cannot be redirected to another local file', () => {
   const status = '/Users/example/ModelDesk.app/Contents/Resources/app/status.html';
   assert.equal(isStatusURL(pathToFileURL(status).href + '?state=error', status), true);

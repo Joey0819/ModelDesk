@@ -48,7 +48,7 @@ class GroupTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([event["type"] for event in current["events"]].count("message"), 4)
 
     def test_history_is_topic_isolated_and_bounded_with_attribution(self):
-        old = job(id="old", created_at="2026-10-11T09:00:00", prompt="同话题上下文", result={"messages": [{"model": "second", "content": "历史回答"}]})
+        old = job(id="old", status="complete", created_at="2026-10-11T09:00:00", prompt="同话题上下文", result={"messages": [{"model": "second", "content": "历史回答"}]})
         foreign = job(id="foreign", created_at="2026-10-11T09:01:00", conversation_id="other", prompt="不应发送的另一话题", result={"messages": [{"model": "first", "content": "不应发送"}]})
         current = job(context_turns=1)
         history = group_chat.topic_history(Owner(current, [old, foreign]), current)

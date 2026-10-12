@@ -1,5 +1,5 @@
 export const PLATFORM_SECTIONS = {
-  overview: ['平台总览', 'dashboard'], agents: ['智能体与流程', 'tasks'], knowledge: ['知识库', 'library'], memories: ['记忆', 'memory'], prompts: ['提示词库', 'chat'], tools: ['工具与 MCP', 'settings'], migration: ['数据迁移', 'export'], originals: ['原版应用', 'layers'],
+  overview: ['快速开始', 'dashboard'], agents: ['智能体与流程', 'tasks'], knowledge: ['知识库', 'library'], memories: ['记忆', 'memory'], prompts: ['提示词库', 'chat'], tools: ['工具与 MCP', 'settings'], migration: ['数据迁移', 'export'], originals: ['原版应用', 'layers'],
 };
 export const EMPTY_CONTEXT = { knowledge_ids: [], memory_ids: [], memory_scope: 'default', remember: false, project_id: null, snapshot_id: null, mcp_server_ids: [], tools: [] };
 export function jobContext(value) {

@@ -52,7 +52,10 @@ function isExportURL(value) {
     return query.length === 0 || (query.length === 1 && query[0][0] === 'include_jobs' && ['true', 'false'].includes(query[0][1]));
   }
   if (!/^\/api\/workbench\/jobs\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/export$/i.test(url.pathname)) return false;
-  return query.length === 1 && query[0][0] === 'format' && ['md', 'json'].includes(query[0][1]);
+  if (query.length === 1) return query[0][0] === 'format' && ['md', 'json'].includes(query[0][1]);
+  if (query.length !== 2 || new Set(query.map(([key]) => key)).size !== 2 || url.searchParams.get('format') !== 'md') return false;
+  const artifact = url.searchParams.get('artifact_id');
+  return query.every(([key]) => ['format', 'artifact_id'].includes(key)) && typeof artifact === 'string' && artifact.length <= 200 && /^(chat:|council:(?:synthesis$|response:)|camel:|group:|task:|workflow:answer$|failure:|format:|review:findings$|sdk:(?:answer|result)$)/.test(artifact) && !/[\x00-\x1f\x7f]/.test(artifact);
 }
 
 function exportFormat(value) {

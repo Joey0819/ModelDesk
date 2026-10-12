@@ -208,7 +208,7 @@ sys.exit(1)
         self.assertEqual(third.await_args.kwargs["chairman"], "chair")
         self.assertEqual(job["result"]["metadata"]["failed_reviewers"], ["member-b"])
         self.assertTrue(job["result"]["metadata"]["partial_failure"])
-        self.assertEqual([event["stage"] for event in job["events"] if event["type"] == "stage"], ["responses", "rankings", "synthesis"])
+        self.assertEqual([event["stage"] for event in job["events"] if event["type"] == "stage"], ["conversational_context", "responses", "rankings", "synthesis"])
 
     def test_input_ids_and_worker_arguments_are_safe(self):
         with self.assertRaises(ValueError):

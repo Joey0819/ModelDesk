@@ -72,6 +72,24 @@ test('platform JSON backups download through a fixed local endpoint', () => {
   }
 });
 
+test('collaboration run exports stay in the native save flow with a strict UUID route', () => {
+  const route = 'http://localhost:8001/api/harness/runs/df9d3857-3d01-4c24-9e64-b9343e217f9a/export';
+  for (const format of ['md', 'json']) {
+    const url = `${route}?format=${format}`;
+    assert.equal(isExportURL(url), true);
+    assert.equal(exportFormat(url), format);
+    assert.equal(isExternalURL(url), false);
+  }
+  for (const url of [route, `${route}?format=html`, `${route}?format=md&format=json`,
+    `${route}?format=md&artifact_id=task:review`, `${route}?format=md&path=private`,
+    `${route}/../export?format=md`, `${route}?format=json#fragment`,
+    route.replace('localhost', 'remote.example') + '?format=md',
+    route.replace('df9d3857-3d01-4c24-9e64-b9343e217f9a', 'anything') + '?format=md']) {
+    assert.equal(isExportURL(url), false, url);
+    assert.equal(exportFormat(url), null, url);
+  }
+});
+
 test('selected real artifacts use the same fixed local export route without file paths or extra query fields', () => {
   const route = 'http://localhost:8001/api/workbench/jobs/df9d3857-3d01-4c24-9e64-b9343e217f9a/export';
   for (const id of ['task:review', 'chat:openai/gpt', 'council:synthesis', 'review:findings', 'failure:child', 'format:0']) {

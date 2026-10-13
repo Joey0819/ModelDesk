@@ -73,6 +73,17 @@ class WorkbenchTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(failed["status"], "error")
         self.assertEqual(failed["events"][-1]["type"], "error")
 
+    async def test_length_limited_stream_is_not_a_complete_deliverable(self):
+        def handle(request):
+            chunk = {"choices": [{"delta": {"content": "truncated answer"}, "finish_reason": "length"}]}
+            return httpx.Response(200, text="data: " + json.dumps(chunk) + "\n\ndata: [DONE]\n\n")
+        real_client = httpx.AsyncClient
+        with patch.object(workbench.httpx, "AsyncClient", side_effect=lambda **kwargs: real_client(transport=httpx.MockTransport(handle), **kwargs)):
+            job = await self.complete(JobRequest(mode="chat", prompt="test", models=["a"]))
+        self.assertTrue(job["result"]["responses"][0]["incomplete"])
+        from backend.conversations import deliverables
+        self.assertEqual(deliverables(job)[0], [])
+
     async def test_cancel_reaps_owned_worker(self):
         with patch.object(self.manager, "worker_command", return_value=[sys.executable, "-u", "-c", "import time; print('worker started', flush=True); time.sleep(60)"]):
             job = self.manager.create(JobRequest(mode="camel", prompt="test", models=["a", "b"]))

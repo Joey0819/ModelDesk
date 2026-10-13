@@ -110,6 +110,7 @@ def prepare_runtime(job):
     """Capability token exists only in process memory and the private worker input."""
     context = {key: job.get(key) for key in ["knowledge_ids", "memory_ids", "memory_scope", "project_id", "snapshot_id", "mcp_server_ids"]}
     context.update(job_id=job["id"], tools=set())
+    context["resource_revisions"] = job.get("harness_resource_revisions", [])
     for agent in (job.get("workflow") or {}).get("agents", []):
         context["tools"].update(agent.get("tools", []))
     # Text tools for ordinary chat/group must be explicitly enabled as well.
@@ -130,7 +131,24 @@ def release_runtime(token):
     RUNTIMES.pop(token, None)
 
 
+def validate_resource_revisions(records, project_id):
+    """Check captured versions under the caller's store lock before using them."""
+    for record in records or []:
+        item = store.get(record["kind"], record["id"])
+        if item.get("project_id") not in {None, project_id}:
+            raise HTTPException(403, "协作资料已移至其他项目，请重新选择")
+        digest = hashlib.sha256(json.dumps(item, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
+        if digest != record["digest"]:
+            raise HTTPException(409, "协作资料版本已变化，请创建新任务确认更新后的内容")
+
+
 def context_material(job):
+    with store.lock:
+        validate_resource_revisions(job.get("harness_resource_revisions"), job.get("project_id"))
+        return _context_material(job)
+
+
+def _context_material(job):
     from .projects import store as projects
     pieces, references = [], []
     if job.get("knowledge_ids"):
@@ -141,6 +159,8 @@ def context_material(job):
     if job.get("memory_ids"):
         for identifier in job["memory_ids"]:
             item = store.get("memories", identifier)
+            if item.get("project_id") not in {None, job.get("project_id")}:
+                raise HTTPException(403, "所选记忆已移至其他项目，请重新选择资料")
             pieces.append(f"[用户选择的记忆 {item['name']}]\n{item['content'][:3000]}")
             references.append({"kind": "memory", "id": item["id"], "name": item["name"], "scope": item["scope"]})
     if isinstance(job.get("workflow"), dict) and job["workflow"].get("memory"):
@@ -300,10 +320,15 @@ async def mcp_discover(identifier):
     return {"id": identifier, "online": True, "tools": tools}
 
 
-async def mcp_call(identifier, name, arguments, selected=None):
+async def mcp_call(identifier, name, arguments, selected=None, context=None):
     if selected is not None and identifier not in selected:
         raise HTTPException(403, "此任务未选择该 MCP 服务器")
-    config = store.get("mcp", identifier)
+    with store.lock:
+        if context is not None:
+            validate_resource_revisions(context.get("resource_revisions"), context.get("project_id"))
+        config = store.get("mcp", identifier)
+        if context is not None and config.get("project_id") not in {None, context.get("project_id")}:
+            raise HTTPException(403, "此 MCP 服务不属于当前项目")
     if not config["enabled"] or name not in config["allowed_tools"]:
         raise HTTPException(403, "该 MCP 工具未明确授权")
     async with asyncio.timeout(30), mcp_session(config) as session:
@@ -327,6 +352,13 @@ async def invoke_tool(name, arguments, context):
         validate(arguments, definition["parameters"])
     except ValidationError as error:
         raise HTTPException(422, "工具参数与声明的类型或范围不一致") from error
+    with store.lock:
+        validate_resource_revisions(context.get("resource_revisions"), context.get("project_id"))
+
+    def search_resources(kind, query, identifiers, scope, limit):
+        with store.lock:
+            validate_resource_revisions(context.get("resource_revisions"), context.get("project_id"))
+            return store.search(kind, query, identifiers, scope, limit, context.get("project_id"))
     if name == "math":
         a, b = float(arguments["a"]), float(arguments["b"])
         try:
@@ -354,9 +386,9 @@ async def invoke_tool(name, arguments, context):
     elif name == "web_search":
         result = await web_search(arguments["query"], arguments.get("max_results", 5))
     elif name == "knowledge_search":
-        result = await asyncio.to_thread(store.search, "knowledge", arguments["query"], context.get("knowledge_ids") or [], None, arguments.get("limit", 5), context.get("project_id"))
+        result = await asyncio.to_thread(search_resources, "knowledge", arguments["query"], context.get("knowledge_ids") or [], None, arguments.get("limit", 5))
     elif name == "memory_read":
-        result = await asyncio.to_thread(store.search, "memories", arguments.get("query", ""), None, context.get("memory_scope") or "global", arguments.get("limit", 5), context.get("project_id"))
+        result = await asyncio.to_thread(search_resources, "memories", arguments.get("query", ""), None, context.get("memory_scope") or "global", arguments.get("limit", 5))
     elif name == "memory_save":
         result = await asyncio.to_thread(store.put, "memories", {"name": arguments.get("name") or arguments["content"][:80],
             "content": arguments["content"], "scope": context.get("memory_scope") or "global", "project_id": context.get("project_id")},
@@ -379,7 +411,7 @@ async def invoke_tool(name, arguments, context):
                   "content": "\n".join(current["text"].splitlines()[start-current["start_line"]:end-current["start_line"]+1]),
                   "snapshot_id": snapshot["id"], "digest": snapshot["digest"]}
     elif name == "mcp_call":
-        result = await mcp_call(arguments["server_id"], arguments["tool"], arguments.get("arguments", {}), context.get("mcp_server_ids") or [])
+        result = await mcp_call(arguments["server_id"], arguments["tool"], arguments.get("arguments", {}), context.get("mcp_server_ids") or [], context)
     return {"tool": name, "result": result}
 
 

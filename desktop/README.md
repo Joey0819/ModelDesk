@@ -1,6 +1,6 @@
 # ModelDesk 本地桌面窗口
 
-ModelDesk 2.2.0 是 Apple Silicon macOS 应用。它为统一模型工作台提供独立窗口、菜单、单实例行为、项目/文件/图片选择、文件夹导入和启动失败重试入口。页面与模型协作服务来自本机已有的 `llm-council` / `llm-tools` 安装；这是本地安装包，不是自带所有 Python 与模型依赖的可分发产品。
+ModelDesk 2.3.0 是 Apple Silicon macOS 应用。它为统一模型工作台提供独立窗口、菜单、单实例行为、项目/文件/图片选择、文件夹导入和启动失败重试入口。页面与模型协作服务来自本机已有的 `llm-council` / `llm-tools` 安装；这是本地安装包，不是自带所有 Python 与模型依赖的可分发产品。
 
 ## 使用
 
@@ -36,3 +36,7 @@ npm --prefix desktop run package
 历史记录的 Markdown / JSON 导出保留在应用中下载：只允许本机 8001 的 UUID 任务 `/export?format=md|json`、带受限 `artifact_id` 的单份 Markdown，以及固定平台数据备份路由调用 [Electron `downloadURL`](https://www.electronjs.org/docs/latest/api/web-contents#contentsdownloadurlurl-options)，页面不会跳转到浏览器。下载使用原生保存对话框选择位置，不自动设置保存路径；其他 API 路径没有应用内导航权限。当前任务成果可以复制、切换预览或放大；HTML/脚本成果显示源码，不在窗口里执行。完整原版 MultiBot 仅允许固定本机 8501 页面作为子框架，不扩大主窗口导航范围。
 
 2.2.0 还允许受限项目或任务 UUID 的附件内容下载，图片预览与其他任意 API 导航仍遵守各自规则。项目的当前资料与任务冻结副本使用独立地址，旧任务内容不会因为资料后续变化而被替换。
+
+## 2.3.0 协作任务
+
+新版本提供跨框架步骤、审阅后继续、明确重试、项目任务历史和成果查看。`/api/harness/runs/{UUID}/export?format=md|json` 使用原生保存窗口；仅接受固定 loopback 地址、有效 UUID 和单个合法格式参数。未知路径、额外参数、远程地址和路径规范化绕过均不进入原生下载通道。

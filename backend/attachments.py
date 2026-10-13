@@ -305,6 +305,48 @@ class AssetStore:
         frozen.chmod(0o600)
         return manifest
 
+    def clone_frozen(self, source, source_root, job, inputs_root):
+        """Copy a harness's immutable inputs; never reselect mutable shared assets."""
+        import copy
+        if source.get("project_id") != job.get("project_id"):
+            raise HTTPException(403, "任务附件副本不能跨项目复用")
+        if not source.get("attachment_manifest"):
+            return None
+        self.prepared(source, source_root)
+        source_folder = source_root / source["id"]
+        data = json.loads((source_folder / "context.json").read_text())
+        manifest = copy.deepcopy(data["manifest"])
+        target = inputs_root / job["id"]
+        target.mkdir(parents=True, exist_ok=True, mode=0o700)
+        copied_paths = {}
+        for descriptor in data.get("copies", []):
+            path = Path(descriptor["path"])
+            if path.parent != source_folder:
+                raise HTTPException(409, "冻结附件路径校验失败")
+            raw = read_local(source_folder, path.name)
+            if sha(raw) != descriptor["sha256"]:
+                raise HTTPException(409, "冻结附件内容校验失败")
+            copied = target / path.name
+            copied.write_bytes(raw)
+            copied.chmod(0o600)
+            copied_paths[descriptor["id"]] = str(copied)
+        for descriptor in [*data.get("copies", []), *data.get("images", [])]:
+            descriptor["path"] = copied_paths[descriptor["id"]]
+            if "job_id" in descriptor:
+                descriptor["job_id"] = job["id"]
+        for item in manifest["items"]:
+            url = f"/api/workbench/jobs/{job['id']}/attachments/{item['id']}/content"
+            item["content_url"] = url
+            if item["kind"] == "image":
+                item["preview_url"] = url
+        manifest.pop("digest", None)
+        manifest["digest"] = sha(json.dumps(manifest, ensure_ascii=False, sort_keys=True).encode())
+        data["manifest"] = manifest
+        frozen = target / "context.json"
+        frozen.write_text(json.dumps(data, ensure_ascii=False))
+        frozen.chmod(0o600)
+        return manifest
+
     def prepared(self, job, inputs_root):
         if not job.get("attachment_manifest"):
             return "", [], []

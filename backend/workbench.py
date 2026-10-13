@@ -215,10 +215,12 @@ class JobManager:
             raise HTTPException(404, "任务不存在")
         return self.jobs[job_id]
 
-    def create(self, request):
+    def create(self, request, *, job_id=None, metadata=None, attachment_source=None):
         if sum(job["status"] not in TERMINAL for job in self.jobs.values()) >= 4:
             raise HTTPException(429, "最多同时运行 4 个任务，请等待或停止已有任务。")
-        job_id = str(uuid.uuid4())
+        job_id = str(uuid.UUID(job_id)) if job_id else str(uuid.uuid4())
+        if job_id in self.jobs:
+            raise HTTPException(409, "任务标识已存在，不能重复执行")
         timestamp = now()
         job = {
             "id": job_id,
@@ -249,7 +251,10 @@ class JobManager:
         if request.mode == "review":
             job.update(engine=request.engine, project_id=request.project_id, snapshot_id=request.snapshot_id)
         from .attachments import store as assets
-        manifest = assets.freeze(job, self.directory / "attachment-inputs")
+        if metadata:
+            job.update(metadata)
+        manifest = (assets.clone_frozen(attachment_source[0], attachment_source[1], job, self.directory / "attachment-inputs")
+                    if attachment_source else assets.freeze(job, self.directory / "attachment-inputs"))
         if manifest:
             job["attachment_manifest"] = manifest
             job["attachments"] = manifest["items"]
@@ -361,9 +366,14 @@ class JobManager:
             job["status"] = "complete"
             job["result"] = result
             if job.get("remember"):
-                memory = await asyncio.to_thread(remember_result, job)
-                if memory:
-                    self.emit(job, "stage", stage="memory_saved", data={"id": memory["id"], "scope": memory["scope"]})
+                try:
+                    memory = await asyncio.to_thread(remember_result, job)
+                    if memory:
+                        self.emit(job, "stage", stage="memory_saved", data={"id": memory["id"], "scope": memory["scope"]})
+                except Exception as error:
+                    warning = "回答已完成，但保存长期记忆失败：" + public_error(error)
+                    job.setdefault("warnings", []).append(warning)
+                    self.emit(job, "stage", stage="memory_warning", data={"message": warning})
             self.emit(job, "complete", result=result)
         except asyncio.CancelledError:
             if job["status"] != "cancelled":
@@ -384,6 +394,7 @@ class JobManager:
         async def respond(model):
             content = []
             finished = False
+            incomplete = False
             try:
                 if job.get("tools"):
                     answer = await self.tool_response(job, model, self.chat_context(job, model))
@@ -406,6 +417,7 @@ class JobManager:
                             for choice in chunk.get("choices", []):
                                 if choice.get("finish_reason") is not None:
                                     finished = True
+                                    incomplete = incomplete or choice["finish_reason"] == "length"
                                 delta = choice.get("delta", {}).get("content")
                                 if isinstance(delta, str) and delta:
                                     content.append(delta)
@@ -414,7 +426,7 @@ class JobManager:
                     raise RuntimeError("模型未返回可显示的回答。")
                 if not finished:
                     raise RuntimeError("回答流提前中断，已收到的内容可能不完整，请重试。")
-                return {"model": model, "text": "".join(content)}
+                return {"model": model, "text": "".join(content), **({"incomplete": True} if incomplete else {})}
             except Exception as exc:
                 message = public_error(exc)
                 self.emit(job, "log", text=f"{model}: {message}")
@@ -472,6 +484,10 @@ class JobManager:
         diagnostics = {"responses": {}, "rankings": {}, "synthesis": {}}
         first, second, labels = [], [], {}
 
+        def member_system(model):
+            role = job.get("roles", {}).get(model)
+            return "\n\n".join(part for part in [system, "你在本次任务中的角色要求：" + role if role else None] if part) or None
+
         def diagnose(phase):
             errors = diagnostics[phase]
             for model, detail in errors.items():
@@ -491,12 +507,15 @@ class JobManager:
 
         self.emit(job, "log", text="第一阶段：各模型独立回答")
         if job.get("tools"):
-            content = [{"type": "text", "text": job["prompt"]}, *image_parts] if image_parts else job["prompt"]
-            responses = await asyncio.gather(*(self.tool_response(job, model, [{"role": "user", "content": content}]) for model in models), return_exceptions=True)
+            responses = await asyncio.gather(*(self.tool_response(job, model, self.chat_context(job, model)) for model in models), return_exceptions=True)
             first = [{"model": item["model"], "response": item["text"], **({"incomplete": True} if item.get("incomplete") else {})} for item in responses if isinstance(item, dict)]
             for model, response in zip(models, responses):
                 if isinstance(response, Exception):
                     diagnostics["responses"][model] = {"message": public_error(response)}
+        elif job.get("roles"):
+            batches = await asyncio.gather(*(stage1_collect_responses(job["prompt"], models=[model], max_tokens=budget or 512,
+                system_prompt=member_system(model), diagnostics=diagnostics["responses"], image_parts=image_parts) for model in models))
+            first = [item for batch in batches for item in batch]
         else:
             first = await stage1_collect_responses(job["prompt"], models=models, max_tokens=budget or 512, system_prompt=system, diagnostics=diagnostics["responses"], image_parts=image_parts)
         first_error = diagnose("responses")
@@ -522,7 +541,7 @@ class JobManager:
             self.emit(job, "log", text="未返回评审的模型：" + "、".join(missing_reviewers))
         self.emit(job, "log", text="第三阶段：主席综合")
         synthesis_query = job["prompt"] + f"\n\n本轮实际完成情况：成员回答 {len(first)}/{len(models)}，匿名评审 {len(second)}/{len(models)}。只依据实际返回的材料，不得声称未返回的成员成功或所有模型已经一致同意。"
-        third = await stage3_synthesize_final(synthesis_query, first, second, chairman=job["chairman"], max_tokens=budget or 1024, system_prompt=system, diagnostics=diagnostics["synthesis"], image_parts=image_parts)
+        third = await stage3_synthesize_final(synthesis_query, first, second, chairman=job["chairman"], max_tokens=budget or 1024, system_prompt=member_system(job["chairman"]), diagnostics=diagnostics["synthesis"], image_parts=image_parts)
         third_error = diagnose("synthesis")
         if third.get("response", "").startswith("Error:"):
             retain_partial()

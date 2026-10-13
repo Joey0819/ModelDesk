@@ -1,87 +1,79 @@
-# LLM Council
+# ModelDesk
 
-![llmcouncil](header.jpg)
+本机多模型、多智能体协作工作台。围绕同一个项目，把资料、模型讨论、团队执行、评审和最终成果放在一个工作区。
 
-The idea of this repo is that instead of asking a question to your favorite LLM provider (e.g. OpenAI GPT 5.1, Google Gemini 3.0 Pro, Anthropic Claude Sonnet 4.5, xAI Grok 4, eg.c), you can group them into your "LLM Council". This repo is a simple, local web app that essentially looks like ChatGPT except it uses OpenRouter to send your query to multiple LLMs, it then asks them to review and rank each other's work, and finally a Chairman LLM produces the final response.
+ModelDesk 基于 [Karpathy 的 LLM Council](https://github.com/karpathy/llm-council) 扩展，保留三阶段匿名评审，并接入 CAMEL、CrewAI、接力群聊、原生 SDK 和本地项目资料。原项目说明保留在 [上游 README](docs/UPSTREAM_COUNCIL.md)。
 
-In a bit more detail, here is what happens when you submit a query:
+## 从一个目标开始
 
-1. **Stage 1: First opinions**. The user query is given to all LLMs individually, and the responses are collected. The individual responses are shown in a "tab view", so that the user can inspect them all one by one.
-2. **Stage 2: Review**. Each individual LLM is given the responses of the other LLMs. Under the hood, the LLM identities are anonymized so that the LLM can't play favorites when judging their outputs. The LLM is asked to rank them in accuracy and insight.
-3. **Stage 3: Final response**. The designated Chairman of the LLM Council takes all of the model's responses and compiles them into a single final answer that is presented to the user.
+1. 创建项目，添加需要的图片、文件，或从关联文件夹中选择资料。
+2. 打开「协作任务」，选一个流程模板，写下目标。可直接选择模型，也可新建项目协作组，保存成员名称、模型和分工。
+3. 启动任务，查看步骤进度。需要人工把关的步骤可设置为完成后等待确认。
+4. 在右侧查看、复制或导出实际成果。中断后可查看已完成步骤，再明确选择继续或重试。
 
-## Vibe Code Alert
+「单项协作」保留直接聊天、Council、CAMEL、CrewAI、群聊、Workforce 和 Flow。代码评审使用明确预览的源码快照；SDK 工作室保留原生框架接口。
 
-This project was 99% vibe coded as a fun Saturday hack because I wanted to explore and evaluate a number of LLMs side by side in the process of [reading books together with LLMs](https://x.com/karpathy/status/1990577951671509438). It's nice and useful to see multiple responses side by side, and also the cross-opinions of all LLMs on each other's outputs. I'm not going to support it in any way, it's provided here as is for other people's inspiration and I don't intend to improve it. Code is ephemeral now and libraries are over, ask your LLM to change it in whatever way you like.
+## 协作与执行
 
-## Setup
+| 层 | 职责 |
+| --- | --- |
+| 项目与资料 | 项目范围、文件夹导入、图片/文本资料、不可变任务输入与来源记录 |
+| 项目协作组 | 每项目保存 2–4 个不同模型的成员与角色，启动时冻结本次成员配置 |
+| 协作任务 | LangGraph 顺序调度、步骤检查点、人工确认、停止、明确重试与运行预算 |
+| 原生执行器 | 复用 Council、CAMEL、CrewAI、并排聊天和模型群聊的实际执行路径 |
+| 成果与证据 | 真实子任务、模型来源、历史尝试、部分失败、Markdown/JSON 导出 |
+| 本地桌面 | Electron 原生选择/保存窗口，复用本机服务与现有模型登录 |
 
-### 1. Install Dependencies
+详细设计和开源选型见 [Harness 架构](docs/HARNESS_ARCHITECTURE.md)，完整操作见 [ModelDesk 使用说明](MODEL_DESK.md)，验收和功能边界见 [功能表](docs/CAPABILITIES.md)。
 
-The project uses [uv](https://docs.astral.sh/uv/) for project management.
+## 当前电脑运行
 
-**Backend:**
-```bash
-uv sync
-```
-
-**Frontend:**
-```bash
-cd frontend
-npm install
-cd ..
-```
-
-### 2. Configure API Key
-
-Create a `.env` file in the project root:
+已配置环境可打开 `/Applications/ModelDesk.app`，或从仓库根目录执行：
 
 ```bash
-OPENROUTER_API_KEY=sk-or-v1-...
+python3 ../llm-tools/scripts/services.py start
 ```
 
-Get your API key at [openrouter.ai](https://openrouter.ai/). Make sure to purchase the credits you need, or sign up for automatic top up.
+页面位于 http://localhost:5173/，API 位于 http://127.0.0.1:8001。模型通过本机网关调用，认证信息保留在本机私有目录。
 
-### 3. Configure Models (Optional)
+此桌面包目前依赖相邻的 `llm-tools`、独立 CAMEL/CrewAI 环境和本机网关配置。克隆本仓库可取得工作台源码，不能自动取得这些运行环境或账户登录。
 
-Edit `backend/config.py` to customize the council:
+## 开发与验证
 
-```python
-COUNCIL_MODELS = [
-    "openai/gpt-5.1",
-    "google/gemini-3-pro-preview",
-    "anthropic/claude-sonnet-4.5",
-    "x-ai/grok-4",
-]
+Python 3.12+，Node/npm，以及 [uv](https://docs.astral.sh/uv/)：
 
-CHAIRMAN_MODEL = "google/gemini-3-pro-preview"
-```
-
-## Running the Application
-
-**Option 1: Use the start script**
 ```bash
-./start.sh
+uv sync --locked
+npm --prefix frontend ci
+npm --prefix desktop ci
+
+# 后端、前端组件与状态、lint、桌面策略
+.venv/bin/python scripts/verify_modeldesk.py
+
+# 使用自建合成资料的真实跨框架验收（需要已有本地服务与登录）
+.venv/bin/python scripts/verify_harness.py
+.venv/bin/python scripts/verify_project_teams.py
+
+# 重建生产页面和实际 macOS 应用
+.venv/bin/python scripts/package_modeldesk.py
 ```
 
-**Option 2: Run manually**
+本地开发 API 和页面分别运行：
 
-Terminal 1 (Backend):
 ```bash
-uv run python -m backend.main
+.venv/bin/python -m uvicorn backend.main:app --host 127.0.0.1 --port 8001
+npm --prefix frontend run dev -- --host 127.0.0.1 --port 5173
 ```
 
-Terminal 2 (Frontend):
-```bash
-cd frontend
-npm run dev
-```
+凭据、用户项目资料、运行记录、构建缓存和应用包不进入 Git。自动检查使用隔离测试数据；真实模型验收使用脚本生成的合成材料。
 
-Then open http://localhost:5173 in your browser.
+## 来源
 
-## Tech Stack
+- [LLM Council](https://github.com/karpathy/llm-council)：三阶段匿名评审与初始代码。
+- [LangGraph](https://github.com/langchain-ai/langgraph)：图调度内核，MIT。
+- [CAMEL](https://github.com/camel-ai/camel)：角色对话与 Workforce，Apache-2.0。
+- [CrewAI](https://github.com/crewAIInc/crewAI)：团队任务与 Flow，MIT。
+- [ChatHub](https://github.com/chathub-dev/chathub) 与 [MultiBot Chat](https://github.com/gptzm/multibot-chat)：保留原版应用入口，各自 GPL-3.0。
+- [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI)：现有本机登录网关。
 
-- **Backend:** FastAPI (Python 3.10+), async httpx, OpenRouter API
-- **Frontend:** React + Vite, react-markdown for rendering
-- **Storage:** JSON files in `data/conversations/`
-- **Package Management:** uv for Python, npm for JavaScript
+各来源保留自己的许可与运行要求，详见功能表。本仓库没有为上游未明确授权的代码另行授予许可。

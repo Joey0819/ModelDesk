@@ -14,14 +14,19 @@ from .workbench import router as workbench_router, manager as workbench_manager
 from .projects import router as projects_router
 from .super_platform import router as platform_router
 from .original_apps import router as original_apps_router
+from .harness.router import router as harness_router
+from .harness.manager import manager as harness_manager
 from .council import run_full_council, generate_conversation_title, stage1_collect_responses, stage2_collect_rankings, stage3_synthesize_final, calculate_aggregate_rankings
 
-app = FastAPI(title="LLM Council API")
+app = FastAPI(title="ModelDesk API")
 app.include_router(workbench_router)
 app.include_router(projects_router)
 app.include_router(original_apps_router)
 app.include_router(platform_router)
+app.include_router(harness_router)
 app.add_event_handler("startup", workbench_manager.recover)
+app.add_event_handler("startup", harness_manager.recover)
+app.add_event_handler("shutdown", harness_manager.shutdown)
 app.add_event_handler("shutdown", workbench_manager.shutdown)
 
 # Enable CORS for local development
@@ -63,7 +68,7 @@ class Conversation(BaseModel):
 @app.get("/")
 async def root():
     """Health check endpoint."""
-    return {"status": "ok", "service": "LLM Council API"}
+    return {"status": "ok", "service": "ModelDesk API"}
 
 
 @app.get("/api/conversations", response_model=List[ConversationMetadata])

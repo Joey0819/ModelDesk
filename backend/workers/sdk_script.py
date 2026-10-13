@@ -6,7 +6,7 @@ from pathlib import Path
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from backend.vision import GATEWAY, prepare_vision, user_content, vision_transports, crew_vision_llm, public_summary, SafeWorkerStream
+from backend.vision import GATEWAY, GATEWAY_KEY, prepare_vision, user_content, vision_transports, crew_vision_llm, public_summary, SafeWorkerStream
 
 os.environ.setdefault("CREWAI_TRACING_ENABLED", "false")
 os.environ.setdefault("OTEL_SDK_DISABLED", "true")
@@ -47,7 +47,7 @@ def sdk_namespace(data):
         name = selected(name)
         client, async_client = camel_clients(name, image_parts=parts, vision_report=report)
         return ModelFactory.create(model_platform=ModelPlatformType.OPENAI_COMPATIBLE_MODEL,
-                                   model_type=name, url=GATEWAY, api_key="local-oauth",
+                                   model_type=name, url=GATEWAY, api_key=GATEWAY_KEY,
                                    model_config_dict={"max_tokens": max_tokens}, client=client,
                                    async_client=async_client, max_retries=2, timeout=180)
 
@@ -58,7 +58,7 @@ def sdk_namespace(data):
         import httpx
         from openai import OpenAI
         sync_transport, _ = vision_transports(parts, report)
-        return OpenAI(base_url=GATEWAY, api_key="local-oauth", max_retries=2, timeout=180,
+        return OpenAI(base_url=GATEWAY, api_key=GATEWAY_KEY, max_retries=2, timeout=180,
                       http_client=httpx.Client(transport=sync_transport, trust_env=False))
 
     namespace = {"PROMPT": data["prompt"], "MODELS": data["models"], "GATEWAY": GATEWAY,

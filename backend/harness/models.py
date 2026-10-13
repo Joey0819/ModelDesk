@@ -32,9 +32,11 @@ class TeamMember(BaseModel):
         return self
 
 
-def validate_members(members):
-    if len({member.id for member in members}) != len(members) or len({member.model for member in members}) != len(members):
-        raise ValueError("每位团队成员必须使用不同的成员标识与模型")
+def validate_members(members, *, distinct_models=True):
+    if len({member.id for member in members}) != len(members):
+        raise ValueError("每位团队成员必须使用不同的成员标识")
+    if distinct_models and len({member.model for member in members}) != len(members):
+        raise ValueError("协作流程需要不同模型；同一模型的多个角色请在项目群聊中使用")
 
 
 class TeamRequest(BaseModel):
@@ -54,7 +56,10 @@ class TeamRequest(BaseModel):
     @model_validator(mode="after")
     def valid_team(self):
         from ..attachments import secret_text
-        validate_members(self.members)
+        # Saved rosters describe people-like roles, not unique model endpoints.
+        # Group rooms dispatch by member ID; workflow engines still validate
+        # their distinct-model invariant when a saved roster is used for a run.
+        validate_members(self.members, distinct_models=False)
         if secret_text(self.name + "\n" + self.description):
             raise ValueError("团队配置不能包含凭据")
         return self

@@ -16,6 +16,7 @@ export const groupApi = {
   list: (projectId) => request(`?${scope(projectId)}`),
   create: (body) => request('', 'POST', body),
   get: (id, projectId) => request(`/${encodeURIComponent(id)}?${scope(projectId)}`),
+  updateTeam: (id, projectId, body) => request(`/${encodeURIComponent(id)}/team?${scope(projectId)}`, 'PUT', body),
   messages: (id, projectId, before) => request(`/${encodeURIComponent(id)}/messages?${scope(projectId, { limit: '20', ...(before ? { before } : {}) })}`),
   send: (id, projectId, body) => request(`/${encodeURIComponent(id)}/messages?${scope(projectId)}`, 'POST', body),
 };

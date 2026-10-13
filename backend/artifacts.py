@@ -33,11 +33,13 @@ def selected_artifact(job, identifier):
     elif mode in {"camel", "group"}:
         latest = {}
         messages = result.get("messages", [])
+        def identity(message):
+            return (message.get("member_id") or message.get("model")) if mode == "group" else message.get("role") or message.get("model")
         for index, message in enumerate(messages):
             if text(message.get("content")).strip() and not re.search(r"任务规划|任务细化|模型传输重试|原生任务结果|原生结果整理", message.get("role") or ""):
-                latest[message.get("model") if mode == "group" else message.get("role") or message.get("model")] = (index, message)
+                latest[identity(message)] = (index, message)
         for index, message in latest.values():
-            later_failed = any(item.get("model") == message.get("model") and (item.get("error") or item.get("incomplete")) for item in messages[index + 1:])
+            later_failed = any(identity(item) == identity(message) and (item.get("error") or item.get("incomplete")) for item in messages[index + 1:])
             add(f"{mode}:{index}", f"最后发言 · {message.get('role') or message.get('model') or '参与角色'}", message["content"],
                 partial=bool(message.get("error") or message.get("incomplete") or later_failed), source="角色实际发言，未另行生成综合结论")
     elif mode == "sdk_script":

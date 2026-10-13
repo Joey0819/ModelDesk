@@ -2,14 +2,24 @@ export function temporaryMembers(models) {
   return models.map((model, index) => ({ id: `member_${index + 1}`, name: `助手 ${index + 1}`, model, role: index === 0 ? '研究任务，提出有依据的方案。' : index === 1 ? '独立核查依据、指出遗漏并完善交付。' : '补充不同视角，检查执行细节。' }));
 }
 
-export function teamIssues(team, catalog = []) {
+export function appendTeamMember(team, catalog = []) {
+  const draft = structuredClone(team);
+  if (draft.members.length >= 4) return draft;
+  const model = catalog.find((item) => !draft.members.some((member) => member.model === item.id));
+  let index = 1;
+  while (draft.members.some((member) => member.id === `member_${index}`)) index += 1;
+  draft.members.push({ id: `member_${index}`, name: `助手 ${index}`, model: model?.id || draft.members[0]?.model || '', role: '' });
+  return draft;
+}
+
+export function teamIssues(team, catalog = [], { allowRepeatedModels = false } = {}) {
   if (!team) return [];
   const errors = [];
   if (!team.name?.trim()) errors.push('请填写协作组名称。');
   const members = team.members || [];
   if (members.length < 2 || members.length > 4) errors.push('每个协作组需要 2–4 名模型成员。');
   if (members.some((member) => !member.name?.trim() || !member.model || !member.role?.trim())) errors.push('每名成员需要名称、模型与职责。');
-  if (new Set(members.map((member) => member.model)).size !== members.length) errors.push('一个协作组中的模型不能重复。');
+  if (!allowRepeatedModels && new Set(members.map((member) => member.model)).size !== members.length) errors.push('协作任务中的模型不能重复；同一模型的多个角色请使用项目群聊。');
   const unavailable = members.filter((member) => !catalog.some((model) => model.id === member.model));
   if (unavailable.length) errors.push(`当前未接入：${unavailable.map((member) => member.model || '未选择模型').join('、')}。请更换模型或接入对应账户。`);
   return errors;

@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { buildSync } from 'esbuild';
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { groupScopeKey, groupDraftKey, readGroupSelection, readGroupDraft, scopedRooms, mergeRoomJobs, groupMessageRequest, groupMessages } from '../src/group-state.js';
+import { groupScopeKey, groupDraftKey, readGroupSelection, readGroupDraft, scopedRooms, mergeRoomJobs, groupMessageRequest, groupMessages, groupRecipients, groupTimeline } from '../src/group-state.js';
 import { applyEvent } from '../src/workbench-state.js';
 
 const members = [{ id: 'writer', name: 'Writer', model: 'model-a', role: 'Draft the proposal' }, { id: 'reviewer', name: 'Reviewer', model: 'model-b', role: 'Check the evidence' }];
@@ -49,17 +49,42 @@ test('streamed group member identity survives replay with error and partial flag
   assert.equal(messages[0].member_name, 'Writer');
 });
 
+test('roster edits preserve recipients and role identities in saved turns', () => {
+  const changed = { ...room, team_snapshot: { members: [{ ...members[0], name: 'Changed', model: 'grok' }] } };
+  assert.deepEqual(groupRecipients(job, changed), members);
+  assert.deepEqual(groupRecipients({ ...job, group_recipient_member_ids: ['reviewer'] }, changed), [members[1]]);
+  const sameModel = { ...job, group_team_snapshot: { members: members.map((member) => ({ ...member, model: 'grok' })) }, result: { messages: [{ member_id: 'writer', model: 'grok', content: 'draft' }, { member_id: 'reviewer', model: 'grok', content: 'review' }] } };
+  assert.deepEqual(groupMessages(sameModel, changed).map((message) => message.member_name), ['Writer', 'Reviewer']);
+});
+
+test('Muse actual replies join the room transcript in chronological order without crossing projects', () => {
+  const task = { id: 'muse-a', project_id: 'project-a', room_id: 'room-a', created_at: '2026-10-13T02:00:00Z', response: 'Observed reply' };
+  const entries = groupTimeline([job, { ...job, id: 'otherjob', project_id: 'project-b' }], [task, { ...task, id: 'othermuse', room_id: 'room-b' }], 'project-a', 'room-a');
+  assert.deepEqual(entries.map((item) => item.type), ['discussion', 'muse']);
+  assert.deepEqual(entries.map((item) => item.value.id), [job.id, task.id]);
+});
+
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const compiled = buildSync({ stdin: { contents: 'export {GroupTurn} from "./src/components/GroupWorkspace.jsx"; export {default as WorkspaceNavigation} from "./src/components/WorkspaceNavigation.jsx";', resolveDir: root }, bundle: true, platform: 'node', format: 'cjs', jsx: 'automatic', write: false, external: ['react', 'react/jsx-runtime'], define: { 'import.meta.env': '{}' }, loader: { '.css': 'empty' } });
+const compiled = buildSync({ stdin: { contents: 'export {GroupTurn, GroupMuseTurn} from "./src/components/GroupWorkspace.jsx"; export {default as WorkspaceNavigation} from "./src/components/WorkspaceNavigation.jsx";', resolveDir: root }, bundle: true, platform: 'node', format: 'cjs', jsx: 'automatic', write: false, external: ['react', 'react/jsx-runtime'], define: { 'import.meta.env': '{}' }, loader: { '.css': 'empty' } });
 const filename = path.join(root, 'tests/group-virtual.cjs');
 const module = new Module(filename); module.paths = Module._nodeModulePaths(path.dirname(filename)); module._compile(compiled.outputFiles[0].text, filename);
-const { GroupTurn, WorkspaceNavigation } = module.exports;
+const { GroupTurn, GroupMuseTurn, WorkspaceNavigation } = module.exports;
 
 test('actual continuous timeline exposes attributed full messages and useful actions', () => {
   const html = renderToStaticMarkup(React.createElement(GroupTurn, { job, room, onOpenArtifacts() {} }));
   assert.match(html, /Discuss our project/); assert.match(html, /Actual answer/); assert.match(html, /Writer/); assert.match(html, /model-a/);
   assert.match(html, /复制这条提问/); assert.match(html, /复制 Writer 的发言/); assert.match(html, /查看本轮成果/);
   assert.equal(html.includes('展开完整发言'), false);
+});
+
+test('native Muse transcript distinguishes complete observed replies from partial output', () => {
+  const task = { id: 'muse', project_id: 'project-a', room_id: 'room-a', prompt: 'Research this', status: 'complete', sent: true, completion_evidence: 'framed_assistant_reply', response: 'Observed Muse reply' };
+  const render = (value) => renderToStaticMarkup(React.createElement(GroupMuseTurn, { task: value, projectId: 'project-a', roomId: 'room-a', onUseReply() {}, onOpenMuse() {} }));
+  assert.match(render(task), /Observed Muse reply/);
+  assert.match(render(task), /引用回复继续讨论/);
+  const partial = render({ ...task, status: 'uncertain' });
+  assert.match(partial, /回复尚未确认完整/);
+  assert.equal(partial.includes('引用回复继续讨论'), false);
 });
 
 test('group navigation is a primary workspace while single tools and missions remain discoverable', () => {

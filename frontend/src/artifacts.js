@@ -24,13 +24,13 @@ function lastMessages(job, mode) {
   const latest = new Map();
   messages.forEach((message, index) => {
     if (!usefulMessage(message)) return;
-    const key = mode === 'group' ? message.model : message.role || message.model;
+    const key = mode === 'group' ? message.member_id || message.model : message.role || message.model;
     latest.set(key, { message, index });
   });
   return [...latest.values()].sort((a, b) => b.index - a.index).map(({ message, index }) => {
     const role = { researcher: '研究员', reviewer: '审稿人' }[message.role] || message.role;
-    const laterFailed = messages.slice(index + 1).some((next) => next.model === message.model && (next.error || next.incomplete));
-    return makeArtifact(job, `${mode}:${index}`, mode === 'group' ? `最后发言 · ${message.model || '参与模型'}` : `最后发言 · ${role || '参与角色'}`, message.content, {
+    const laterFailed = messages.slice(index + 1).some((next) => (mode === 'group' ? (next.member_id || next.model) === (message.member_id || message.model) : next.model === message.model) && (next.error || next.incomplete));
+    return makeArtifact(job, `${mode}:${index}`, mode === 'group' ? `最后发言 · ${message.member_name || message.model || '参与模型'}` : `最后发言 · ${role || '参与角色'}`, message.content, {
       kind: 'discussion', source: mode === 'group' ? `群聊第 ${message.round || 1} 轮` : `角色对话${message.round ? `第 ${message.round} 轮` : ''}`,
       model: message.model, role, partial: Boolean(message.error || message.incomplete || laterFailed),
       note: '这是角色的实际发言，未另行生成综合结论。',

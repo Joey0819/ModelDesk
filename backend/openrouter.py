@@ -7,6 +7,7 @@ from typing import List, Dict, Any, Optional
 from urllib.parse import urlsplit
 from .config import OPENROUTER_API_KEY, OPENROUTER_API_URL
 from .vision import public_text
+from .model_connections import request_options
 
 _clock = time.monotonic
 
@@ -45,7 +46,7 @@ async def query_model(
     # transient transport/service failures, at most twice within one shared
     # wall-clock budget; never retry a valid/partial model answer.
     deadline = _clock() + timeout
-    local = urlsplit(OPENROUTER_API_URL).hostname in {"127.0.0.1", "localhost", "::1"}
+    local = model.startswith("connection:") or urlsplit(OPENROUTER_API_URL).hostname in {"127.0.0.1", "localhost", "::1"}
     error = None
     retries = 0
     for attempt in range(3):
@@ -56,8 +57,8 @@ async def query_model(
         try:
             # Remote configurations retain their existing proxy behavior.
             async with asyncio.timeout(remaining):
-                async with httpx.AsyncClient(timeout=httpx.Timeout(remaining, connect=min(5, remaining)), trust_env=not local) as client:
-                    response = await client.post(OPENROUTER_API_URL, headers=headers, json=payload)
+                async with httpx.AsyncClient(timeout=httpx.Timeout(remaining, connect=min(5, remaining)), trust_env=not local, follow_redirects=False) as client:
+                    response = await client.post(**request_options(payload, OPENROUTER_API_URL, headers))
                 response.raise_for_status()
                 data = response.json()
                 if data.get("error"):

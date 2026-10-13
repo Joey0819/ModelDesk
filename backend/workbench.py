@@ -1,7 +1,7 @@
 """Local multi-model workbench: durable jobs, streaming chat, and real frameworks.
 
-Provider credentials stay in the local OAuth gateway. The browser sends only
-model IDs and task text; worker processes use fixed scripts and argument arrays.
+Provider credentials stay in local services. Jobs contain model aliases and task
+text; native workers use fixed scripts and scoped, temporary inference grants.
 """
 
 import asyncio
@@ -29,6 +29,7 @@ from .council import (
 )
 from .workflow_config import WorkflowConfig, validate_workflow
 from .conversations import build_history, encoded, quoted_history
+from .model_connections import model_catalog as connection_models, request_options, store as connection_store, grant_worker, revoke_worker
 
 
 PROJECT = Path(__file__).resolve().parents[1]
@@ -61,14 +62,30 @@ def public_error(exc):
     return text or type(exc).__name__
 
 
-async def model_catalog():
+async def subscription_catalog():
     async with httpx.AsyncClient(timeout=1.5, trust_env=False) as client:
         response = await client.get(GATEWAY + "/models")
         response.raise_for_status()
         return sorted({item["id"] for item in response.json().get("data", []) if isinstance(item.get("id"), str)})
 
 
+async def model_catalog():
+    try:
+        connected = [item["id"] for item in connection_models()]
+    except (OSError, ValueError, RuntimeError):
+        connected = []
+    try:
+        existing = await subscription_catalog()
+    except (httpx.HTTPError, ValueError):
+        if not connected:
+            raise
+        existing = []
+    return sorted(set(existing + connected))
+
+
 def provider_for(model):
+    if model.startswith("connection:"):
+        return ":".join(model.split(":")[:2])
     if model.startswith("gpt-") or model.startswith("o3") or model.startswith("o4"):
         return "codex"
     if model.startswith("gemini-"):
@@ -342,11 +359,11 @@ class JobManager:
             execution["_conversation_history"] = history
             execution["_conversation_context_prepared"] = True
             execution["_context"] = "\n\n".join(part for part in [material, historical_material] if part)
-            if images and not execution.get("workflow") and job["mode"] in {"camel", "crewai"}:
+            if (images or any(model.startswith("connection:") for model in job["models"])) and not execution.get("workflow") and job["mode"] in {"camel", "crewai"}:
                 agents = [{"id": "researcher", "role": "研究员", "goal": "依据用户的实际材料完成任务", "model": job["models"][0]}, {"id": "reviewer", "role": "审稿人", "goal": "核查材料与结论，指出限制", "model": job["models"][1]}]
                 configuration = {"agents": agents, "tasks": [] if job["mode"] == "camel" else [{"id": "draft", "agent": "researcher", "description": "分析本轮材料，完成用户任务", "expected_output": "有材料证据的结论"}, {"id": "review", "agent": "reviewer", "description": "核查初稿，输出最终结果", "expected_output": "清楚且有依据的最终结果", "context": ["draft"]}]}
                 execution["workflow"] = validate_workflow(configuration, job["mode"], job["models"]).model_dump(mode="json")
-                job["image_dispatch"] = {"workflow_defaulted": True, "reason": "图片使用支持原生视觉的已跟踪框架执行器"}
+                job["image_dispatch"] = {"workflow_defaulted": True, "reason": "图片与 API 连接使用已跟踪的原生框架执行器"}
             if job.get("system_prompt") and job["mode"] not in {"chat", "group", "sdk_script"}:
                 execution["prompt"] = "用户明确配置的本轮通用要求：\n" + job["system_prompt"] + "\n\n当前用户任务：\n" + execution["prompt"]
             if material:
@@ -410,7 +427,7 @@ class JobManager:
                     return answer
                 payload = {"model": model, "messages": self.chat_context(job, model), "stream": True, "max_tokens": job.get("_review_max_tokens", 1024)}
                 async with httpx.AsyncClient(timeout=httpx.Timeout(180, connect=5), trust_env=False) as client:
-                    async with client.stream("POST", GATEWAY + "/chat/completions", json=payload) as response:
+                    async with client.stream("POST", **request_options(payload, GATEWAY + "/chat/completions")) as response:
                         response.raise_for_status()
                         async for line in response.aiter_lines():
                             if not line.startswith("data:"):
@@ -455,7 +472,7 @@ class JobManager:
         history = copy.deepcopy(messages)
         async with httpx.AsyncClient(timeout=httpx.Timeout(180, connect=5), trust_env=False) as client:
             for _ in range(6):
-                response = await client.post(GATEWAY + "/chat/completions", json={"model": model, "messages": history, "tools": definitions, "max_tokens": 2048})
+                response = await client.post(**request_options({"model": model, "messages": history, "tools": definitions, "max_tokens": 2048}, GATEWAY + "/chat/completions"))
                 response.raise_for_status()
                 choice = response.json()["choices"][0]
                 message = choice["message"]
@@ -631,6 +648,14 @@ class JobManager:
             job.pop("_sdk_input", None)
             raise
         environment = {**os.environ, "CREWAI_TRACING_ENABLED": "false", "OTEL_SDK_DISABLED": "true", "PYTHONUNBUFFERED": "1"}
+        environment.pop("MODELDESK_MODEL_BASE", None)
+        environment.pop("MODELDESK_MODEL_TOKEN", None)
+        # Only an ephemeral selected-model grant enters the native process.
+        # Provider keys never enter environment variables or worker input files.
+        bridge_token = None
+        if any(model.startswith("connection:") for model in job["models"]):
+            bridge_token, bridge_environment = grant_worker(job["models"])
+            environment.update(bridge_environment)
         creation = asyncio.create_task(asyncio.create_subprocess_exec(*command, cwd=TOOLS, env=environment, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT, start_new_session=True))
         try:
             process = await asyncio.shield(creation)
@@ -640,11 +665,13 @@ class JobManager:
                 process = await creation
                 await self.terminate(process)
             finally:
+                revoke_worker(bridge_token)
                 input_path.unlink(missing_ok=True)
                 job.pop("_workflow_input", None)
                 job.pop("_sdk_input", None)
             raise
         except BaseException:
+            revoke_worker(bridge_token)
             input_path.unlink(missing_ok=True)
             job.pop("_workflow_input", None)
             job.pop("_sdk_input", None)
@@ -709,6 +736,7 @@ class JobManager:
             succeeded = True
             return result
         finally:
+            revoke_worker(bridge_token)
             await self.terminate(process)
             if job.get("workflow") and output.exists():
                 try:
@@ -936,11 +964,19 @@ def markdown_export(job):
 @router.get("/status")
 async def status():
     try:
-        catalog = await model_catalog()
+        catalog = await subscription_catalog()
         gateway = {"online": True}
     except Exception as exc:
         catalog = []
         gateway = {"online": False, "error": public_error(exc)}
+    connections_error = None
+    try:
+        api_models = connection_models()
+        saved_connections = connection_store.list()
+    except (OSError, ValueError, RuntimeError):
+        api_models, saved_connections = [], []
+        connections_error = "本机 API 连接配置无法读取，请检查模型连接设置；订阅登录未被修改"
+    catalog = sorted(set(catalog + [model["id"] for model in api_models]))
     auth = {"codex": [], "antigravity": []}
     for path in (TOOLS / ".private/auth").glob("*.json"):
         try:
@@ -957,16 +993,24 @@ async def status():
             provider["expires_at"] = auth[identifier][0]["expires_at"]
         providers.append(provider)
     providers.append({"id": "claude", "label": "Claude", "authenticated": False, "available_models": [], "verified_models": [], "reason": "Claude 订阅 OAuth 未接入；可继续使用官方应用。"})
+    for connection in saved_connections:
+        available = [model for model in api_models if model["connection_id"] == connection["id"]]
+        providers.append({"id": "connection:" + connection["id"], "label": connection["name"],
+                          "authenticated": connection["has_api_key"] or connection["allow_local"],
+                          "available_models": [model["id"] for model in available],
+                          "verified_models": [model["id"] for model in available if model["verified"]],
+                          "source": "api_key", "enabled": connection["enabled"]})
     tools = {}
     for identifier, label in [("chat", "多模型聊天"), ("council", "LLM Council"), ("camel", "CAMEL"), ("crewai", "CrewAI"), ("group", "MultiBot Chat"), ("review", "代码评审"), ("camel_workforce", "CAMEL Workforce"), ("crewai_flow", "CrewAI Flow"), ("sdk_script", "原生 SDK 工作室")]:
         sdk = "camel" if identifier.startswith("camel") else "crewai"
         installed = identifier in {"chat", "council", "group", "review", "sdk_script"} or (TOOLS / (".venv-" + sdk) / "bin/python").exists()
-        tools[identifier] = {"available": installed and gateway["online"], "label": label}
+        tools[identifier] = {"available": installed and (gateway["online"] or bool(api_models)), "label": label}
         if not installed:
             tools[identifier]["reason"] = "独立运行环境尚未安装"
-        elif not gateway["online"]:
+        elif not gateway["online"] and not api_models:
             tools[identifier]["reason"] = "本地模型网关未启动"
-    return {"gateway": gateway, "providers": providers, "models": [{"id": model, "provider": provider_for(model), "verified": model in VERIFIED_MODELS} for model in catalog], "tools": tools}
+    api_by_id = {model["id"]: model for model in api_models}
+    return {"gateway": gateway, "providers": providers, "models": [api_by_id.get(model) or {"id": model, "provider": provider_for(model), "verified": model in VERIFIED_MODELS} for model in catalog], "tools": tools, **({"connections_error": connections_error} if connections_error else {})}
 
 
 @router.get("/jobs")

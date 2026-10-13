@@ -52,8 +52,9 @@ def deliverables(job):
                 index = {"researcher": 0, "reviewer": 1}.get(message.get("role"))
                 if index is not None and len(job.get("models", [])) > index:
                     model = job["models"][index]
+            identity = {key: message[key] for key in ("member_id", "member_name") if message.get(key)} if mode == "group" else {}
             add("dialogue" if mode == "camel" else "group", message.get("content"), model,
-                message.get("role"), round=message.get("round"))
+                message.get("role"), round=message.get("round"), **identity)
         if mode == "camel":
             caveats.append("引用的是原生角色对话，不是另行生成的统一结论。")
         if result.get("partial_failure"):

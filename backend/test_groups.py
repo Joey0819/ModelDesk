@@ -122,6 +122,134 @@ class GroupRoomTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(second["tools"], [])
         self.assertTrue(any(event.get("member_name") == "审稿人" for event in second["events"]))
 
+    async def test_same_model_members_keep_separate_roles_mentions_history_and_artifacts(self):
+        from backend.artifacts import selected_artifact
+        from backend.conversations import deliverables
+        roster = [
+            {"id": "product", "name": "产品经理", "model": "a", "role": "PRODUCT_ROLE_18 明确产品目标"},
+            {"id": "research", "name": "市场调研员", "model": "a", "role": "RESEARCH_ROLE_27 核实市场证据"},
+            {"id": "decision", "name": "决策者", "model": "a", "role": "DECISION_ROLE_39 比较方案并决策"},
+        ]
+        self.team = self.teams.put(TeamRequest(name="同一模型的不同角色", project_id=self.project["id"], members=roster))
+        room = await self.room()
+        self.assertEqual(self.rooms.get(room["id"], room["project_id"])["team_snapshot"]["members"], roster)
+        first = await self.send(room, prompt="请共同规划产品", rounds=2)
+        self.assertEqual(first["models"], ["a"])
+        self.assertEqual([call["model"] for call in self.calls], ["a"] * 6)
+        self.assertEqual(first["result"]["recipient_member_ids"], [member["id"] for member in roster])
+        self.assertEqual([message["member_id"] for message in first["result"]["messages"]], ["product", "research", "decision"] * 2)
+        for index, call in enumerate(self.calls):
+            role = roster[index % 3]
+            system = call["messages"][0]["content"]
+            self.assertIn(role["role"], system)
+            self.assertIn(role["id"], system)
+            for other in roster:
+                if other["id"] != role["id"]:
+                    self.assertNotIn(other["role"], system)
+            if index:
+                self.assertIn(f"OUTPUT_a_{index}", str(call["messages"]))
+                self.assertIn(roster[(index - 1) % 3]["name"], str(call["messages"]))
+        for index, member in enumerate(roster, start=3):
+            artifact = selected_artifact(first, f"group:{index}")
+            self.assertIn(member["name"], artifact["title"])
+            self.assertEqual(artifact["content"], f"OUTPUT_a_{index + 1}")
+        prior, _ = deliverables(first)
+        self.assertEqual([item["member_id"] for item in prior], ["product", "research", "decision"] * 2)
+        self.assertIn("成员 product", group_chat.markdown_group(first["result"])[0])
+        # Rehydrate records before @mentioning only one of the three members.
+        reloaded = workbench.JobManager(self.root / "jobs")
+        reloaded.recover()
+        self.patches.enter_context(patch.object(workbench, "manager", reloaded))
+        self.jobs = reloaded
+        second = await self.send(room, prompt="请调研员继续", recipient_member_ids=["research"])
+        self.assertEqual(len(self.calls), 7)
+        self.assertEqual([message["member_id"] for message in second["result"]["messages"]], ["research"])
+        for member in roster:
+            self.assertIn(member["name"], str(self.calls[-1]["messages"]))
+            self.assertIn(member["id"], str(self.calls[-1]["messages"]))
+        self.assertIn("OUTPUT_a_6", str(self.calls[-1]))
+
+    async def test_same_model_member_roles_are_kept_for_tool_enabled_discussion(self):
+        self.team = self.teams.put(TeamRequest(name="工具角色组", project_id=self.project["id"], members=[
+            {"id": "writer", "name": "作者", "model": "a", "role": "WRITE_ONLY_ROLE"},
+            {"id": "reviewer", "name": "审稿人", "model": "a", "role": "REVIEW_ONLY_ROLE"}]))
+        room = await self.room()
+        observed = []
+
+        async def tool_reply(job, model, messages):
+            observed.append((model, messages))
+            return {"text": f"TOOL_ROLE_OUTPUT_{len(observed)}"}
+
+        with patch.object(self.jobs, "tool_response", side_effect=tool_reply):
+            result = await self.send(room, tools=["text_stats"])
+        self.assertEqual([model for model, _ in observed], ["a", "a"])
+        self.assertIn("WRITE_ONLY_ROLE", observed[0][1][0]["content"])
+        self.assertNotIn("REVIEW_ONLY_ROLE", observed[0][1][0]["content"])
+        self.assertIn("REVIEW_ONLY_ROLE", observed[1][1][0]["content"])
+        self.assertIn("TOOL_ROLE_OUTPUT_1", observed[1][1][1]["content"])
+        self.assertIn("成员 writer", observed[1][1][1]["content"])
+        self.assertEqual([message["member_id"] for message in result["result"]["messages"]], ["writer", "reviewer"])
+        self.assertEqual(self.calls, [])
+
+    async def test_apply_roster_updates_future_dispatch_preserves_history_and_checks_scope(self):
+        room = await self.room()
+        first = await self.send(room, recipient_member_ids=["writer"])
+        changed = TeamRequest.model_validate({key: self.team[key] for key in TeamRequest.model_fields})
+        changed.members[0].name = "新作者"
+        changed.members[0].role = "提出可验证的第二版"
+        self.teams.put(changed, self.team["id"])
+        endpoint = f"/api/groups/{room['id']}/team"
+        body = {"team_id": self.team["id"], "expected_revision": room["team_revision"]}
+        forbidden = await self.client.put(endpoint, params={"project_id": self.other["id"]}, json=body)
+        self.assertEqual(forbidden.status_code, 403)
+        updated = await self.client.put(endpoint, params=self.params(room), json=body)
+        self.assertEqual(updated.status_code, 200, updated.text)
+        self.assertNotEqual(updated.json()["team_revision"], room["team_revision"])
+        self.assertEqual((await self.client.put(endpoint, params=self.params(room), json=body)).status_code, 409)
+        second = await self.send(updated.json(), recipient_member_ids=["writer"])
+        self.assertEqual(second["group_team_snapshot"]["members"][0]["name"], "新作者")
+        self.assertEqual(self.jobs.get(first["id"])["group_team_snapshot"]["members"][0]["name"], "作者")
+        self.assertIn("提出可验证的第二版", str(self.calls[-1]))
+        persisted = groups.RoomStore(self.root / "rooms").get(room["id"], room["project_id"])
+        self.assertEqual(persisted["team_revision"], updated.json()["team_revision"])
+
+    async def test_roster_apply_blocks_active_discussion_and_agent_but_allows_other_rooms(self):
+        from backend import group_tasks
+        room = await self.room()
+        endpoint = f"/api/groups/{room['id']}/team"
+        body = {"team_id": self.team["id"], "expected_revision": room["team_revision"]}
+        entered, release = asyncio.Event(), asyncio.Event()
+        async def waiting_gateway(_):
+            entered.set()
+            await release.wait()
+            return httpx.Response(200, json={"choices": [{"message": {"content": "done"}, "finish_reason": "stop"}]})
+        self.gateway_handler = waiting_gateway
+        job = await self.send(room, wait=False, recipient_member_ids=["writer"])
+        await asyncio.wait_for(entered.wait(), 2)
+        try:
+            self.assertEqual((await self.client.put(endpoint, params=self.params(room), json=body)).status_code, 409)
+        finally:
+            release.set()
+            await self.jobs.tasks[job["id"]]
+        records = {"task": {"room_id": room["id"], "project_id": room["project_id"], "status": "queued"}}
+        with patch.object(group_tasks.manager, "records", records):
+            self.assertEqual((await self.client.put(endpoint, params=self.params(room), json=body)).status_code, 409)
+            records["task"]["room_id"] = str(uuid.uuid4())
+            self.assertEqual((await self.client.put(endpoint, params=self.params(room), json=body)).status_code, 200)
+
+    async def test_roster_change_during_gateway_check_rejects_stale_dispatch(self):
+        room = await self.room()
+        async def changed_catalog():
+            changed = self.rooms.get(room["id"], room["project_id"])
+            changed["team_snapshot"]["members"][0]["name"] = "changed while checking"
+            self.rooms.save(changed)
+            return ["a", "b"]
+        self.catalog.side_effect = changed_catalog
+        response = await self.client.post(f"/api/groups/{room['id']}/messages", params=self.params(room), json={"prompt": "test"})
+        self.assertEqual(response.status_code, 409, response.text)
+        self.assertEqual(self.calls, [])
+        self.assertEqual(self.jobs.jobs, {})
+
     async def test_followup_waits_for_prior_turn_and_restart_keeps_history(self):
         room = await self.room()
         entered, release = asyncio.Event(), asyncio.Event()

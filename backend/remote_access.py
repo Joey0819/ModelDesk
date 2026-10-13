@@ -250,7 +250,7 @@ async def revoke_all():
 
 
 def api_allowed(path, method):
-    if path.startswith("/api/remote"):
+    if path.startswith(("/api/remote", "/api/model-connections", "/api/model-runtime")):
         return False
     if method not in SAFE_METHODS:
         if path.startswith("/api/muse") or path.startswith("/api/platform/originals"):

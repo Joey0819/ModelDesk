@@ -2,7 +2,7 @@ import test from 'node:test';
 import { setImmediate } from 'node:timers';
 import assert from 'node:assert/strict';
 import { missionRequest, copyMissionDraft, missionProgress, missionErrors, readMissionWorkspace, missionScopeKey, scopedMissions, selectedMissionStep, stepJobId } from '../src/mission-state.js';
-import { temporaryMembers, teamIssues, teamRequest, runTeamSelection, copyRunTeam } from '../src/mission-teams.js';
+import { appendTeamMember, temporaryMembers, teamIssues, teamRequest, runTeamSelection, copyRunTeam } from '../src/mission-teams.js';
 import { pollMission } from '../src/mission-polling.js';
 import Module from 'node:module';
 import path from 'node:path';
@@ -124,6 +124,19 @@ test('teams reject duplicate model membership and make disconnected models expli
   assert(teamIssues(team, [{ id: 'a' }]).some((issue) => issue.includes('当前未接入：unconnected')));
   const html = renderToStaticMarkup(React.createElement(MissionTeamPicker, { projectId: 'project-a', team, models: ['a', 'unconnected'], catalog: [{ id: 'a' }], onChange() {}, onPending() {} }));
   assert.match(html, /选择协作组/); assert.match(html, /成员与分工/); assert.match(html, /新建组/); assert.match(html, /当前未接入：unconnected/);
+});
+
+test('project groups can add distinct roles sharing a model without changing saved members', () => {
+  const team = { name: 'Product group', members: temporaryMembers(['grok', 'grok']) };
+  assert.deepEqual(teamIssues(team, [{ id: 'grok' }], { allowRepeatedModels: true }), []);
+  const expanded = appendTeamMember(team, [{ id: 'grok' }]);
+  assert.equal(team.members.length, 2);
+  assert.equal(expanded.members.length, 3);
+  assert.equal(expanded.members[2].model, 'grok');
+  assert.equal(new Set(expanded.members.map((member) => member.id)).size, 3);
+  assert.equal(appendTeamMember(appendTeamMember(expanded)).members.length, 4);
+  const html = renderToStaticMarkup(React.createElement(MissionTeamPicker, { team, models: ['grok'], catalog: [{ id: 'grok' }], onChange() {}, onPending() {}, onOpenAgentSettings() {} }));
+  assert.match(html, /接入模型 \/ API Key/);
 });
 
 test('CAMEL plan states its actual two-member participation before launch', () => {

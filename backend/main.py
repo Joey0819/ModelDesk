@@ -21,6 +21,7 @@ from .muse_bridge import router as muse_router, manager as muse_manager
 from .group_tasks import router as group_tasks_router, manager as group_tasks_manager
 from .group_approvals import router as group_approvals_router
 from .remote_access import router as remote_router, controller as remote_controller
+from .model_connections import router as model_connections_router, runtime_router as model_runtime_router
 from .council import run_full_council, generate_conversation_title, stage1_collect_responses, stage2_collect_rankings, stage3_synthesize_final, calculate_aggregate_rankings
 
 app = FastAPI(title="ModelDesk API")
@@ -34,6 +35,8 @@ app.include_router(muse_router)
 app.include_router(group_tasks_router)
 app.include_router(group_approvals_router)
 app.include_router(remote_router)
+app.include_router(model_connections_router)
+app.include_router(model_runtime_router)
 app.add_event_handler("startup", workbench_manager.recover)
 app.add_event_handler("startup", harness_manager.recover)
 app.add_event_handler("startup", muse_manager.recover)

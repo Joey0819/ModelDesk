@@ -6,7 +6,7 @@ from pathlib import Path
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from backend.vision import prepare_vision, crew_vision_llm, public_summary, visible_text, SafeWorkerStream
+from backend.vision import GATEWAY, GATEWAY_KEY, prepare_vision, crew_vision_llm, public_summary, visible_text, SafeWorkerStream
 from backend.workers.workflow import camel_clients
 
 os.environ["CREWAI_TRACING_ENABLED"] = "false"
@@ -28,7 +28,7 @@ def main():
         from camel.societies import RolePlaying
         def model(name):
             client, async_client = camel_clients(name, image_parts=image_parts, vision_report=request["_vision_report"])
-            return ModelFactory.create(model_platform=ModelPlatformType.OPENAI_COMPATIBLE_MODEL, model_type=name, url="http://127.0.0.1:8317/v1", api_key="local-oauth", model_config_dict={"max_tokens": 4096}, max_retries=2, timeout=180, client=client, async_client=async_client)
+            return ModelFactory.create(model_platform=ModelPlatformType.OPENAI_COMPATIBLE_MODEL, model_type=name, url=GATEWAY, api_key=GATEWAY_KEY, model_config_dict={"max_tokens": 4096}, max_retries=2, timeout=180, client=client, async_client=async_client)
         society = RolePlaying(assistant_role_name="代码缺陷审查者", user_role_name="证据核查者", task_prompt=request["system"] + "\n\n" + request["prompt"], with_task_specify=False, assistant_agent_kwargs={"model": model(request["models"][0])}, user_agent_kwargs={"model": model(request["models"][1])}, output_language="Chinese")
         message = society.init_chat()
         messages = []

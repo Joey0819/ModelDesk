@@ -9,8 +9,10 @@ import threading
 import io
 import re
 import hashlib
+import os
 
-GATEWAY = "http://127.0.0.1:8317/v1"
+GATEWAY = os.environ.get("MODELDESK_MODEL_BASE", "http://127.0.0.1:8317/v1")
+GATEWAY_KEY = os.environ.get("MODELDESK_MODEL_TOKEN", "local-oauth")
 _REPORT_LOCK = threading.Lock()
 _IMAGE_DATA = re.compile(r"data:image/[a-zA-Z0-9.+-]+;base64,[a-zA-Z0-9+/=]+")
 _PRIVATE_IMAGE_PATH = re.compile(r"[^\s\"'<>]*?/data/workbench/attachment-inputs/[^\s\"'<>]+")
@@ -18,6 +20,8 @@ _PRIVATE_IMAGE_PATH = re.compile(r"[^\s\"'<>]*?/data/workbench/attachment-inputs
 
 def public_text(value):
     text = str(value)
+    if GATEWAY_KEY != "local-oauth":
+        text = text.replace(GATEWAY_KEY, "[原生模型授权已省略]")
     text = _IMAGE_DATA.sub(lambda match: "[图片数据已省略，内容指纹 " + hashlib.sha256(match.group().encode()).hexdigest()[:16] + "]", text)
     return _PRIVATE_IMAGE_PATH.sub("[已选图片副本路径已省略]", text)
 
@@ -204,7 +208,7 @@ def crew_vision_interceptor(image_parts, report=None):
 
 def crew_vision_llm(name, image_parts, report=None, max_tokens=3072, timeout=180):
     from crewai import LLM
-    options = {"model": "openai/" + name, "base_url": GATEWAY, "api_key": "local-oauth",
+    options = {"model": "openai/" + name, "base_url": GATEWAY, "api_key": GATEWAY_KEY,
                "max_tokens": max_tokens, "timeout": timeout, "max_retries": 2}
     if image_parts:
         options["interceptor"] = crew_vision_interceptor(image_parts, report)

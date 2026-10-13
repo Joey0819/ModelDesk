@@ -430,6 +430,14 @@ class HarnessTests(unittest.IsolatedAsyncioTestCase):
     async def test_team_invalid_members_and_workflow_models_are_rejected(self):
         body = self.team_request().model_dump(mode="json")
         body["members"][1]["model"] = "alpha"
+        shared_model_team = self.harness.teams.put(TeamRequest.model_validate(body))
+        with self.assertRaises(HTTPException) as error:
+            self.harness.teams.resolve(RunRequest(goal="test", team_id=shared_model_team["id"]))
+        self.assertEqual(error.exception.status_code, 422)
+        self.assertIn("项目群聊", error.exception.detail)
+        with self.assertRaises(ValueError):
+            RunRequest(goal="test", members=body["members"])
+        body["members"][1]["id"] = body["members"][0]["id"]
         with self.assertRaises(ValueError):
             TeamRequest.model_validate(body)
         team = self.harness.teams.put(self.team_request())

@@ -17,8 +17,9 @@ def main():
     npm = shutil.which("npm", path=environment["PATH"])
     if not npm:
         raise SystemExit("Node.js/npm is required to verify ModelDesk")
+    python = str(ROOT / ".venv/bin/python") if (ROOT / ".venv/bin/python").exists() else sys.executable
     commands = [
-        [sys.executable, "-m", "unittest", "discover", "-s", "backend", "-p", "test_*.py", "-v"],
+        [python, "-m", "unittest", "discover", "-s", "backend", "-p", "test_*.py", "-v"],
         [npm, "--prefix", "frontend", "test"],
         [npm, "--prefix", "frontend", "run", "lint"],
         [npm, "--prefix", "desktop", "test"],

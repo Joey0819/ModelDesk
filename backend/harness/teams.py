@@ -76,6 +76,8 @@ class TeamStore:
         if request.team_id:
             snapshot = self.get(str(request.team_id), body["project_id"])
             body["models"] = [member["model"] for member in snapshot["members"]]
+            if len(body["models"]) != len(set(body["models"])):
+                raise HTTPException(422, "此协作组有多位成员使用同一模型，请在项目群聊中使用；协作流程目前需要不同模型")
         elif request.members:
             snapshot = {"id": None, "name": "临时协作团队", "description": "本次明确配置的成员", "project_id": body["project_id"],
                         "members": body["members"], "created_at": now(), "updated_at": now(), "archived": False}

@@ -19,12 +19,11 @@ import re
 import uuid
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from backend.vision import prepare_vision, vision_transports, crew_vision_llm, public_summary, visible_text, SafeWorkerStream
+from backend.vision import GATEWAY, GATEWAY_KEY, prepare_vision, vision_transports, crew_vision_llm, public_summary, visible_text, SafeWorkerStream
 
 os.environ.setdefault("CREWAI_TRACING_ENABLED", "false")
 os.environ.setdefault("OTEL_SDK_DISABLED", "true")
 
-GATEWAY = "http://127.0.0.1:8317/v1"
 EVENT_LOCK = threading.Lock()
 SAVE_LOCK = threading.RLock()
 RUNTIME_TOOLS = "http://127.0.0.1:8001/api/platform/runtime/tools/"
@@ -197,7 +196,7 @@ def camel_clients(model_name, sync_transport=None, async_transport=None, image_p
     async def async_retry_notice(request):
         retry_notice(request)
 
-    options = {"base_url": GATEWAY, "api_key": "local-oauth", "timeout": 180,
+    options = {"base_url": GATEWAY, "api_key": GATEWAY_KEY, "timeout": 180,
                "max_retries": MODEL_TRANSPORT_RETRIES}
     if image_parts:
         sync_transport, async_transport = vision_transports(image_parts, vision_report, sync_transport, async_transport)
@@ -216,7 +215,7 @@ def camel_options(data, agent, max_tokens=3072):
     configuration = data["workflow"]
     sync_client, async_client = camel_clients(agent["model"], image_parts=prepare_vision(data), vision_report=data["_vision_report"])
     model = ModelFactory.create(model_platform=ModelPlatformType.OPENAI_COMPATIBLE_MODEL,
-                                model_type=agent["model"], url=GATEWAY, api_key="local-oauth",
+                                model_type=agent["model"], url=GATEWAY, api_key=GATEWAY_KEY,
                                 model_config_dict={"max_tokens": max_tokens}, max_retries=MODEL_TRANSPORT_RETRIES, timeout=180,
                                 client=sync_client, async_client=async_client)
     tools = []

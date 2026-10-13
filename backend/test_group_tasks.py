@@ -83,6 +83,19 @@ print(json.dumps({'type':'turn.completed'}))
         self.assertNotEqual(tasks.local_git(workspace, "rev-parse", "HEAD").strip().decode(), item["base_sha"])
         self.assertEqual((self.manager.directory / (item["id"] + ".json")).stat().st_mode & 0o777, 0o600)
 
+    async def test_member_change_during_engine_probe_rejects_stale_assignment(self):
+        async def changing_engine_status():
+            room = self.rooms.get(self.room["id"], self.project["id"])
+            room["team_snapshot"]["members"][0]["name"] = "Changed member"
+            self.rooms.save(room)
+            return CAPABILITIES
+        with patch.object(tasks, "engine_status", changing_engine_status):
+            with self.assertRaises(HTTPException) as caught:
+                await self.manager.create(self.request())
+        self.assertEqual(caught.exception.status_code, 409)
+        self.assertEqual(self.manager.records, {})
+        self.assertEqual(self.manager.tasks, {})
+
     async def test_review_exact_patch_distinct_member_and_readonly_detection(self):
         source = await self.run_task()
         request = tasks.TaskRequest(project_id=self.project["id"], room_id=self.room["id"], member_id="reviewer", engine="codex", kind="review", source_task_id=source["id"], prompt="Check defects")

@@ -4,7 +4,7 @@ import { workflowFormatDiagnostics } from '../workflow-failure';
 import { deriveArtifacts } from '../artifacts';
 import ConversationActions, { CopyTextButton } from './ConversationActions';
 const active = (job) => ['queued', 'running'].includes(job?.status);
-const modelLabel = (model = '') => model.replace(/^openai\//, '');
+const modelLabel = (model = '') => model.replace(/^connection:[^:]+:/, '').replace(/^openai\//, '');
 const asText = (value) => typeof value === 'string' ? value : value?.content || value?.response || '';
 
 export function Icon({ name, size = 20 }) {

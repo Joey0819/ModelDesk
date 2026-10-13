@@ -33,6 +33,19 @@ test('role and group panels choose each participant latest actual utterance and 
   assert.equal(group[1].id, 'group:1');
 });
 
+test('group artifacts keep distinct members sharing a model and scope later failures to their member', () => {
+  const artifacts = deriveArtifacts(job('group', { messages: [
+    { model: 'grok', member_id: 'writer', member_name: '作者', content: 'draft', round: 1 },
+    { model: 'grok', member_id: 'reviewer', member_name: '审稿人', content: 'review', round: 1 },
+    { model: 'grok', member_id: 'reviewer', member_name: '审稿人', content: '', error: 'failed', round: 2 },
+  ] }));
+  assert.equal(artifacts.length, 2);
+  assert.equal(artifacts.find((item) => item.content === 'draft').status, 'complete');
+  assert.equal(artifacts.find((item) => item.content === 'review').status, 'partial');
+  assert(artifacts.some((item) => item.title.includes('作者')));
+  assert(artifacts.some((item) => item.title.includes('审稿人')));
+});
+
 test('successful Workforce prefers the final completed delivery task instead of concatenated framework output', () => {
   const tasks = [{ id: 'evidence', status: 'complete', description: '搜集依据', output: '原始依据' }, { id: 'write', status: 'complete', description: '整合为完整文章并交付', output: '# 最终文章\n\n实际正文', agent: 'reviewer' }];
   const artifacts = deriveArtifacts(job('camel_workforce', { tasks, answer: '原始依据\n\n实际正文', partial: false }));

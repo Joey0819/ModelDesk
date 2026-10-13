@@ -68,6 +68,16 @@ class MessageRequest(BaseModel):
         return value
 
 
+class RoomTeamRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    team_id: uuid.UUID
+    expected_revision: str = Field(pattern=r"^[a-f0-9]{64}$")
+
+
+def team_revision(snapshot):
+    return hashlib.sha256(json.dumps(snapshot, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+
+
 class RoomStore:
     def __init__(self, directory=None):
         self.atomic = RunStore(directory or workbench.PROJECT / "data/groups")
@@ -99,7 +109,7 @@ class RoomStore:
             raise HTTPException(409, "项目群记录无法读取，原文件已保留") from error
         if request["project_id"] != project:
             raise HTTPException(403, "项目群不属于当前项目")
-        return {**request, "team_snapshot": copy.deepcopy(snapshot), **{key: value[key] for key in ["id", "schema_version", "created_at", "updated_at"]}}
+        return {**request, "team_snapshot": copy.deepcopy(snapshot), "team_revision": team_revision(snapshot), **{key: value[key] for key in ["id", "schema_version", "created_at", "updated_at"]}}
 
     def save(self, value):
         with self.lock:
@@ -127,15 +137,16 @@ class RoomStore:
         item = {**body, "id": str(uuid.uuid4()), "schema_version": 1, "team_snapshot": copy.deepcopy(snapshot),
                 "created_at": workbench.now(), "updated_at": workbench.now()}
         self.save(item)
-        return copy.deepcopy(item)
+        return {**copy.deepcopy(item), "team_revision": team_revision(snapshot)}
 
 
 store = RoomStore()
 
 
 def room_roles(room):
-    return {member["model"]: "成员名称：" + member["name"] + "\n角色职责：" + (member["role"] or "围绕用户目标提供独立分析与交付")
-            for member in room["team_snapshot"]["members"]}
+    # Group dispatch reads trusted role prompts from each frozen member by ID.
+    # A model-keyed role map would overwrite two distinct roles using one model.
+    return {}
 
 
 def freeze_muse_source(room, identifier):
@@ -193,7 +204,7 @@ def validate_job_creation(request, metadata, authorization):
     room = store.get(identifier, request.project_id)
     members = room["team_snapshot"]["members"]
     meta = metadata or {}
-    if (request.mode != "group" or request.models != [member["model"] for member in members] or request.roles != room_roles(room)
+    if (request.mode != "group" or request.models != list(dict.fromkeys(member["model"] for member in members)) or request.roles != room_roles(room)
             or meta.get("group_room_id") != identifier or meta.get("group_team_snapshot") != room["team_snapshot"]):
         raise HTTPException(403, "群成员配置必须来自本群的已保存成员")
     selected = meta.get("group_recipient_member_ids")
@@ -221,6 +232,28 @@ async def create_room(request: RoomRequest):
 @router.get("/{identifier}")
 async def get_room(identifier: str, project_id: str | None = None):
     return await asyncio.to_thread(store.get, identifier, project_id)
+
+
+@router.put("/{identifier}/team")
+async def update_room_team(identifier: str, request: RoomTeamRequest, project_id: str | None = None):
+    """Apply a saved team to future work only; completed work keeps its identity."""
+    from .harness.manager import manager as harness
+    from .group_tasks import manager as tasks, ACTIVE
+    # No awaits between checking active records and saving: task/job creation
+    # performs a final roster check in the same event loop before persistence.
+    with store.lock:
+        room = store.get(identifier, project_id)
+        if room["team_revision"] != request.expected_revision:
+            raise HTTPException(409, "群成员已在其他窗口更新，请重新打开成员设置后再应用")
+        if any(job["status"] in {"queued", "running"} for job in room_jobs(room)) or any(
+            task["room_id"] == room["id"] and task["project_id"] == room["project_id"] and task["status"] in ACTIVE
+            for task in tasks.records.values()
+        ):
+            raise HTTPException(409, "本群仍有讨论或 Agent 任务运行，请等其完成或停止后再应用成员变更")
+        snapshot = harness.teams.get(str(request.team_id), room["project_id"])
+        room.update(team_id=snapshot["id"], team_snapshot=copy.deepcopy(snapshot), team_revision=team_revision(snapshot), updated_at=workbench.now())
+        store.save(room)
+        return room
 
 
 @router.get("/{identifier}/messages")
@@ -257,11 +290,13 @@ async def send_message(identifier: str, request: MessageRequest, project_id: str
     body = request.model_dump(mode="json", exclude={"recipient_member_ids", "muse_task_id"})
     try:
         job_request = workbench.JobRequest(**body, mode="group", project_id=room["project_id"], conversation_id=room["id"],
-                                           models=[member["model"] for member in members], roles=room_roles(room))
+                                           models=list(dict.fromkeys(member["model"] for member in members)), roles=room_roles(room))
     except ValidationError as error:
         raise HTTPException(422, "群消息配置无效，请检查工具、附件和代码快照选择") from error
     from .super_platform import validate_context
     await asyncio.to_thread(validate_context, job_request.model_dump(mode="json"))
+    if store.get(room["id"], room["project_id"])["team_revision"] != room["team_revision"]:
+        raise HTTPException(409, "群成员在发送期间发生变化，请确认新成员后重新发送")
     metadata = {"group_room_id": room["id"], "group_title": room["title"],
                 "group_team_snapshot": room["team_snapshot"], "group_recipient_member_ids": selected}
     if muse_source:

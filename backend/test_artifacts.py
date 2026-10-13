@@ -52,3 +52,17 @@ class ArtifactTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('sum(xs)/len(xs)', exported)
         self.assertIn('Only selected snapshot reviewed', exported)
         self.assertIn('No observed evidence', exported)
+
+    def test_same_model_group_members_have_independent_latest_artifacts_and_failure_state(self):
+        job = {"id": "job", "mode": "group", "status": "complete", "result": {"messages": [
+            {"member_id": "writer", "model": "shared", "role": "作者", "content": "writer first"},
+            {"member_id": "reviewer", "model": "shared", "role": "审稿人", "content": "reviewer final"},
+            {"member_id": "writer", "model": "shared", "role": "作者", "content": "writer final"},
+            {"member_id": "reviewer", "model": "shared", "role": "审稿人", "content": "", "error": "unavailable"},
+        ]}}
+        self.assertEqual(selected_artifact(job, 'group:1')['content'], 'reviewer final')
+        self.assertTrue(selected_artifact(job, 'group:1')['partial'])
+        self.assertEqual(selected_artifact(job, 'group:2')['content'], 'writer final')
+        self.assertFalse(selected_artifact(job, 'group:2')['partial'])
+        with self.assertRaises(HTTPException):
+            selected_artifact(job, 'group:0')

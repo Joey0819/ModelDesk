@@ -38,3 +38,22 @@ export function groupMessages(job, room) {
     return { ...message, member_id: message.member_id || member?.id, member_name: message.member_name || member?.name || message.model, role: message.role || member?.role || '' };
   });
 }
+
+export function groupRecipients(job, room) {
+  const members = job.group_team_snapshot?.members || room.team_snapshot?.members || [];
+  return job.group_recipient_member_ids?.length ? members.filter((member) => job.group_recipient_member_ids.includes(member.id)) : members;
+}
+
+export function groupTimeline(jobs, museTasks, projectId, roomId) {
+  return [
+    ...(jobs || []).filter((job) => job.group_room_id === roomId && (job.project_id || null) === (projectId || null)).map((value) => ({ type: 'discussion', value })),
+    ...(museTasks || []).filter((task) => task.room_id === roomId && (task.project_id || null) === (projectId || null)).map((value) => ({ type: 'muse', value })),
+  ].sort((a, b) => String(a.value.created_at || '').localeCompare(String(b.value.created_at || '')) || a.value.id.localeCompare(b.value.id));
+}
+
+export function groupMemberColor(identifier = '') {
+  const colors = ['#b5475b', '#946028', '#a23e86', '#2b7284', '#5967a7', '#3e7960'];
+  let hash = 0;
+  for (const char of identifier) hash = (hash * 31 + char.charCodeAt(0)) >>> 0;
+  return colors[hash % colors.length];
+}

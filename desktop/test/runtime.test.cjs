@@ -107,6 +107,15 @@ test('internal page access cannot be redirected to another local file', () => {
   assert.equal(isStatusURL('file://remote/Users/example/ModelDesk.app/Contents/Resources/app/status.html', status), false);
 });
 
+test('Muse task exports accept only scoped local Markdown or JSON', () => {
+  const base = 'http://localhost:8001/api/muse/tasks/df9d3857-3d01-4c24-9e64-b9343e217f9a/export';
+  assert.equal(isExportURL(`${base}?format=md`), true);
+  assert.equal(isExportURL(`${base}?project_id=df9d3857-3d01-4c24-9e64-b9343e217f9a&format=json`), true);
+  assert.equal(exportFormat(`${base}?format=json`), 'json');
+  for (const suffix of ['format=html', 'format=md&path=/etc/passwd', 'format=md&project_id=other', 'format=md&format=json', 'format=md&project_id=', 'format=md#external']) assert.equal(isExportURL(`${base}?${suffix}`), false);
+  assert.equal(isExportURL(base.replace('localhost', 'example.com') + '?format=md'), false);
+});
+
 test('launch resolves absolute workspace and deterministic GUI executable paths', () => {
   assert.equal(workspaceRoot({ MODEL_DESK_WORKSPACE: '/Users/example/llm-tools' }), '/Users/example/llm-tools');
   assert.throws(() => workspaceRoot({ MODEL_DESK_WORKSPACE: '../relative' }), /absolute/);

@@ -64,13 +64,21 @@ async def run_group(manager, job):
     # The manager's same-topic lock serializes runs; distinct topics can progress
     # independently. Never read another conversation's transcript.
     history = topic_history(manager, job)
-    result = {"models": job["models"], "rounds": job["rounds"], "messages": [], "partial_failure": False}
+    members = {member["model"]: member for member in (job.get("group_team_snapshot") or {}).get("members", [])}
+    recipients = job.get("group_recipient_member_ids")
+    models = [model for model in job["models"] if recipients is None or members.get(model, {}).get("id") in recipients]
+    if not models:
+        raise RuntimeError("本轮没有有效的接收成员")
+    result = {"models": job["models"], "recipient_models": models, "rounds": job["rounds"], "messages": [], "partial_failure": False}
     job["result"] = result
     manager.jobs.get(job["id"], job)["result"] = result
     for round_index in range(1, job["rounds"] + 1):
-        for model in job["models"]:
+        for model in models:
             manager.emit(job, "log", text=f"群聊第 {round_index}/{job['rounds']} 轮：{model} 发言")
             message = {"model": model, "round": round_index, "content": ""}
+            if model in members:
+                member = members[model]
+                message.update(member_id=member["id"], member_name=member["name"], role=member["name"])
             try:
                 if job.get("tools"):
                     answer = await manager.tool_response(job, model, discussion_messages(job, model, history))

@@ -629,6 +629,9 @@ def import_data(request):
         try:
             identifier = str(uuid.UUID(job["id"]))
             conversation = str(uuid.UUID(job["conversation_id"]))
+            from .groups import store as group_rooms
+            if any(key.startswith("group_") for key in job) or group_rooms.exists(conversation):
+                raise ValueError("Project group history cannot be imported as unrelated jobs")
             if job["mode"] not in {"chat", "council", "camel", "crewai", "group", "review", "camel_workforce", "crewai_flow", "sdk_script"}:
                 raise ValueError()
             models = job["models"]

@@ -113,6 +113,9 @@ def build_history(jobs, job, reserved_chars=0):
             omitted.append({"job_id": previous["id"], "reason": reason})
 
     for previous in prior:
+        if previous.get("group_room_id") != job.get("group_room_id"):
+            omit(previous, "group_scope_changed")
+            continue
         if not isinstance(previous.get("prompt"), str):
             omit(previous, "invalid_history_record")
             continue

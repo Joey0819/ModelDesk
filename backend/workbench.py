@@ -215,7 +215,9 @@ class JobManager:
             raise HTTPException(404, "任务不存在")
         return self.jobs[job_id]
 
-    def create(self, request, *, job_id=None, metadata=None, attachment_source=None):
+    def create(self, request, *, job_id=None, metadata=None, attachment_source=None, group_authorization=None):
+        from .groups import validate_job_creation
+        validate_job_creation(request, metadata, group_authorization)
         if sum(job["status"] not in TERMINAL for job in self.jobs.values()) >= 4:
             raise HTTPException(429, "最多同时运行 4 个任务，请等待或停止已有任务。")
         job_id = str(uuid.UUID(job_id)) if job_id else str(uuid.uuid4())
@@ -316,6 +318,12 @@ class JobManager:
             material = "\n\n".join(part for part in [material, attachment_text] if part)
             references.extend({**item, "kind": "attachment", "asset_kind": item["kind"]} for item in attachment_refs)
             truncated = truncated or job.get("attachment_manifest", {}).get("coverage", {}).get("truncated", False)
+            if job.get("group_muse_source"):
+                from .groups import muse_reference
+                quote, reference = muse_reference(job, len(material))
+                material = "\n\n".join(part for part in [material, quote] if part)
+                references.append(reference)
+                truncated = truncated or reference["truncated"]
             history = build_history(self.jobs, job, reserved_chars=len(material) + len(job.get("system_prompt") or ""))
             job["context_history"] = history["metadata"]
             self.emit(job, "stage", stage="conversational_context", data=history["metadata"])

@@ -69,6 +69,14 @@ function openExternal(value) {
 }
 
 function installProjectPicker() {
+  ipcMain.handle('modeldesk:open-muse', async event => {
+    const owner = mainWindow;
+    if (!owner || owner.isDestroyed() || !isTrustedWorkbenchIPC(event, owner.webContents)) return false;
+    try {
+      await execFileAsync('/usr/bin/open', ['-b', 'com.meta.endo'], { timeout: 10000, maxBuffer: 4096 });
+      return true;
+    } catch { return false; }
+  });
   ipcMain.handle('modeldesk:choose-input-files', async event => {
     const owner = mainWindow;
     if (!owner || owner.isDestroyed() || !isTrustedWorkbenchIPC(event, owner.webContents) || attachmentPickerInProgress) return null;

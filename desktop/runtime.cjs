@@ -48,6 +48,9 @@ function isExportURL(value) {
   const rawPath = value.match(/^[a-z][a-z0-9+.-]*:\/\/[^/?#]+([^?#]*)/i)?.[1];
   if (rawPath !== url.pathname) return false;
   const query = Array.from(url.searchParams.entries());
+  if (/^\/api\/muse\/tasks\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/export$/i.test(url.pathname)) {
+    return query.length >= 1 && query.length <= 2 && new Set(query.map(([key]) => key)).size === query.length && ['md', 'json'].includes(url.searchParams.get('format')) && query.every(([key, value]) => key === 'format' || (key === 'project_id' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value)));
+  }
   if (/^\/api\/harness\/runs\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/export$/i.test(url.pathname)) {
     return query.length === 1 && query[0][0] === 'format' && ['md', 'json'].includes(query[0][1]);
   }

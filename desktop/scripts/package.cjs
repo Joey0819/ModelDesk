@@ -52,6 +52,7 @@ async function main() {
     out: path.join(root, 'dist', 'package'),
     overwrite: true,
     asar: true,
+    extraResource: [path.join(root, 'bin', 'muse-bridge')],
     extendInfo: { NSHighResolutionCapable: true },
     prune: false,
     download: { checksums },

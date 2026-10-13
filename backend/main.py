@@ -18,6 +18,9 @@ from .harness.router import router as harness_router
 from .harness.manager import manager as harness_manager
 from .groups import router as groups_router
 from .muse_bridge import router as muse_router, manager as muse_manager
+from .group_tasks import router as group_tasks_router, manager as group_tasks_manager
+from .group_approvals import router as group_approvals_router
+from .remote_access import router as remote_router, controller as remote_controller
 from .council import run_full_council, generate_conversation_title, stage1_collect_responses, stage2_collect_rankings, stage3_synthesize_final, calculate_aggregate_rankings
 
 app = FastAPI(title="ModelDesk API")
@@ -28,9 +31,15 @@ app.include_router(platform_router)
 app.include_router(harness_router)
 app.include_router(groups_router)
 app.include_router(muse_router)
+app.include_router(group_tasks_router)
+app.include_router(group_approvals_router)
+app.include_router(remote_router)
 app.add_event_handler("startup", workbench_manager.recover)
 app.add_event_handler("startup", harness_manager.recover)
 app.add_event_handler("startup", muse_manager.recover)
+app.add_event_handler("startup", remote_controller.recover)
+app.add_event_handler("shutdown", remote_controller.shutdown)
+app.add_event_handler("shutdown", group_tasks_manager.shutdown)
 app.add_event_handler("shutdown", muse_manager.shutdown)
 app.add_event_handler("shutdown", harness_manager.shutdown)
 app.add_event_handler("shutdown", workbench_manager.shutdown)

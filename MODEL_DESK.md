@@ -1,6 +1,8 @@
 # ModelDesk 统一工作台
 
-ModelDesk 2.4.0：一个页面使用已有模型登录，运行持续项目群聊、Muse 原生窗口桥接、Council、CAMEL、CrewAI 与多引擎协作。所有模块共用项目入口，支持普通项目、图片/文件资料、文件夹导入与固定源码快照的代码审查。网页地址保持 http://localhost:5173/，当前电脑安装入口为 `/Applications/ModelDesk.app`，构建产物位于相邻目录 `../llm-tools/releases/ModelDesk.app`。
+ModelDesk 2.5.0：一个页面使用已有模型登录，运行持续项目群聊、独立 CLI Agent、群内审批合入、Muse 原生窗口桥接、Council、CAMEL、CrewAI 与多引擎协作。新增私有手机访问入口。所有模块共用项目入口，支持普通项目、图片/文件资料、文件夹导入与固定源码快照的代码审查。网页地址保持 http://localhost:5173/，当前电脑安装入口为 `/Applications/ModelDesk.app`，构建产物位于相邻目录 `../llm-tools/releases/ModelDesk.app`。
+
+2.5 的完整操作、执行器限制和手机配对见 [独立 Agent 项目群与手机访问](docs/AGENT_GROUPS_AND_PHONE.md)。群内批准只合入明确审查过的本地代码，不自动推送或合并远端 PR。
 
 ## 多智能体平台
 

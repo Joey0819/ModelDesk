@@ -1,0 +1,121 @@
+.group-work-mode { display: flex; flex: 0 0 auto; align-items: center; gap: 6px; padding: 9px 24px; border-bottom: 1px solid var(--line); background: var(--shell-paper); }
+.group-work-mode button { display: flex; align-items: center; gap: 7px; border: 1px solid transparent; border-radius: 6px; padding: 8px 12px; background: transparent; color: var(--muted); font: inherit; font-size: 12px; white-space: nowrap; }
+.group-work-mode button.selected { background: var(--shell-wash); border-color: var(--line); color: var(--ink); font-weight: 600; }
+.group-agent-workspace { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.group-agent-timeline { flex: 1; min-height: 0; overflow: auto; padding: 22px clamp(18px, 4vw, 56px); scrollbar-width: thin; }
+.group-agent-timeline > * { max-width: 820px; margin-left: auto; margin-right: auto; }
+.group-task-empty { max-width: 480px; padding: 45px 0; margin: 0 auto; color: var(--muted); }
+.group-task-empty h2 { font-size: 20px; line-height: 1.5; font-weight: 550; color: var(--ink); }
+.group-task-empty p { font-size: 13px; line-height: 1.9; }
+.group-task-empty > svg { color: var(--accent); }
+.group-task-sequence { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin-top: 23px; font-size: 12px; color: var(--ink); }
+.group-agent-task { border-bottom: 1px solid var(--line); padding: 6px 0 23px; margin-bottom: 24px; }
+.group-agent-task > header { display: flex; align-items: center; gap: 10px; }
+.group-agent-task header > div { flex: 1; min-width: 0; }
+.group-agent-task header strong { font-size: 13px; }
+.group-agent-task header small { display: block; font-size: 10px; color: var(--muted); margin-top: 5px; }
+.group-task-status { display: inline-flex; align-items: center; gap: 5px; font-size: 10px; color: var(--muted); }
+.group-agent-task > time { display: block; font-size: 10px; color: var(--muted); margin: 12px 0 8px; }
+.group-agent-task .markdown { font-size: 13px; line-height: 1.85; overflow-wrap: anywhere; }
+.group-task-provenance { color: var(--muted); font-size: 10px; line-height: 1.8; }
+.group-task-provenance code { font-size: 10px; }
+.group-agent-task details { margin-top: 14px; font-size: 12px; }
+.group-agent-task summary { cursor: pointer; color: var(--muted); font-size: 11px; }
+.group-task-output { padding: 12px 14px; background: var(--shell-wash); border-radius: 6px; }
+.group-task-events ol { padding: 0; list-style: none; max-height: 230px; overflow: auto; }
+.group-task-events li { display: flex; gap: 12px; margin: 7px 0; color: var(--muted); font-size: 11px; line-height: 1.6; overflow-wrap: anywhere; }
+.group-task-events time { flex: 0 0 80px; font-size: 10px; }
+.group-task-events li span { white-space: pre-wrap; }
+.group-task-diff ul { list-style: none; padding: 0; }
+.group-task-diff li { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; margin: 6px 0; color: var(--muted); font-size: 10px; }
+.group-task-diff li code { overflow-wrap: anywhere; }
+.group-task-diff pre { max-height: 390px; overflow: auto; background: var(--shell-wash); padding: 14px; font-size: 11px; line-height: 1.75; border: 1px solid var(--line); border-radius: 6px; }
+.group-task-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
+.group-task-actions select { max-width: 210px; font: inherit; font-size: 11px; padding: 8px; color: var(--ink); border: 1px solid var(--line); background: var(--shell-paper); border-radius: 5px; }
+.group-task-actions button { font-size: 11px; }
+.group-approval-card { padding: 20px; margin: 0 0 30px 39px; border: 1px solid color-mix(in srgb, var(--accent) 40%, var(--line)); border-left: 3px solid var(--accent); border-radius: 7px; background: var(--shell-paper); }
+.group-approval-card header { display: flex; gap: 8px; align-items: center; font-size: 12px; color: var(--accent); }
+.group-approval-card h3 { font-size: 16px; line-height: 1.6; font-weight: 550; margin: 12px 0 7px; }
+.group-approval-card p, .group-approval-card summary { color: var(--muted); font-size: 12px; line-height: 1.8; }
+.group-approval-card summary { cursor: pointer; }
+.group-approval-card dl { display: flex; gap: 24px; flex-wrap: wrap; margin: 14px 0; font-size: 11px; }
+.group-approval-card dt { color: var(--muted); margin-bottom: 4px; font-size: 10px; }
+.group-approval-card dd { margin: 0; }
+.group-approval-actions { display: flex; flex-wrap: wrap; gap: 9px; margin-top: 16px; }
+.group-approval-actions p { width: 100%; margin: 0 0 3px; }
+.group-approval-actions button { font-size: 12px; }
+.group-approval-card.approval-merged { border-left-color: var(--jade); }
+.group-approval-card.approval-rejected { border-color: var(--line); }
+.group-agent-composer { flex: 0 0 auto; border-top: 1px solid var(--line); padding: 13px clamp(18px, 4vw, 56px) 10px; background: var(--shell-paper); }
+.group-agent-composer > * { max-width: 820px; margin-left: auto; margin-right: auto; }
+.group-agent-assignment { display: flex; gap: 16px; margin-bottom: 10px; }
+.group-agent-assignment label { display: flex; align-items: center; gap: 8px; min-width: 0; color: var(--muted); font-size: 11px; }
+.group-agent-assignment select, .group-review-source select { min-width: 0; max-width: 230px; color: var(--ink); font: inherit; font-size: 11px; padding: 7px; border: 1px solid var(--line); border-radius: 5px; background: var(--shell-paper); }
+.group-review-source { display: flex; gap: 8px; align-items: center; margin-bottom: 10px; font-size: 11px; color: var(--muted); }
+.group-review-source select { flex: 1; max-width: none; }
+.group-agent-composer textarea { min-height: 68px; max-height: 160px; }
+.group-agent-composer .composer-footer span { flex: 1; font-size: 10px; color: var(--muted); }
+.group-agent-composer .composer-footer button { font-size: 12px; }
+@media (max-width: 700px) {
+  .group-work-mode { padding: 8px 13px; gap: 4px; }
+  .group-work-mode button { flex: 1; justify-content: center; padding: 9px 6px; font-size: 11px; }
+  .group-agent-timeline { padding: 18px 15px; }
+  .group-agent-composer { padding: 11px 15px max(10px, env(safe-area-inset-bottom)); }
+  .group-agent-assignment { gap: 8px; }
+  .group-agent-assignment label { flex: 1; flex-direction: column; align-items: stretch; gap: 4px; }
+  .group-agent-assignment select { max-width: none; }
+  .group-agent-task header { align-items: flex-start; }
+  .group-agent-task header small { line-height: 1.6; }
+  .group-approval-card { margin-left: 0; padding: 15px; }
+  .group-agent-composer .composer-footer span { font-size: 9px; }
+  .group-agent-composer textarea { font-size: 16px; }
+  .group-task-actions button { min-height: 38px; }
+  .group-approval-actions > button { min-height: 40px; flex: 1; }
+  .group-task-events li { flex-direction: column; gap: 2px; }
+  .group-task-events time { flex-basis: auto; }
+}
+.group-agent-task header strong, .group-approval-card h3 { overflow-wrap: anywhere; }
+.group-task-status { flex-shrink: 0; }
+.group-agent-assignment, .group-review-source { min-width: 0; }
+@media (max-width: 700px) {
+  .modeldesk { min-height: 0; }
+  .modeldesk .group-agent-composer textarea, .modeldesk .group-composer textarea { font-size: 16px; }
+  .group-agent-assignment select, .group-review-source select { font-size: 16px; width: 100%; }
+  .group-review-source { flex-direction: column; align-items: stretch; }
+  .group-task-actions { align-items: stretch; }
+  .group-task-actions select { font-size: 16px; max-width: 100%; }
+  .group-task-actions > button { min-height: 40px; }
+  .group-agent-composer .composer-footer > button { min-height: 40px; }
+  .group-work-mode button { min-height: 40px; }
+  .group-task-empty { padding: 25px 0; }
+}
+.group-task-reference pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 230px; overflow: auto; font-size: 11px; line-height: 1.7; color: var(--muted); padding: 12px; background: var(--shell-wash); border-radius: 5px; }
+.group-approval-card h3 { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
+.group-agent-composer-toggle { display: none; }
+.group-engine-explanation { margin-top: 9px; font-size: 10px; color: var(--muted); }
+.group-engine-explanation > summary { cursor: pointer; }
+@media (max-width: 600px) {
+  .group-agent-composer-toggle { display: block; flex: 0 0 auto; padding: 8px 15px max(8px, env(safe-area-inset-bottom)); border-top: 1px solid var(--line); background: var(--shell-paper); }
+  .group-agent-composer-toggle > button { display: flex; align-items: center; gap: 9px; width: 100%; min-height: 42px; padding: 8px 12px; border: 1px solid var(--line); border-radius: 7px; background: var(--shell-wash); color: var(--ink); text-align: left; font: inherit; font-size: 13px; }
+  .group-agent-composer-toggle strong { font-weight: 550; }
+  .group-agent-composer-toggle small { margin-left: auto; color: var(--muted); font-size: 10px; white-space: nowrap; }
+  .agent-composer-collapsed .group-agent-composer { display: none; }
+  .agent-composer-open .group-agent-composer-toggle { padding-bottom: 6px; }
+  .agent-composer-open .group-agent-composer { border-top: 0; padding-top: 4px; max-height: min(43dvh, 350px); overflow-y: auto; overscroll-behavior: contain; }
+  .group-agent-assignment { gap: 8px; margin-bottom: 8px; }
+  .group-agent-assignment label { gap: 3px; }
+  .group-agent-assignment select, .group-review-source select { min-height: 40px; padding: 6px; font-size: 16px; }
+  .group-review-source { margin-bottom: 8px; gap: 4px; }
+  .modeldesk .group-agent-composer textarea { height: 72px; min-height: 72px; max-height: 112px; padding: 9px 12px; font-size: 16px; }
+  .group-agent-composer .composer-footer { padding: 5px 9px 8px; }
+  .group-agent-composer .composer-footer > span { display: none; }
+  .group-agent-composer .composer-footer > button { margin-left: auto; min-height: 40px; }
+  .group-engine-explanation { margin-top: 8px; }
+  .group-engine-explanation > summary { padding: 5px 0; }
+  .group-agent-timeline { padding-top: 15px; padding-bottom: 20px; }
+  .modeldesk .group-workspace .workspace-header { height: 56px; flex-basis: 56px; }
+  .group-workspace .group-room-switcher { padding-top: 6px; padding-bottom: 6px; }
+  .group-workspace .group-roster { padding-top: 8px; padding-bottom: 8px; }
+  .group-workspace .group-roster > summary > span { display: none; }
+  .group-workspace .group-work-mode { padding-top: 5px; padding-bottom: 5px; }
+}

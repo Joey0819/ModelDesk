@@ -12,6 +12,7 @@ import MissionTeamPicker from './MissionTeamPicker';
 import AttachmentComposer from './AttachmentComposer';
 import ContextAttachments from './ContextAttachments';
 import JobAttachments from './JobAttachments';
+import GroupAgentTasks from './GroupAgentTasks';
 import './GroupWorkspace.css';
 
 const statuses = { queued: '等待发言', running: '正在讨论', complete: '本轮已完成', error: '本轮失败', cancelled: '已停止', interrupted: '已中断' };
@@ -32,6 +33,8 @@ export function GroupTurn({ job, room, onOpenArtifacts }) {
 
 function GroupRoom({ roomId, projectId, status, context, onContextChange, onOpenArtifacts, onClearArtifacts, onOpenProjects, renderIntegration }) {
   const { assets, transfers } = useProjects();
+  const [workMode, setWorkMode] = useState(() => { const value = localStorage.getItem(`modeldesk.group.mode.${projectId || 'none'}.${roomId}`); return ['code', 'review'].includes(value) ? value : 'discussion'; });
+  useEffect(() => { localStorage.setItem(`modeldesk.group.mode.${projectId || 'none'}.${roomId}`, workMode); }, [workMode, projectId, roomId]);
   const [saved] = useState(() => readGroupDraft(localStorage, projectId, roomId));
   const [prompt, setPrompt] = useState(saved.prompt);
   const [recipientIds, setRecipientIds] = useState(saved.recipientIds);
@@ -55,7 +58,8 @@ function GroupRoom({ roomId, projectId, status, context, onContextChange, onOpen
   useEffect(() => {
     if ((context.project_id || null) === (projectId || null)) localStorage.setItem(groupDraftKey(projectId, roomId), JSON.stringify({ prompt, recipientIds, contextTurns, context }));
   }, [prompt, recipientIds, contextTurns, context, projectId, roomId]);
-  useEffect(() => { if (artifactJob) onOpenArtifacts(artifactJob, false); }, [artifactJob, onOpenArtifacts]);
+  useEffect(() => { if (workMode === 'discussion' && artifactJob) onOpenArtifacts(artifactJob, false); }, [artifactJob, onOpenArtifacts, workMode]);
+  useEffect(() => { if (workMode !== 'discussion') onClearArtifacts(); }, [workMode, onClearArtifacts]);
   useEffect(() => {
     const element = timelineRef.current;
     if (!element) return;
@@ -86,6 +90,8 @@ function GroupRoom({ roomId, projectId, status, context, onContextChange, onOpen
   };
   return <>
     {room && <details className="group-roster"><summary><Icon name="group" size={16} /><strong>{room.team_snapshot.name}</strong><span>{members.length} 名成员 · 群内共享上下文</span><Icon name="chevron" size={13} /></summary><div>{members.map((member) => <article key={member.id}><strong>{member.name}</strong><small>{member.model}</small><p>{member.role}</p></article>)}</div><p>使用建群时保存的成员与职责。发送前可以指定一名或多名成员回复。</p></details>}
+    <nav className="group-work-mode" aria-label="群聊协作方式">{[['discussion', '持续讨论', 'chat'], ['code', '执行任务', 'tasks'], ['review', '独立审阅', 'council']].map(([id, label, icon]) => <button key={id} type="button" className={workMode === id ? 'selected' : ''} aria-current={workMode === id ? 'page' : undefined} onClick={() => setWorkMode(id)}><Icon name={icon} size={15} />{label}</button>)}</nav>
+    {workMode !== 'discussion' && room ? <GroupAgentTasks projectId={projectId} room={room} kind={workMode} onKindChange={setWorkMode} onOpenProjects={onOpenProjects} onOpenArtifacts={onOpenArtifacts} /> : <>
     {renderIntegration?.({ projectId, roomId, onUseReply: useMuseReply })}
     <div className="group-room-timeline" ref={timelineRef} onScroll={(event) => { const element = event.currentTarget; nearBottom.current = element.scrollHeight - element.scrollTop - element.clientHeight < 100; setShowLatest(!nearBottom.current); }}>
       {error && <div className="error-banner" role="alert">{error}<button className="subtle-button" type="button" onClick={roomState.refresh}>重新连接</button></div>}
@@ -109,6 +115,7 @@ function GroupRoom({ roomId, projectId, status, context, onContextChange, onOpen
       {settings && <section className="group-message-settings"><label>最近对话上下文<select aria-label="群聊上下文轮数" value={contextTurns} onChange={(event) => setContextTurns(Number(event.target.value))}>{[1, 4, 6, 8, 12].map((count) => <option key={count} value={count}>{count} 轮</option>)}</select></label><p>仅引用当前群聊的实际记录；过长内容按模型上下文预算截断。发送对象以上方选择为准。</p><ContextAttachments mode="group" value={context} onChange={onContextChange} jobs={jobs} disabled={busy || Boolean(activeJob)} onOpenProjects={onOpenProjects} /></section>}
       <p className="group-composer-note">本群记录与草稿自动保存 · 本轮 {selectedMembers.length} 名成员回复 · 不同群聊分别记忆</p>
     </div>
+    </>}
   </>;
 }
 

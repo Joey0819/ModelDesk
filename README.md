@@ -15,6 +15,8 @@ ModelDesk 基于 [Karpathy 的 LLM Council](https://github.com/karpathy/llm-coun
 
 需要长期讨论时，进入「项目群聊」，为同一项目创建多个固定成员的群，指定成员回复并接续群内历史。群内的「Muse Mac · 本机桥接」可向已登录的原生 Muse 窗口派发文本任务；读取回复后，由你选择交给群内成员继续讨论。操作步骤、恢复方式和权限边界见 [项目群聊与 Muse 指南](docs/PROJECT_GROUPS_AND_MUSE.md)。
 
+2.5 新增真正的「Agent 任务」：指定成员使用 Codex / Claude Code 在独立代码副本中执行，再由另一位成员审查，群内审批后合入本地项目。新增私有 Tailscale HTTPS 手机入口、一次性配对与设备撤销。见 [Agent 群协作与手机操作](docs/AGENT_GROUPS_AND_PHONE.md)。
+
 ## 协作与执行
 
 | 层 | 职责 |
@@ -22,6 +24,8 @@ ModelDesk 基于 [Karpathy 的 LLM Council](https://github.com/karpathy/llm-coun
 | 项目与资料 | 项目范围、文件夹导入、图片/文本资料、不可变任务输入与来源记录 |
 | 项目协作组 | 每项目保存 2–4 个不同模型的成员与角色，启动时冻结本次成员配置 |
 | 项目群聊 | 固定成员和分工、按群保存历史与草稿、指定成员接力、图片/文件和成果引用 |
+| 独立 Agent | 按成员派发 Codex / Claude Code，独立快照、真实进程、改动与审查、人工审批合入本地 |
+| 手机控制 | Tailscale 私有 HTTPS、一次性配对、设备撤销、同源上传和流式状态 |
 | Muse 外部智能体 | 复用本机 Muse Mac 登录，每任务独立会话，文本派发、实际回复、来源导出和显式交接 |
 | 协作任务 | LangGraph 顺序调度、步骤检查点、人工确认、停止、明确重试与运行预算 |
 | 原生执行器 | 复用 Council、CAMEL、CrewAI、并排聊天和模型群聊的实际执行路径 |

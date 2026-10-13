@@ -79,3 +79,5 @@
   .group-composer .composer-footer > span { display: none; }
   .group-composer .composer-footer > .primary-button, .group-composer .composer-footer > .stop-button { margin-left: auto; }
 }
+.group-remote-muse-note { padding: 10px 24px; margin: 0; border-bottom: 1px solid var(--line); color: var(--muted); font-size: 11px; line-height: 1.7; }
+@media (max-width: 700px) { .group-composer textarea { font-size: 16px; } .group-recipient-picker button { min-height: 35px; } .group-remote-muse-note { padding: 9px 15px; } }

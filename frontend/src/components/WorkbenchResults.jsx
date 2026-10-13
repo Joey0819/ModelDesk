@@ -9,6 +9,7 @@ const asText = (value) => typeof value === 'string' ? value : value?.content || 
 
 export function Icon({ name, size = 20 }) {
   const paths = {
+    phone: <><rect x="6" y="2" width="12" height="20" rx="3" /><path d="M10 5h4M11 19h2" /></>,
     chat: <><path d="M4 5h16v11H9l-5 4V5Z" /><path d="M8 9h8M8 12h5" /></>,
     council: <><path d="m12 3 8 4v5c0 5-8 9-8 9s-8-4-8-9V7l8-4Z" /><path d="m8 12 3 3 5-6" /></>,
     dialogue: <><path d="M3 4h13v9H8l-5 3V4Z" /><path d="M9 16v2h7l5 3V10h-3" /></>,

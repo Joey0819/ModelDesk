@@ -150,3 +150,13 @@ test('native project picker IPC accepts only this window and its trusted main fr
   contents.isDestroyed = () => true;
   assert.equal(isTrustedWorkbenchIPC(event, contents), false);
 });
+
+test('agent task exports require exact project and room scope without secrets or other routes', () => {
+  const id = 'df9d3857-3d01-4c24-9e64-b9343e217f9a';
+  const base = `http://localhost:8001/api/group-tasks/${id}/export`;
+  const scoped = `${base}?project_id=${id}&room_id=${id}&format=md`;
+  assert.equal(isExportURL(scoped), true);
+  assert.equal(exportFormat(scoped), 'md');
+  assert.equal(isExportURL(scoped.replace('format=md', 'format=json')), true);
+  for (const url of [`${base}?format=md`, `${base}?project_id=${id}&format=md`, `${scoped}&token=private`, `${scoped}&room_id=${id}`, scoped.replace('format=md', 'format=patch'), scoped.replace('localhost', 'example.com'), `${scoped}#fragment`]) assert.equal(isExportURL(url), false, url);
+});

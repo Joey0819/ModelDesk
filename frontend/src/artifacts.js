@@ -74,6 +74,10 @@ function reviewMarkdown(result) {
 export function deriveArtifacts(job) {
   if (!job) return [];
   const result = job.result || {};
+  if (job.mode === 'group_agent') return [
+    makeArtifact(job, 'group-agent:output', job.kind === 'review' ? '独立 Agent 审阅意见' : '独立 Agent 执行结果', text(job.output), { source: `${job.member?.name || '成员'} / ${job.engine === 'member_model' ? job.member?.model || '成员模型' : job.engine === 'claude' ? 'Claude Code' : 'Codex'}`, note: '这是执行引擎的实际返回；结论与测试说明需结合运行记录核查。代码合入需另行审批。' }),
+    makeArtifact(job, 'group-agent:patch', '待审阅的实际补丁', text(job.diff), { source: `基准 ${job.base_sha?.slice(0, 12) || '未记录'} / 补丁 ${job.diff_sha256?.slice(0, 12) || '未记录'}`, format: 'code', language: 'diff', kind: 'evidence', note: '补丁保存在独立任务工作区。是否已经合入以审批卡片记录为准。' }),
+  ].filter(Boolean);
   if (job.mode === 'chat') return (result.responses || []).map((response) => makeArtifact(job, `chat:${response.model}`, response.model || '模型回答', text(response.text) || text(response.response), {
     model: response.model, source: '独立模型回答', partial: Boolean(response.error || response.incomplete),
     ...(response.error ? { kind: 'evidence', note: `调用未完整返回：${response.error}` } : {}),

@@ -2,11 +2,11 @@
  * API client for the LLM Council backend.
  */
 
-const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8001';
+import { API_BASE, apiFetch } from './api-base';
 
 async function workbenchRequest(path, options = {}) {
   let response;
-  try { response = await fetch(`${API_BASE}/api/workbench${path}`, options); }
+  try { response = await apiFetch(`${API_BASE}/api/workbench${path}`, options); }
   catch { throw new Error('工作台服务无法连接。请启动本地服务后重试。'); }
   if (!response.ok) {
     let detail;
@@ -19,7 +19,7 @@ async function workbenchRequest(path, options = {}) {
 
 async function platformRequest(path, options = {}) {
   let response;
-  try { response = await fetch(`${API_BASE}/api/platform${path}`, options); }
+  try { response = await apiFetch(`${API_BASE}/api/platform${path}`, options); }
   catch { throw new Error('平台服务无法连接。请检查本地服务状态。'); }
   if (!response.ok) {
     let detail; try { detail = (await response.json()).detail; } catch { /* Non-JSON response. */ }
@@ -84,7 +84,7 @@ export const api = {
    * List all conversations.
    */
   async listConversations() {
-    const response = await fetch(`${API_BASE}/api/conversations`);
+    const response = await apiFetch(`${API_BASE}/api/conversations`);
     if (!response.ok) {
       throw new Error('Failed to list conversations');
     }
@@ -95,7 +95,7 @@ export const api = {
    * Create a new conversation.
    */
   async createConversation() {
-    const response = await fetch(`${API_BASE}/api/conversations`, {
+    const response = await apiFetch(`${API_BASE}/api/conversations`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -112,7 +112,7 @@ export const api = {
    * Get a specific conversation.
    */
   async getConversation(conversationId) {
-    const response = await fetch(
+    const response = await apiFetch(
       `${API_BASE}/api/conversations/${conversationId}`
     );
     if (!response.ok) {
@@ -125,7 +125,7 @@ export const api = {
    * Send a message in a conversation.
    */
   async sendMessage(conversationId, content) {
-    const response = await fetch(
+    const response = await apiFetch(
       `${API_BASE}/api/conversations/${conversationId}/message`,
       {
         method: 'POST',
@@ -149,7 +149,7 @@ export const api = {
    * @returns {Promise<void>}
    */
   async sendMessageStream(conversationId, content, onEvent) {
-    const response = await fetch(
+    const response = await apiFetch(
       `${API_BASE}/api/conversations/${conversationId}/message/stream`,
       {
         method: 'POST',

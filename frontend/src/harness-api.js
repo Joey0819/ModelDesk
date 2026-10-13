@@ -1,9 +1,9 @@
-const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8001';
+import { API_BASE, apiFetch } from './api-base';
 
 async function request(path, method = 'GET', body) {
   let response;
   try {
-    response = await fetch(`${API_BASE}/api/harness${path}`, {
+    response = await apiFetch(`${API_BASE}/api/harness${path}`, {
       method,
       ...(body !== undefined ? { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) } : {}),
     });

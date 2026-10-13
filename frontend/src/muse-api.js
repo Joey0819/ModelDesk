@@ -1,8 +1,8 @@
-const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8001';
+import { API_BASE, apiFetch } from './api-base';
 const scope = (projectId, extra = {}) => new URLSearchParams({ ...(projectId ? { project_id: projectId } : {}), ...extra }).toString();
 async function request(path, method = 'GET', body) {
   let response;
-  try { response = await fetch(`${API_BASE}/api/muse${path}`, { method, ...(body === undefined ? {} : { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }) }); }
+  try { response = await apiFetch(`${API_BASE}/api/muse${path}`, { method, ...(body === undefined ? {} : { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }) }); }
   catch { throw new Error('Muse 本机桥接服务无法连接，请检查 ModelDesk 本地服务。'); }
   if (!response.ok) {
     let detail;

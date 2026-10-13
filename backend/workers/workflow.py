@@ -18,6 +18,9 @@ import urllib.request
 import re
 import uuid
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from backend.vision import prepare_vision, vision_transports, crew_vision_llm, public_summary, visible_text, SafeWorkerStream
+
 os.environ.setdefault("CREWAI_TRACING_ENABLED", "false")
 os.environ.setdefault("OTEL_SDK_DISABLED", "true")
 
@@ -31,7 +34,7 @@ MODEL_TRANSPORT_RETRIES = 2
 def save(output, result):
     with SAVE_LOCK:
         temporary = output.with_suffix(".partial")
-        temporary.write_text(json.dumps(result, ensure_ascii=False, indent=2, allow_nan=False))
+        temporary.write_text(json.dumps(public_summary(result), ensure_ascii=False, indent=2, allow_nan=False))
         temporary.chmod(0o600)
         temporary.replace(output)
 
@@ -40,7 +43,7 @@ def emit(event_type, **fields):
     # CrewAI may execute native tool calls concurrently. Keep each event and
     # its newline in one critical section so the parent can decode every call.
     with EVENT_LOCK:
-        record = "\nMODELDESK_EVENT " + json.dumps({"type": event_type, **fields}, ensure_ascii=False, allow_nan=False) + "\n"
+        record = "\nMODELDESK_EVENT " + json.dumps(public_summary({"type": event_type, **fields}), ensure_ascii=False, allow_nan=False) + "\n"
         # Native Flow's Rich console can print partial lines concurrently.
         # Frame both boundaries and write the UTF-8 record in one syscall.
         try:
@@ -176,7 +179,7 @@ def runtime_functions(data):
              statistics, markdown_to_text)}
 
 
-def camel_clients(model_name, sync_transport=None, async_transport=None):
+def camel_clients(model_name, sync_transport=None, async_transport=None, image_parts=None, vision_report=None):
     """Use native SDK retries for transport errors, never replay agent/tool work."""
     import httpx
     from openai import OpenAI, AsyncOpenAI
@@ -196,6 +199,8 @@ def camel_clients(model_name, sync_transport=None, async_transport=None):
 
     options = {"base_url": GATEWAY, "api_key": "local-oauth", "timeout": 180,
                "max_retries": MODEL_TRANSPORT_RETRIES}
+    if image_parts:
+        sync_transport, async_transport = vision_transports(image_parts, vision_report, sync_transport, async_transport)
     sync_client = OpenAI(**options, http_client=httpx.Client(transport=sync_transport, trust_env=False,
                                                            event_hooks={"request": [retry_notice]}))
     async_client = AsyncOpenAI(**options, http_client=httpx.AsyncClient(transport=async_transport, trust_env=False,
@@ -209,7 +214,7 @@ def camel_options(data, agent, max_tokens=3072):
     from camel.types import ModelPlatformType
 
     configuration = data["workflow"]
-    sync_client, async_client = camel_clients(agent["model"])
+    sync_client, async_client = camel_clients(agent["model"], image_parts=prepare_vision(data), vision_report=data["_vision_report"])
     model = ModelFactory.create(model_platform=ModelPlatformType.OPENAI_COMPATIBLE_MODEL,
                                 model_type=agent["model"], url=GATEWAY, api_key="local-oauth",
                                 model_config_dict={"max_tokens": max_tokens}, max_retries=MODEL_TRANSPORT_RETRIES, timeout=180,
@@ -247,13 +252,15 @@ def lexical_embeddings(texts):
 def native_memory(data, model):
     from crewai import Memory
     scope = data["workflow"].get("memory_scope", "default")
+    project_id = data["workflow"].get("project_id") or data.get("project_id")
+    storage_scope = f"project:{project_id}:{scope}" if project_id else scope
     # Neither the user nor the model can supply a storage path.
-    path = Path(__file__).resolve().parents[2] / "data" / "platform" / "native-memory" / hashlib.sha256(scope.encode()).hexdigest()
+    path = Path(__file__).resolve().parents[2] / "data" / "platform" / "native-memory" / hashlib.sha256(storage_scope.encode()).hexdigest()
     path.mkdir(parents=True, exist_ok=True, mode=0o700)
     path.chmod(0o700)
-    memory = Memory(llm=model, embedder=lexical_embeddings, storage=str(path), root_scope="/" + scope,
+    memory = Memory(llm=model, embedder=lexical_embeddings, storage=str(path), root_scope="/" + storage_scope,
                     exploration_budget=0, query_analysis_threshold=10000)
-    emit("framework_message", role="原生记忆", content="CrewAI Memory 已启用；本地词法哈希嵌入与 LanceDB 持久化，分析模型通过已登录网关调用。", scope=scope)
+    emit("framework_message", role="原生记忆", content="CrewAI Memory 已启用；本地词法哈希嵌入与 LanceDB 持久化，分析模型通过已登录网关调用。", scope=scope, project_id=project_id)
     return memory
 
 
@@ -314,7 +321,7 @@ def camel(data, output):
                           assistant_agent_kwargs=camel_options(data, agents[0]), user_agent_kwargs=camel_options(data, agents[1]),
                           output_language="Chinese")
     message = society.init_chat()
-    result = {"models": data["models"], "agents": agents, "messages": [], "partial": True, "tool_events": []}
+    result = {"models": data["models"], "agents": agents, "messages": [], "partial": True, "tool_events": [], "vision": data["_vision_report"]}
     for field, role in [("specified_task_prompt", "任务细化"), ("planned_task_prompt", "任务规划")]:
         content = getattr(society, field, None)
         if content:
@@ -339,7 +346,7 @@ def camel(data, output):
         for agent, response in [(agents[1], user), (agents[0], assistant)]:
             if response.msgs:
                 entry = {"role": agent["role"], "model": agent["model"], "round": round_index,
-                         "content": response.msgs[0].content}
+                         "content": visible_text(response.msgs[0].content)}
                 result["messages"].append(entry)
                 emit("framework_message", **entry)
                 save(output, result)
@@ -611,7 +618,8 @@ def camel_workforce(data, output):
 
     configuration = data["workflow"]
     specifications = configuration["agents"]
-    result = {"models": data["models"], "agents": specifications, "process": "workforce",
+    prepare_vision(data)
+    result = {"models": data["models"], "agents": specifications, "process": "workforce", "vision": data["_vision_report"],
               "messages": [], "tasks": [], "answer": "", "workforce_events": [], "worker_roles": {}, "partial": True,
               "failures": [], "transport_retries": MODEL_TRANSPORT_RETRIES}
 
@@ -670,15 +678,16 @@ def camel_workforce(data, output):
 
 
 def crew_components(data, output):
-    from crewai import Agent, Crew, LLM, Process, Task
+    from crewai import Agent, Crew, Process, Task
     from crewai.tools import tool
 
     configuration = data["workflow"]
+    image_parts = prepare_vision(data)
     toolbox = {name: tool(name)(function) for name, function in runtime_functions(data).items()}
     toolbox["math"] = tool("arithmetic")(arithmetic)
 
     def model(name):
-        return LLM(model="openai/" + name, base_url=GATEWAY, api_key="local-oauth", max_tokens=3072, timeout=180)
+        return crew_vision_llm(name, image_parts, data["_vision_report"])
 
     agents = {entry["id"]: Agent(role=entry["role"], goal=entry["goal"], backstory=entry["backstory"],
                                 llm=model(entry["model"]), tools=[toolbox[name] for name in entry.get("tools", [])],
@@ -686,7 +695,7 @@ def crew_components(data, output):
                                 max_iter=configuration["max_iter"])
               for entry in configuration["agents"]}
     is_flow = data["mode"] == "crewai_flow"
-    result = {"models": data["models"], "agents": configuration["agents"], "process": "flow" if is_flow else configuration["process"],
+    result = {"models": data["models"], "agents": configuration["agents"], "process": "flow" if is_flow else configuration["process"], "vision": data["_vision_report"],
               "tasks": [], "answer": "", "partial": True, "routes": [], "planning": []}
     tasks = {}
     for entry in configuration["tasks"]:
@@ -710,7 +719,8 @@ def crew_components(data, output):
     options.update(planning=configuration.get("planning", False), planning_llm=planning_model,
                    memory=memory or False, tracing=False)
     result["memory"] = {"enabled": bool(memory), "scope": configuration.get("memory_scope", "default"),
-                        "embedding": "local-lexical-hash" if memory else None}
+                        "embedding": "local-lexical-hash" if memory else None,
+                        "project_id": configuration.get("project_id") or data.get("project_id")}
 
     def execute(ids):
         chosen = [tasks[name] for name in ids]
@@ -844,6 +854,8 @@ def crewai_flow(data, output):
 
 
 def main():
+    sys.stdout = SafeWorkerStream(sys.stdout)
+    sys.stderr = SafeWorkerStream(sys.stderr)
     parser = argparse.ArgumentParser()
     parser.add_argument("--input", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)

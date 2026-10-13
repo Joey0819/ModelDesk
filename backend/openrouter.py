@@ -6,13 +6,14 @@ import time
 from typing import List, Dict, Any, Optional
 from urllib.parse import urlsplit
 from .config import OPENROUTER_API_KEY, OPENROUTER_API_URL
+from .vision import public_text
 
 _clock = time.monotonic
 
 
 async def query_model(
     model: str,
-    messages: List[Dict[str, str]],
+    messages: List[Dict[str, Any]],
     timeout: float = 180.0,
     max_tokens: Optional[int] = None,
     diagnostics: Optional[Dict[str, Any]] = None,
@@ -69,7 +70,7 @@ async def query_model(
                 if choice.get("finish_reason") in {"error", "content_filter"}:
                     raise ValueError("incomplete_model_response")
                 return {
-                    'content': content,
+                    'content': public_text(content),
                     'reasoning_details': message.get('reasoning_details'),
                     'incomplete': choice.get("finish_reason") == "length",
                     **({'transport_retries': retries} if retries else {}),
@@ -103,7 +104,7 @@ async def query_model(
 
 async def query_models_parallel(
     models: List[str],
-    messages: List[Dict[str, str]],
+    messages: List[Dict[str, Any]],
     max_tokens: Optional[int] = None,
     diagnostics: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Optional[Dict[str, Any]]]:

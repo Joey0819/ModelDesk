@@ -3,6 +3,12 @@ import { platformApi, workbenchApi } from './api';
 import { applyEvent, hydrateJob } from './workbench-state';
 import { Icon, Markdown, JobOutput, ResultProvenance, StagePending } from './components/WorkbenchResults';
 import ProjectWorkspace from './components/ProjectWorkspace';
+import ProjectProvider from './components/ProjectProvider';
+import ProjectHub from './components/ProjectHub';
+import AttachmentComposer from './components/AttachmentComposer';
+import JobAttachments from './components/JobAttachments';
+import { useProjects, projectDraftKey, projectSessionKey } from './project-context';
+import { attachmentIssues } from './attachment-files';
 import ToolSettings from './components/ToolSettings';
 import WorkflowEditor from './components/WorkflowEditor';
 import WorkflowFailureNotice from './components/WorkflowFailureNotice';
@@ -11,7 +17,7 @@ import PlatformWorkspace from './components/PlatformWorkspace';
 import ContextAttachments from './components/ContextAttachments';
 import ArtifactPanel from './components/ArtifactPanel';
 import { CopyTextButton } from './components/ConversationActions';
-import { SESSION_KEY, DRAFT_KEY, readSessions, readConversationDrafts, conversationDraft, sourceSelection, conversationPreferences, restoredSession, conversationGroups, previousTurns, taskTitle } from './workbench-sessions';
+import { SESSION_KEY, DRAFT_KEY, WORKSPACE_KEY, sessionFor, readConversationWorkspaces, readSessions, readConversationDrafts, conversationDraft, sourceSelection, conversationPreferences, restoredSession, conversationGroups, previousTurns, taskTitle } from './workbench-sessions';
 import { EMPTY_CONTEXT, PLATFORM_SECTIONS, contextErrors, jobContext } from './platform-settings';
 import './App.css';
 import './components/PlatformTheme.css';
@@ -45,18 +51,23 @@ function exportJob(job, format) {
   link.remove();
 }
 
-export default function App() {
+export default function App() { return <ProjectProvider><ModelDeskWorkspace /></ProjectProvider>; }
+
+function ModelDeskWorkspace() {
+  const projectHub = useProjects();
+  const { activeProjectId, assets: projectAssets } = projectHub;
   const [mode, setMode] = useState(() => Object.hasOwn(MODES, localStorage.getItem('modeldesk.mode')) ? localStorage.getItem('modeldesk.mode') : 'chat');
-  const [bootPreferences] = useState(() => conversationPreferences(readSessions(localStorage)[mode]?.preferences));
+  const [bootSession] = useState(() => sessionFor(readSessions(localStorage), mode, activeProjectId));
+  const [bootPreferences] = useState(() => conversationPreferences(bootSession.preferences));
   const [projectView, setProjectView] = useState(() => localStorage.getItem('modeldesk.view') === 'projects');
   const [platformView, setPlatformView] = useState(() => !['projects', 'tools'].includes(localStorage.getItem('modeldesk.view')));
   const [platformSection, setPlatformSection] = useState(() => localStorage.getItem('modeldesk.platformSection') || 'overview');
   const [navigationTab, setNavigationTab] = useState(() => !['projects', 'tools'].includes(localStorage.getItem('modeldesk.view')) ? 'platform' : 'tools');
-  const [context, setContext] = useState(() => sourceSelection(readSessions(localStorage)[localStorage.getItem('modeldesk.mode') || 'chat']?.context));
+  const [context, setContext] = useState(() => ({ ...sourceSelection(bootSession.context), project_id: activeProjectId }));
   const [theme, setTheme] = useState(() => localStorage.getItem('modeldesk.theme') === 'dark' ? 'dark' : 'light');
   const [status, setStatus] = useState(null);
   const [jobs, setJobs] = useState([]);
-  const [jobId, setJobId] = useState(() => localStorage.getItem('modeldesk.lastJob') || readSessions(localStorage)[localStorage.getItem('modeldesk.mode') || 'chat']?.job_id || null);
+  const [jobId, setJobId] = useState(() => bootSession.job_id || null);
   const [job, setJob] = useState(null);
   const [models, setModels] = useState(bootPreferences.models);
   const [reviewModels, setReviewModels] = useState(() => { try { return conversationPreferences({ models: JSON.parse(localStorage.getItem('modeldesk.reviewModels') || '[]') }).models; } catch { return []; } });
@@ -67,7 +78,8 @@ export default function App() {
   const [roles, setRoles] = useState(bootPreferences.roles);
   const [contextTurns, setContextTurns] = useState(bootPreferences.context_turns);
   const [workflows, setWorkflows] = useState(() => { try { const saved = JSON.parse(localStorage.getItem('modeldesk.workflows') || '{}'); return saved && typeof saved === 'object' && !Array.isArray(saved) ? saved : {}; } catch { return {}; } });
-  const [prompt, setPrompt] = useState(() => readSessions(localStorage)[localStorage.getItem('modeldesk.mode') || 'chat']?.draft || '');
+  const [prompt, setPrompt] = useState(() => bootSession.draft || '');
+  const [attachmentPending, setAttachmentPending] = useState(false);
   const [workflowEditSignal, setWorkflowEditSignal] = useState(0);
   const [starting, setStarting] = useState(false);
   const [canceling, setCanceling] = useState(false);
@@ -86,10 +98,11 @@ export default function App() {
   const [artifactWidth, setArtifactWidth] = useState(() => Math.max(320, Math.min(Math.max(320, Math.min(680, window.innerWidth - 744)), Number(localStorage.getItem('modeldesk.artifactWidth')) || 420)));
   const [artifactJob, setArtifactJob] = useState(null);
   const [projectTarget, setProjectTarget] = useState(null);
-  const [addProjectSignal, setAddProjectSignal] = useState(0);
   const [mobileArtifactsOpen, setMobileArtifactsOpen] = useState(false);
   const [loadedTurns, setLoadedTurns] = useState([]);
   const inputRef = useRef(null);
+  const attachmentRef = useRef(null);
+  const projectScopeRef = useRef(activeProjectId);
   const streamRef = useRef(null);
   const preferencesSet = useRef(false);
   const initialModeSet = useRef(Object.hasOwn(MODES, localStorage.getItem('modeldesk.mode')));
@@ -98,40 +111,54 @@ export default function App() {
   const artifactRequest = useRef(0);
   const sessionsRef = useRef(readSessions(localStorage));
   const conversationDraftsRef = useRef(readConversationDrafts(localStorage));
-  const rememberSession = useCallback((nextMode, patch) => {
-    sessionsRef.current = { ...sessionsRef.current, [nextMode]: { ...sessionsRef.current[nextMode], ...patch } };
+  const workspacesRef = useRef(readConversationWorkspaces(localStorage));
+  const rememberSession = useCallback((nextMode, patch, projectId = projectScopeRef.current) => {
+    const key = projectSessionKey(projectId, nextMode);
+    sessionsRef.current = { ...sessionsRef.current, [key]: { ...sessionsRef.current[key], ...patch } };
     localStorage.setItem(SESSION_KEY, JSON.stringify(sessionsRef.current));
   }, []);
 
   useEffect(() => {
     localStorage.setItem('modeldesk.mode', mode);
-    sessionsRef.current = { ...sessionsRef.current, [mode]: { ...sessionsRef.current[mode], draft: prompt, context: sourceSelection(context), preferences: { models, chairman, rounds, system_prompt: systemPrompt, relay_prompt: relayPrompt, roles, context_turns: contextTurns } } };
+    if ((context.project_id || null) !== activeProjectId) return;
+    const key = projectSessionKey(activeProjectId, mode);
+    const preferences = { models, chairman, rounds, system_prompt: systemPrompt, relay_prompt: relayPrompt, roles, context_turns: contextTurns };
+    sessionsRef.current = { ...sessionsRef.current, [key]: { ...sessionsRef.current[key], draft: prompt, context: sourceSelection(context), preferences } };
+    if (!job || job.id === jobId && (job.project_id || null) === activeProjectId) {
+      const workspace = projectDraftKey(activeProjectId, job?.conversation_id || job?.id || 'new');
+      workspacesRef.current = { ...workspacesRef.current, [workspace]: { draft: prompt, context: sourceSelection(context), preferences, job_id: jobId } };
+      localStorage.setItem(WORKSPACE_KEY, JSON.stringify(workspacesRef.current));
+    }
     localStorage.setItem(SESSION_KEY, JSON.stringify(sessionsRef.current));
-  }, [mode, prompt, context, models, chairman, rounds, systemPrompt, relayPrompt, roles, contextTurns]);
+  }, [mode, prompt, context, models, chairman, rounds, systemPrompt, relayPrompt, roles, contextTurns, activeProjectId, job, jobId]);
 
   useEffect(() => {
-    if (!job || job.id !== jobId) return;
-    conversationDraftsRef.current = { ...conversationDraftsRef.current, [job.conversation_id || job.id]: prompt };
+    if (!job || job.id !== jobId || (job.project_id || null) !== activeProjectId) return;
+    conversationDraftsRef.current = { ...conversationDraftsRef.current, [projectDraftKey(activeProjectId, job.conversation_id || job.id)]: prompt };
     localStorage.setItem(DRAFT_KEY, JSON.stringify(conversationDraftsRef.current));
-  }, [job, jobId, prompt]);
+  }, [job, jobId, prompt, activeProjectId]);
 
   const refresh = useCallback(async () => {
-    const [statusResult, jobsResult] = await Promise.allSettled([workbenchApi.status(), workbenchApi.listJobs()]);
+    const [statusResult, jobsResult, projectJobsResult] = await Promise.allSettled([workbenchApi.status(), workbenchApi.listJobs(), activeProjectId ? workbenchApi.listJobs(activeProjectId) : Promise.resolve([])]);
     if (statusResult.status === 'fulfilled') {
       setStatus(statusResult.value);
       if (!preferencesSet.current) {
         preferencesSet.current = true;
         const available = statusResult.value.models || [];
-        let saved = []; try { saved = sessionsRef.current[modeRef.current]?.preferences?.models?.length ? sessionsRef.current[modeRef.current].preferences.models : JSON.parse(localStorage.getItem('modeldesk.models') || '[]'); } catch { /* Ignore stale preferences. */ }
+        let saved = []; try { saved = sessionFor(sessionsRef.current, modeRef.current, projectScopeRef.current)?.preferences?.models?.length ? sessionFor(sessionsRef.current, modeRef.current, projectScopeRef.current).preferences.models : JSON.parse(localStorage.getItem('modeldesk.models') || '[]'); } catch { /* Ignore stale preferences. */ }
         const valid = [...new Set((Array.isArray(saved) ? saved : []).filter((id) => available.some((m) => m.id === id)))].slice(0, 4);
         const defaults = ['gpt-6.1-sol', 'gemini-3-flash'].filter((id) => available.some((m) => m.id === id));
         const verified = available.filter((m) => m.verified).map((m) => m.id);
         setModels(valid.length ? valid : defaults.length === 2 ? defaults : [...new Set([...defaults, ...verified, ...available.map((m) => m.id)])].slice(0, 2));
       }
     } else setStatus({ gateway: { online: false, error: statusResult.reason.message }, providers: [], models: [], tools: {} });
-    if (jobsResult.status === 'fulfilled') setJobs(Array.isArray(jobsResult.value) ? jobsResult.value : jobsResult.value.jobs || []);
+    if (jobsResult.status === 'fulfilled') {
+      const globalJobs = Array.isArray(jobsResult.value) ? jobsResult.value : jobsResult.value.jobs || [];
+      const projectJobs = projectJobsResult.status === 'fulfilled' ? (Array.isArray(projectJobsResult.value) ? projectJobsResult.value : projectJobsResult.value.jobs || []) : [];
+      setJobs([...new Map([...globalJobs, ...projectJobs].map((item) => [item.id, item])).values()]);
+    }
     else setError(jobsResult.reason.message);
-  }, []);
+  }, [activeProjectId]);
 
   useEffect(() => { refresh(); const timer = setInterval(refresh, 15000); return () => clearInterval(timer); }, [refresh]);
   useEffect(() => {
@@ -140,10 +167,12 @@ export default function App() {
     workbenchApi.getJob(jobId).then((loaded) => {
       if (disposed) return;
       if (!MODES[loaded.mode]) { setJobId(null); return; }
+      if ((loaded.project_id || null) !== projectScopeRef.current) return;
       setJob(hydrateJob(loaded)); setStreamError(false); localStorage.setItem('modeldesk.lastJob', jobId);
       const selectedMode = initialModeSet.current ? modeRef.current : loaded.mode;
       if (!initialModeSet.current) { setMode(loaded.mode); initialModeSet.current = true; }
-      const saved = restoredSession(sessionsRef.current, selectedMode, loaded);
+      const workspace = workspacesRef.current[projectDraftKey(loaded.project_id, loaded.conversation_id || loaded.id)];
+      const saved = workspace?.job_id === loaded.id ? workspace : restoredSession(sessionsRef.current, selectedMode, loaded);
       setContext(saved.context);
       rememberSession(selectedMode, { job_id: loaded.id });
       preferencesSet.current = true;
@@ -152,7 +181,7 @@ export default function App() {
       setChairman(saved.preferences.chairman); setRounds(saved.preferences.rounds);
       setSystemPrompt(saved.preferences.system_prompt); setRoles(saved.preferences.roles); setContextTurns(saved.preferences.context_turns);
       setRelayPrompt(saved.preferences.relay_prompt);
-      if (loaded.workflow) setWorkflows((previous) => previous[loaded.mode] ? previous : ({ ...previous, [loaded.mode]: loaded.workflow }));
+      if (loaded.workflow) setWorkflows((previous) => ({ ...previous, [projectSessionKey(loaded.project_id, loaded.mode)]: loaded.workflow }));
       if (!active(loaded)) return;
       const after = Math.max(0, ...(loaded.events || []).map((e) => e.seq || 0)); source = workbenchApi.events(jobId, after); streamRef.current = source;
       source.onmessage = (message) => {
@@ -167,6 +196,22 @@ export default function App() {
     return () => { disposed = true; source?.close(); streamRef.current = null; };
   }, [jobId, refresh, rememberSession]);
 
+  useEffect(() => {
+    if (projectScopeRef.current === activeProjectId) return;
+    const previous = projectScopeRef.current; projectScopeRef.current = activeProjectId;
+    const saved = sessionFor(sessionsRef.current, modeRef.current, activeProjectId);
+    let disposed = false;
+    queueMicrotask(() => {
+      if (disposed) return; artifactRequest.current += 1;
+      setJobId(saved.job_id || null); setJob(null); setArtifactJob(null); setError(''); setStreamError(false);
+      setPrompt(previous === null && !job ? prompt : saved.draft || '');
+      setContext({ ...sourceSelection(saved.context), project_id: activeProjectId });
+      const preferences = conversationPreferences(saved.preferences); const defaults = ['gpt-6.1-sol', 'gemini-3-flash'].filter((id) => status?.models?.some((item) => item.id === id)); setModels(preferences.models.length ? preferences.models : defaults); setChairman(preferences.chairman); setRounds(preferences.rounds); setSystemPrompt(preferences.system_prompt); setRelayPrompt(preferences.relay_prompt); setRoles(preferences.roles); setContextTurns(preferences.context_turns);
+      if (projectView) setProjectTarget(activeProjectId ? { project_id: activeProjectId } : null);
+    });
+    return () => { disposed = true; };
+  }, [activeProjectId, job, prompt, projectView, status]);
+
   const selectMode = (next) => {
     initialModeSet.current = true;
     rememberSession(mode, { job_id: jobId, draft: prompt, context: sourceSelection(context) });
@@ -177,6 +222,10 @@ export default function App() {
   };
   const selectJob = (item) => {
     initialModeSet.current = true;
+    rememberSession(mode, { job_id: jobId, draft: prompt, context: sourceSelection(context) });
+    if ((item.project_id || null) !== projectScopeRef.current) {
+      projectScopeRef.current = item.project_id || null; projectHub.selectProject(item.project_id || null); setJobId(null); setJob(null); setContext(sourceSelection(item));
+    }
     if (['review', 'sdk_script'].includes(item.mode)) {
       if (item.mode === 'review') openProjects({ project_id: item.project_id, review_id: item.id });
       const request = ++artifactRequest.current;
@@ -184,37 +233,39 @@ export default function App() {
       return;
     }
     if (!Object.hasOwn(MODES, item.mode)) return;
-    rememberSession(mode, { job_id: jobId, draft: prompt, context: sourceSelection(context) });
-    const draft = item.id === jobId ? prompt : conversationDraft(conversationDraftsRef.current, item);
-    rememberSession(item.mode, { job_id: item.id, draft, context: sourceSelection(item) });
+    const workspace = workspacesRef.current[projectDraftKey(item.project_id, item.conversation_id || item.id)];
+    const draft = item.id === jobId ? prompt : workspace?.draft ?? conversationDraft(conversationDraftsRef.current, item);
+    rememberSession(item.mode, { job_id: item.id, draft, context: workspace?.context || sourceSelection(item) }, item.project_id);
     setSidebarOpen(false); setPlatformView(false); setNavigationTab('tools'); setProjectView(false); localStorage.setItem('modeldesk.view', 'tools');
     artifactRequest.current += 1; setArtifactJob(null);
     if (item.id === jobId) return;
-    setMode(item.mode); setJob(null); setArtifactJob(null); setJobId(item.id); setPrompt(draft); setContext(sourceSelection(item)); setError('');
+    setMode(item.mode); setJob(null); setArtifactJob(null); setJobId(item.id); setPrompt(draft); setContext(workspace?.context || sourceSelection(item)); setError('');
   };
-  const newTask = (nextMode) => { const target = typeof nextMode === 'string' && Object.hasOwn(MODES, nextMode) ? nextMode : mode; artifactRequest.current += 1; rememberSession(target, { job_id: null, draft: '' }); setJobId(null); setJob(null); setArtifactJob(null); setPrompt(''); setError(''); setStreamError(false); localStorage.removeItem('modeldesk.lastJob'); inputRef.current?.focus(); };
+  const newTask = (nextMode) => { const target = typeof nextMode === 'string' && Object.hasOwn(MODES, nextMode) ? nextMode : mode; artifactRequest.current += 1; rememberSession(target, { job_id: null, draft: '' }); setJobId(null); setJob(null); setArtifactJob(null); setPrompt(''); setContext((previous) => ({ ...previous, attachment_ids: [] })); setError(''); setStreamError(false); localStorage.removeItem('modeldesk.lastJob'); inputRef.current?.focus(); };
   const toggleModel = (id) => { const next = models.includes(id) ? models.filter((m) => m !== id) : models.length < 4 ? [...models, id] : models; setModels(next); localStorage.setItem('modeldesk.models', JSON.stringify(next)); };
   const tool = status?.tools?.[mode];
   const toolAvailable = typeof tool === 'boolean' ? tool : tool?.available !== false;
   const minimum = ['chat', 'crewai', 'camel_workforce', 'crewai_flow'].includes(mode) ? 1 : 2;
   const roleMode = ['camel', 'crewai', 'camel_workforce', 'crewai_flow'].includes(mode);
-  const configuration = roleMode ? workflows[mode] || defaultWorkflow(mode, models) : null;
+  const workflowKey = projectSessionKey(activeProjectId, mode);
+  const configuration = roleMode ? workflows[workflowKey] || ((bootSession.context?.project_id || null) === activeProjectId ? workflows[mode] : null) || defaultWorkflow(mode, models) : null;
   const configurationErrors = roleMode ? workflowErrors(configuration, mode, models) : [];
   const selectionValid = models.length >= minimum && (mode !== 'camel' || models.length === 2) && configurationErrors.length === 0;
-  const changeWorkflow = (next) => { const updated = { ...workflows, [mode]: next }; setWorkflows(updated); localStorage.setItem('modeldesk.workflows', JSON.stringify(updated)); };
+  const changeWorkflow = (next) => { const updated = { ...workflows, [workflowKey]: next }; setWorkflows(updated); localStorage.setItem('modeldesk.workflows', JSON.stringify(updated)); };
   const running = active(job);
-  const canSubmit = Boolean(prompt.trim() && !starting && !running && status?.gateway?.online && toolAvailable && selectionValid && contextErrors(context).length === 0);
+  const canSubmit = Boolean(prompt.trim() && !starting && !running && status?.gateway?.online && toolAvailable && selectionValid && (context.project_id || null) === activeProjectId && !attachmentPending && projectHub.transfers === 0 && attachmentIssues(projectAssets, context.attachment_ids, context.include_project_assets).length === 0 && contextErrors(context).length === 0);
   const send = async (event) => {
     event?.preventDefault(); if (!canSubmit) return;
     const request = artifactRequest.current;
     setStarting(true); setError(''); setStreamError(false); setModelMenu(false);
-    try { const created = await workbenchApi.createJob({ mode, prompt: prompt.trim(), models, chairman: mode === 'council' ? chairman : undefined, rounds, conversation_id: rememberConversation ? job?.conversation_id : undefined, system_prompt: systemPrompt, context_turns: contextTurns, ...(mode === 'group' ? { relay_prompt: relayPrompt, roles: Object.fromEntries(models.map((id) => [id, roles[id] || ''])) } : {}), ...jobContext(context), ...(roleMode ? { workflow: { ...configuration, knowledge_ids: context.knowledge_ids, memory_scope: context.memory_scope, project_id: context.project_id, snapshot_id: context.snapshot_id, mcp_server_ids: context.mcp_server_ids } } : {}) }); setJobs((previous) => [created, ...previous.filter((j) => j.id !== created.id)]); if (request === artifactRequest.current) { rememberSession(mode, { job_id: created.id, draft: '', context: sourceSelection(context) }); setJob(created); setJobId(created.id); setArtifactJob(null); setPrompt(''); } }
+    try { const created = await workbenchApi.createJob({ mode, prompt: prompt.trim(), models, chairman: mode === 'council' ? chairman : undefined, rounds, conversation_id: rememberConversation ? job?.conversation_id : undefined, system_prompt: systemPrompt, context_turns: contextTurns, ...(mode === 'group' ? { relay_prompt: relayPrompt, roles: Object.fromEntries(models.map((id) => [id, roles[id] || ''])) } : {}), ...jobContext(context), project_id: activeProjectId, ...(roleMode ? { workflow: { ...configuration, knowledge_ids: context.knowledge_ids, memory_scope: context.memory_scope, project_id: context.project_id, snapshot_id: context.snapshot_id, mcp_server_ids: context.mcp_server_ids } } : {}) }); setJobs((previous) => [created, ...previous.filter((j) => j.id !== created.id)]); if (request === artifactRequest.current) { rememberSession(mode, { job_id: created.id, draft: '', context: sourceSelection(context) }); setJob(created); setJobId(created.id); setArtifactJob(null); setPrompt(''); setContext((previous) => ({ ...previous, attachment_ids: [] })); } }
     catch (failure) { if (request === artifactRequest.current) setError(failure.message); } finally { setStarting(false); }
   };
   const cancel = async () => { if (!job || canceling) return; const request = artifactRequest.current; setCanceling(true); try { const stopped = await workbenchApi.cancelJob(job.id); if (request === artifactRequest.current) { setJob(hydrateJob(stopped)); streamRef.current?.close(); setStreamError(false); } refresh(); } catch (failure) { if (request === artifactRequest.current) setError(failure.message); } finally { setCanceling(false); } };
   const prepareFailedTask = (category) => { setPrompt(job.prompt || ''); setError(''); if (category === 'source_unverified') { inputRef.current?.focus(); inputRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' }); } else { setSettingsOpen(true); setWorkflowEditSignal((signal) => signal + 1); } };
   const manualRefresh = async () => { setRefreshing(true); await refresh(); setRefreshing(false); };
-  const history = conversationGroups(jobs, historyQuery);
+  const scopedJobs = jobs.filter((item) => (item.project_id || null) === activeProjectId);
+  const history = conversationGroups(scopedJobs, historyQuery);
   const priorTurns = previousTurns(jobs, job);
   const priorTurnKey = priorTurns.slice(-contextTurns).map((item) => item.id).join('|');
   useEffect(() => {
@@ -231,11 +282,10 @@ export default function App() {
   const selectedCatalog = status?.models || [];
   const openPlatform = (section) => { artifactRequest.current += 1; setArtifactJob(null); setPlatformView(true); setProjectView(false); setPlatformSection(section); setNavigationTab('platform'); setSidebarOpen(false); localStorage.setItem('modeldesk.view', 'platform'); localStorage.setItem('modeldesk.platformSection', section); };
   const openProjects = (target) => { artifactRequest.current += 1; setArtifactJob(null); setProjectTarget(target?.project_id ? target : null); setPlatformView(false); setProjectView(true); setNavigationTab('tools'); setSidebarOpen(false); localStorage.setItem('modeldesk.view', 'projects'); };
-  const beginAddProject = () => { setAddProjectSignal((signal) => signal + 1); openProjects(); };
   const usePrompt = (resource) => { const next = Object.hasOwn(MODES, resource.mode) ? resource.mode : 'chat'; selectMode(next); newTask(next); setPrompt(resource.content); };
-  const useAgent = (agent) => { selectMode('crewai'); newTask('crewai'); setModels([agent.model]); const workflow = { agents: [{ id: 'agent1', role: agent.role, goal: agent.goal, backstory: agent.backstory || '', model: agent.model, tools: agent.tools || [] }], tasks: [{ id: 'task1', description: '完成用户在任务输入中提出的要求。', expected_output: '符合用户要求、注明依据与限制的结果。', agent: 'agent1', context: [] }], process: 'sequential', manager_model: null, max_iter: 3 }; setWorkflows((previous) => ({ ...previous, crewai: workflow })); };
+  const useAgent = (agent) => { selectMode('crewai'); newTask('crewai'); setModels([agent.model]); const workflow = { agents: [{ id: 'agent1', role: agent.role, goal: agent.goal, backstory: agent.backstory || '', model: agent.model, tools: agent.tools || [] }], tasks: [{ id: 'task1', description: '完成用户在任务输入中提出的要求。', expected_output: '符合用户要求、注明依据与限制的结果。', agent: 'agent1', context: [] }], process: 'sequential', manager_model: null, max_iter: 3 }; const updated = { ...workflows, [projectSessionKey(activeProjectId, 'crewai')]: workflow }; setWorkflows(updated); localStorage.setItem('modeldesk.workflows', JSON.stringify(updated)); };
   const onPlatformRun = (created) => { setJobs((previous) => [created, ...previous.filter((item) => item.id !== created.id)]); refresh(); };
-  const savePrompt = async () => { if (!prompt.trim()) return; try { await platformApi.create('prompts', { name: prompt.trim().slice(0, 35), content: prompt.trim(), category: config.label, tags: [], mode }); openPlatform('prompts'); } catch (failure) { setError(failure.message); } };
+  const savePrompt = async () => { if (!prompt.trim()) return; try { await platformApi.create('prompts', { name: prompt.trim().slice(0, 35), content: prompt.trim(), category: config.label, tags: [], mode, project_id: activeProjectId }); openPlatform('prompts'); } catch (failure) { setError(failure.message); } };
   const toggleArtifacts = () => {
     if (window.innerWidth <= 1180) { setArtifactsOpen(true); setMobileArtifactsOpen(!mobileArtifactsOpen); return; }
     const next = !artifactsOpen; setArtifactsOpen(next); localStorage.setItem('modeldesk.artifactsOpen', next ? 'on' : 'off');
@@ -253,14 +303,14 @@ export default function App() {
       <div className="brand"><span className="brand-symbol"><i /><i /><i /><i /></span><div><strong>ModelDesk</strong><span>多智能体平台</span></div></div>
       <div className="sidebar-navigation-tabs"><button className={navigationTab === 'tools' ? 'selected' : ''} onClick={() => selectMode(mode)}>协作工作台</button><button className={navigationTab === 'platform' ? 'selected' : ''} onClick={() => openPlatform('overview')}>项目资源</button></div>
       <button className="new-task" onClick={() => { setPlatformView(false); setProjectView(false); localStorage.setItem('modeldesk.view', 'tools'); newTask(); }}><Icon name="plus" size={18} />新建会话</button>
-      <button className={`projects-entry ${projectView ? 'active' : ''}`} onClick={openProjects}><Icon name="folder" size={18} /><span><strong>我的项目</strong><small>添加代码项目与审查</small></span></button>
+      <button className={`projects-entry ${projectView ? 'active' : ''}`} onClick={projectHub.openManager}><Icon name="folder" size={18} /><span><strong>项目与资料</strong><small>图片、文件、文件夹与历史</small></span></button>
       <div className="sidebar-primary-navigation">{navigationTab === 'platform' ? <nav className="platform-navigation" aria-label="项目资源">{['overview', 'prompts', 'agents'].map((id) => <button className={platformView && platformSection === id ? 'active' : ''} key={id} onClick={() => openPlatform(id)}><Icon name={PLATFORM_SECTIONS[id][1]} size={18} /><span>{PLATFORM_SECTIONS[id][0]}</span></button>)}<details className="advanced-resource-navigation"><summary><Icon name="settings" size={16} />高级资源<Icon name="chevron" size={14} /></summary>{Object.entries(PLATFORM_SECTIONS).filter(([id]) => !['overview', 'prompts', 'agents'].includes(id)).map(([id, item]) => <button className={platformView && platformSection === id ? 'active' : ''} key={id} onClick={() => openPlatform(id)}><Icon name={item[1]} size={16} /><span>{item[0]}</span></button>)}</details></nav> : <nav className="mode-navigation" aria-label="工作模式"><div className="quick-modes">{['chat', 'council', 'crewai'].map((id) => <button key={id} className={!platformView && !projectView && mode === id ? 'active' : ''} onClick={() => selectMode(id)} title={MODES[id].description}><Icon name={MODES[id].icon} size={16} /><span><strong>{{ chat: '聊天', council: '评审', crewai: '团队' }[id]}</strong></span>{activeJobs.some((j) => j.mode === id) && <span className="nav-running" title="有任务运行中" />}</button>)}</div><div className="more-modes"><button type="button" className={!['chat', 'council', 'crewai'].includes(mode) ? 'active' : ''} aria-expanded={modeMenu} onClick={() => setModeMenu(!modeMenu)}><Icon name={MODES[mode].icon} size={18} /><span>{!['chat', 'council', 'crewai'].includes(mode) ? MODES[mode].label : '全部协作方式'}</span><Icon name="chevron" size={14} /></button>{modeMenu && <div className="mode-switcher" role="menu" aria-label="全部协作方式">{Object.entries(MODES).map(([id, item]) => <button role="menuitem" key={id} onClick={() => selectMode(id)}><Icon name={item.icon} size={17} /><span><strong>{item.label}</strong><small>{item.description}</small></span></button>)}</div>}</div></nav>}</div>
       <div className="history-heading"><span>最近会话</span><span>{history.length}</span></div>
       <label className="history-search"><Icon name="search" size={15} /><input aria-label="搜索最近会话" value={historyQuery} onChange={(event) => setHistoryQuery(event.target.value)} placeholder="搜索任务或内容" /></label>
       <div className="history-list">{history.length ? history.map((group) => <button key={group.id} className={`history-item ${group.jobs.some((item) => item.id === jobId) ? 'selected' : ''}`} onClick={() => selectJob(group.latest)} title={group.title}><span className="history-title">{group.title}</span><span className="history-meta"><span className={`history-status status-${group.latest.status}`}>{STATUS_LABELS[group.latest.status] || group.latest.status}</span><span>{group.jobs.length} 轮</span><time>{dateLabel(group.latest.created_at)}</time></span><small className="history-mode">{group.modes.map((id) => MODES[id]?.label || id).join(' / ')}</small></button>) : <p className="history-empty">{historyQuery ? '没有找到匹配的会话。' : '会话会自动保存，随时回来继续。'}</p>}</div>
       <div className="sidebar-footer"><button className="theme-toggle" onClick={() => { const next = theme === 'light' ? 'dark' : 'light'; setTheme(next); localStorage.setItem('modeldesk.theme', next); }}><span><Icon name={theme === 'light' ? 'moon' : 'sun'} size={14} />{theme === 'light' ? '切换深色模式' : '切换浅色模式'}</span><small>{theme === 'light' ? '浅色' : '深色'}</small></button><div className="gateway-indicator"><span className={`status-dot ${status?.gateway?.online ? 'online' : 'offline'}`} /><strong>{status ? status.gateway?.online ? '本地网关已连接' : '本地网关未连接' : '正在检查连接'}</strong></div><span>认证信息保留在本机</span><button onClick={() => { setPlatformView(false); setProjectView(false); setAccountPanel(true); }}>查看账户与连接<Icon name="settings" size={14} /></button></div>
     </aside>
-    <div className={`workspace-shell ${artifactsOpen && (artifactJob || (!platformView && !projectView && job)) ? 'artifacts-visible' : ''} ${mobileArtifactsOpen ? 'mobile-artifacts-open' : ''}`} style={{ '--artifact-width': `${artifactWidth}px` }}><>{platformView ? <PlatformWorkspace section={platformSection} onSection={openPlatform} status={status} jobs={jobs} models={models} context={context} onContextChange={setContext} onUsePrompt={usePrompt} onUseAgent={useAgent} onRunJob={onPlatformRun} onOpenProjects={beginAddProject} onStartCollaboration={() => { selectMode('crewai'); newTask('crewai'); }} onOpenJob={selectJob} onOpenNavigation={() => setSidebarOpen(true)} /> : projectView ? <ProjectWorkspace key={`${projectTarget?.project_id || 'default'}:${projectTarget?.review_id || 'latest'}`} addRequested={addProjectSignal} initialProjectId={projectTarget?.project_id} initialReviewId={projectTarget?.review_id} onOpenArtifacts={(next) => { artifactRequest.current += 1; setArtifactJob(hydrateJob(next)); setArtifactsOpen(true); setMobileArtifactsOpen(true); }} status={status} jobs={jobs} models={reviewModels.length ? reviewModels : models} onModelsChange={(next) => { setReviewModels(next); localStorage.setItem('modeldesk.reviewModels', JSON.stringify(next)); }} onRefresh={refresh} onOpenNavigation={() => setSidebarOpen(true)} /> : <main className="workspace">
+    <div className="modeldesk-main"><ProjectHub jobs={jobs} attachmentIds={context.attachment_ids} onAttachmentIds={(ids) => setContext((previous) => ({ ...previous, attachment_ids: ids }))} includeShared={context.include_project_assets} onIncludeShared={(enabled) => setContext((previous) => ({ ...previous, include_project_assets: enabled }))} onOpenJob={selectJob} onOpenReview={(id) => openProjects({ project_id: id })} /><div className={`workspace-shell ${artifactsOpen && (artifactJob || (!platformView && !projectView && job)) ? 'artifacts-visible' : ''} ${mobileArtifactsOpen ? 'mobile-artifacts-open' : ''}`} style={{ '--artifact-width': `${artifactWidth}px` }}><>{platformView ? <PlatformWorkspace key={platformSection} section={platformSection} onSection={openPlatform} status={status} jobs={scopedJobs} models={models} context={context} onContextChange={setContext} onUsePrompt={usePrompt} onUseAgent={useAgent} onRunJob={onPlatformRun} onOpenArtifacts={(next) => { artifactRequest.current += 1; setArtifactJob(hydrateJob(next)); setArtifactsOpen(true); setMobileArtifactsOpen(true); }} onOpenProjects={projectHub.openCreate} onStartCollaboration={() => { selectMode('crewai'); newTask('crewai'); }} onOpenJob={selectJob} onOpenNavigation={() => setSidebarOpen(true)} /> : projectView ? <ProjectWorkspace key={`${activeProjectId || 'default'}:${projectTarget?.review_id || 'latest'}`} addRequested={0} activeProjectId={activeProjectId} onSelectSharedProject={projectHub.selectProject} attachmentContext={context} onAttachmentContextChange={setContext} initialProjectId={activeProjectId} initialReviewId={projectTarget?.project_id === activeProjectId ? projectTarget.review_id : undefined} onOpenArtifacts={(next) => { artifactRequest.current += 1; setArtifactJob(hydrateJob(next)); setArtifactsOpen(true); setMobileArtifactsOpen(true); }} status={status} jobs={jobs} models={reviewModels.length ? reviewModels : models} onModelsChange={(next) => { setReviewModels(next); localStorage.setItem('modeldesk.reviewModels', JSON.stringify(next)); }} onRefresh={refresh} onOpenNavigation={() => setSidebarOpen(true)} /> : <main className="workspace">
       <header className="workspace-header"><div className="header-title"><button className="mobile-menu icon-button" aria-label="打开导航" onClick={() => setSidebarOpen(true)}><Icon name="menu" /></button><span className="mode-header-icon"><Icon name={config.icon} size={22} /></span><div><h1 title={job ? taskTitle(job.prompt) : undefined}>{job ? taskTitle(job.prompt) : '协作工作台'}</h1><span>{job && job.mode !== mode ? '下一轮：' : ''}{config.label} · {config.source}</span></div></div><div className="header-actions"><button className="subtle-button" aria-expanded={settingsOpen} onClick={() => setSettingsOpen(!settingsOpen)}><Icon name="settings" size={16} />设置</button><button disabled={!job && !artifactJob} className={`subtle-button ${artifactsOpen ? 'selected' : ''}`} aria-expanded={artifactsOpen} onClick={toggleArtifacts}><Icon name="layers" size={16} />最终产物</button><button className={`account-toggle ${accountPanel ? 'selected' : ''}`} onClick={() => setAccountPanel(!accountPanel)}><span className={`status-dot ${status?.providers?.some((p) => p.authenticated) ? 'online' : 'offline'}`} />已有账户<Icon name="chevron" size={14} /></button><button className="subtle-button" disabled={!prompt.trim()} onClick={savePrompt}>保存提示</button><div className="export-control"><button className="subtle-button" disabled={!job} onClick={() => setExportMenu(!exportMenu)}><Icon name="export" size={17} />导出</button>{exportMenu && job && <div className="small-menu"><button onClick={() => { exportJob(job, 'md'); setExportMenu(false); }}>导出 Markdown</button><button onClick={() => { exportJob(job, 'json'); setExportMenu(false); }}>导出完整 JSON</button></div>}</div></div></header>
       {accountPanel && <section className="account-panel" aria-label="账户与连接状态"><div className="account-panel-title"><div><strong>账户与连接</strong><span>凭据存在与模型调用验证分别显示</span></div><button className="icon-button" aria-label="刷新连接状态" disabled={refreshing} onClick={manualRefresh}><Icon name="refresh" size={18} /></button><button className="icon-button" aria-label="关闭账户面板" onClick={() => setAccountPanel(false)}><Icon name="close" size={18} /></button></div><div className="provider-list">{status?.providers?.length ? status.providers.map((provider) => <div className="provider-row" key={provider.id}><span className={`status-dot ${provider.authenticated ? 'online' : 'offline'}`} /><strong>{provider.label}</strong><span>{provider.authenticated ? '已发现登录凭据' : '未接入'}</span><span className="provider-verification">{provider.verified_models?.length ? `${provider.verified_models.length} 个模型已验证` : '尚无已验证调用'}</span>{provider.reason && <p>{provider.reason}</p>}</div>) : <p className="result-note">{status?.gateway?.error || '正在读取本地登录状态…'}</p>}</div><p className="account-footnote">Claude 订阅登录未接入第三方网关。当前工作台共享 ChatGPT 与 Google / Antigravity 的已有认证。</p></section>}
       <div className="context-toolbar"><label className="conversation-memory"><input type="checkbox" checked={rememberConversation} disabled={running || starting} onChange={(event) => { setRememberConversation(event.target.checked); localStorage.setItem('modeldesk.conversationMemory', event.target.checked ? 'on' : 'off'); }} /><Icon name="memory" size={16} /><span>{rememberConversation ? '会话记忆已开启' : '本轮不引用历史'}</span></label><span className="conversation-turns">{job ? `${priorTurns.length + 1} 轮记录` : '新会话'}</span><button className="context-source-trigger" onClick={() => setSettingsOpen(!settingsOpen)}><Icon name="folder" size={15} />资料与工具{context.knowledge_ids.length + context.memory_ids.length + (context.snapshot_id ? 1 : 0) > 0 && <b>{context.knowledge_ids.length + context.memory_ids.length + (context.snapshot_id ? 1 : 0)}</b>}</button><button className="current-models" title={models.join(' + ')} onClick={() => { setSettingsOpen(true); setModelMenu(true); }} disabled={running || starting}>{models.length ? `${models.length} 个模型` : '选择模型'}<Icon name="chevron" size={14} /></button></div>
@@ -274,10 +324,10 @@ export default function App() {
         {error && <div role="alert" className="error-banner"><span>{error}</span><button className="icon-button" aria-label="关闭错误提示" onClick={() => setError('')}><Icon name="close" size={15} /></button></div>}
         {status && !status.gateway?.online && <div className="connection-warning"><strong>本地网关未连接</strong><span>请双击 ModelDesk 启动入口，再点击刷新。</span><button className="subtle-button" onClick={manualRefresh} disabled={refreshing}><Icon name="refresh" size={15} />刷新</button></div>}
         {!toolAvailable && <div className="connection-warning"><strong>{config.source} 暂不可用</strong><span>{tool?.reason || '请检查本地依赖与服务。'}</span></div>}
-        {priorTurns.length > 0 && <section className="conversation-previous" aria-label="之前的会话">{loadedTurns.map((previous) => <details className="previous-turn" key={previous.id}><summary><Icon name="chat" size={15} /><span title={taskTitle(previous.prompt)}>{taskTitle(previous.prompt)}</span><small>{MODES[previous.mode]?.label || previous.mode}</small><Icon name="chevron" size={14} /></summary><div className="previous-turn-body"><div className="prompt-actions"><CopyTextButton text={previous.prompt} label="复制这条提问" /></div><Markdown>{previous.prompt}</Markdown><button className="subtle-button" onClick={() => { setArtifactJob(previous); setArtifactsOpen(true); setMobileArtifactsOpen(true); }}>查看这轮成果</button><JobOutput job={previous} /></div></details>)}</section>}
-        {jobId && !job ? <StagePending text="正在读取保存的记录" running /> : job ? <article className="job-detail"><div className="prompt-heading"><span className="prompt-label">{job.mode === 'chat' ? '你的问题' : '任务要求'}</span><div className={`job-status status-${job.status}`}>{running && <span className="activity-dot" />}{STATUS_LABELS[job.status] || job.status}</div><time>{dateLabel(job.created_at)}</time></div><div className="prompt-text"><Markdown>{job.prompt}</Markdown><div className="prompt-actions"><CopyTextButton text={job.prompt} label="复制提问" /><button className="subtle-button" onClick={() => { setPrompt(job.prompt); inputRef.current?.focus(); }}>编辑再用</button></div></div>{running && <div className="run-progress"><span className="small-spinner" /><span>{lastLog || (mode === 'chat' ? '各模型正在独立回答，可随时停止' : mode === 'council' ? '正在执行独立回答、匿名评审与主席综合' : mode === 'group' ? '群聊模型正在依次阅读记录并发言' : '正在执行角色分工与协作')}</span></div>}{streamError && running && <div className="stream-warning">实时连接暂时中断，正在重连。后台任务继续运行。</div>}<WorkflowFailureNotice job={job} onPrepare={roleMode && !running ? prepareFailedTask : undefined} />{job.status === 'cancelled' && !['camel', 'crewai'].includes(job.mode) && <p className="result-note">任务已停止。已收到的内容保留在记录中。</p>}<JobOutput key={job.id} job={job} conversationView /><ResultProvenance job={job} /></article> : <div className="empty-workspace"><div className="workspace-illustration" aria-hidden="true"><div className="illustration-input"><span /><span /></div><div className="illustration-lines"><i /><i /></div><div className="illustration-responses"><div><b className="illustration-model">O</b><span /><span /><span /></div><div><b className="illustration-model gemini-mark">G</b><span /><span /><span /></div></div></div><h2>{mode === 'chat' ? '一个问题，多种思路' : mode === 'council' ? '让回答接受另一轮审视' : mode === 'camel' ? '把想法放进一场讨论' : mode === 'group' ? '让不同模型接着聊' : '把任务交给一个协作团队'}</h2><p>{config.description}</p><button className="example-prompt" onClick={() => { setPrompt(config.example); inputRef.current?.focus(); }}><span>试一试</span>{config.example}<Icon name="plus" size={17} /></button><div className="empty-flow">{mode === 'chat' ? <><span>统一提问</span><i /><span>同时回答</span><i /><span>并排比较</span></> : mode === 'council' ? <><span>独立回答</span><i /><span>匿名互评</span><i /><span>主席综合</span></> : mode === 'camel' ? <><span>研究员提出</span><i /><span>审稿人质询</span><i /><span>多轮完善</span></> : mode === 'group' ? <><span>共享话题</span><i /><span>依次接话</span><i /><span>多轮讨论</span></> : <><span>明确任务</span><i /><span>起草方案</span><i /><span>审查交付</span></>}</div></div>}
+        {priorTurns.length > 0 && <section className="conversation-previous" aria-label="之前的会话">{loadedTurns.map((previous) => <details className="previous-turn" key={previous.id}><summary><Icon name="chat" size={15} /><span title={taskTitle(previous.prompt)}>{taskTitle(previous.prompt)}</span><small>{MODES[previous.mode]?.label || previous.mode}</small><Icon name="chevron" size={14} /></summary><div className="previous-turn-body"><div className="prompt-actions"><CopyTextButton text={previous.prompt} label="复制这条提问" /></div><Markdown>{previous.prompt}</Markdown><JobAttachments job={previous} /><button className="subtle-button" onClick={() => { setArtifactJob(previous); setArtifactsOpen(true); setMobileArtifactsOpen(true); }}>查看这轮成果</button><JobOutput job={previous} /></div></details>)}</section>}
+        {jobId && !job ? <StagePending text="正在读取保存的记录" running /> : job ? <article className="job-detail"><div className="prompt-heading"><span className="prompt-label">{job.mode === 'chat' ? '你的问题' : '任务要求'}</span><div className={`job-status status-${job.status}`}>{running && <span className="activity-dot" />}{STATUS_LABELS[job.status] || job.status}</div><time>{dateLabel(job.created_at)}</time></div><div className="prompt-text"><Markdown>{job.prompt}</Markdown><JobAttachments job={job} /><div className="prompt-actions"><CopyTextButton text={job.prompt} label="复制提问" /><button className="subtle-button" onClick={() => { setPrompt(job.prompt); inputRef.current?.focus(); }}>编辑再用</button></div></div>{running && <div className="run-progress"><span className="small-spinner" /><span>{lastLog || (mode === 'chat' ? '各模型正在独立回答，可随时停止' : mode === 'council' ? '正在执行独立回答、匿名评审与主席综合' : mode === 'group' ? '群聊模型正在依次阅读记录并发言' : '正在执行角色分工与协作')}</span></div>}{streamError && running && <div className="stream-warning">实时连接暂时中断，正在重连。后台任务继续运行。</div>}<WorkflowFailureNotice job={job} onPrepare={roleMode && !running ? prepareFailedTask : undefined} />{job.status === 'cancelled' && !['camel', 'crewai'].includes(job.mode) && <p className="result-note">任务已停止。已收到的内容保留在记录中。</p>}<JobOutput key={job.id} job={job} conversationView /><ResultProvenance job={job} /></article> : <div className="empty-workspace"><div className="workspace-illustration" aria-hidden="true"><div className="illustration-input"><span /><span /></div><div className="illustration-lines"><i /><i /></div><div className="illustration-responses"><div><b className="illustration-model">O</b><span /><span /><span /></div><div><b className="illustration-model gemini-mark">G</b><span /><span /><span /></div></div></div><h2>{mode === 'chat' ? '一个问题，多种思路' : mode === 'council' ? '让回答接受另一轮审视' : mode === 'camel' ? '把想法放进一场讨论' : mode === 'group' ? '让不同模型接着聊' : '把任务交给一个协作团队'}</h2><p>{config.description}</p><button className="example-prompt" onClick={() => { setPrompt(config.example); inputRef.current?.focus(); }}><span>试一试</span>{config.example}<Icon name="plus" size={17} /></button><div className="empty-flow">{mode === 'chat' ? <><span>统一提问</span><i /><span>同时回答</span><i /><span>并排比较</span></> : mode === 'council' ? <><span>独立回答</span><i /><span>匿名互评</span><i /><span>主席综合</span></> : mode === 'camel' ? <><span>研究员提出</span><i /><span>审稿人质询</span><i /><span>多轮完善</span></> : mode === 'group' ? <><span>共享话题</span><i /><span>依次接话</span><i /><span>多轮讨论</span></> : <><span>明确任务</span><i /><span>起草方案</span><i /><span>审查交付</span></>}</div></div>}
       </div>
-      <div className="composer-wrap"><form className="composer" onSubmit={send}><textarea ref={inputRef} aria-label={mode === 'chat' ? '输入问题' : '输入任务要求'} value={prompt} onChange={(e) => setPrompt(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); send(e); } }} rows={3} placeholder={job && rememberConversation ? '继续当前会话，例如：根据上面的结果，再完善一下…' : '描述你希望团队完成的任务…'} disabled={running || starting} /><div className="composer-footer"><span>{job && rememberConversation ? '接续当前会话 · Enter 发送，Shift + Enter 换行' : 'Enter 发送，Shift + Enter 换行'}{!selectionValid && <strong>{configurationErrors[0] || (mode === 'camel' ? '请选择恰好两个模型' : `请至少选择 ${minimum} 个模型`)}</strong>}</span>{running ? <button className="stop-button" type="button" disabled={canceling} onClick={cancel}><Icon name="stop" size={16} />{canceling ? '正在停止' : '停止运行'}</button> : <button className="primary-button" type="submit" disabled={!canSubmit}><Icon name="send" size={16} />{starting ? '正在启动' : config.action}</button>}</div></form><div className="composer-note"><span>会话和草稿自动保存在本机</span><button type="button" onClick={newTask} disabled={running || starting}>新建独立会话</button><button type="button" disabled={!prompt} onClick={savePrompt}>存为提示</button><button type="button" disabled={!prompt} onClick={() => setPrompt('')}>清空输入</button></div></div>
-    </main>}</>{artifactsOpen && (artifactJob || (!platformView && !projectView && job)) && <div className="artifact-dock"><div className="artifact-resizer" role="separator" aria-label="调整成果面板宽度" aria-orientation="vertical" aria-valuemin={320} aria-valuemax={Math.max(320, Math.min(680, window.innerWidth - 744))} aria-valuenow={artifactWidth} tabIndex={0} onPointerDown={resizeArtifacts} onKeyDown={(event) => { if (['ArrowLeft', 'ArrowRight'].includes(event.key)) { event.preventDefault(); const next = Math.max(320, Math.min(Math.max(320, Math.min(680, window.innerWidth - 744)), artifactWidth + (event.key === 'ArrowLeft' ? 24 : -24))); setArtifactWidth(next); localStorage.setItem('modeldesk.artifactWidth', String(next)); } }} /><ArtifactPanel job={artifactJob || job} onClose={toggleArtifacts} /></div>}</div>
+      <div className="composer-wrap"><form className="composer" onSubmit={send} onDragOver={(event) => { if (event.dataTransfer.types.includes("Files")) event.preventDefault(); }} onDrop={(event) => attachmentRef.current?.handleDrop(event)}><AttachmentComposer ref={attachmentRef} attachmentIds={context.attachment_ids} onChange={(ids) => setContext((previous) => ({ ...previous, attachment_ids: ids }))} includeShared={context.include_project_assets} onIncludeShared={(enabled) => setContext((previous) => ({ ...previous, include_project_assets: enabled }))} onPendingChange={setAttachmentPending} disabled={running || starting} /><textarea onPaste={(event) => attachmentRef.current?.handlePaste(event)} ref={inputRef} aria-label={mode === 'chat' ? '输入问题' : '输入任务要求'} value={prompt} onChange={(e) => setPrompt(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); send(e); } }} rows={3} placeholder={job && rememberConversation ? '继续当前会话，例如：根据上面的结果，再完善一下…' : '描述你希望团队完成的任务…'} disabled={running || starting} /><div className="composer-footer"><span>{job && rememberConversation ? '接续当前会话 · Enter 发送，Shift + Enter 换行' : 'Enter 发送，Shift + Enter 换行'}{!selectionValid && <strong>{configurationErrors[0] || (mode === 'camel' ? '请选择恰好两个模型' : `请至少选择 ${minimum} 个模型`)}</strong>}</span>{running ? <button className="stop-button" type="button" disabled={canceling} onClick={cancel}><Icon name="stop" size={16} />{canceling ? '正在停止' : '停止运行'}</button> : <button className="primary-button" type="submit" disabled={!canSubmit}><Icon name="send" size={16} />{starting ? '正在启动' : config.action}</button>}</div></form><div className="composer-note"><span>会话和草稿自动保存在本机</span><button type="button" onClick={newTask} disabled={running || starting}>新建独立会话</button><button type="button" disabled={!prompt} onClick={savePrompt}>存为提示</button><button type="button" disabled={!prompt} onClick={() => setPrompt('')}>清空输入</button></div></div>
+    </main>}</>{artifactsOpen && (artifactJob || (!platformView && !projectView && job)) && <div className="artifact-dock"><div className="artifact-resizer" role="separator" aria-label="调整成果面板宽度" aria-orientation="vertical" aria-valuemin={320} aria-valuemax={Math.max(320, Math.min(680, window.innerWidth - 744))} aria-valuenow={artifactWidth} tabIndex={0} onPointerDown={resizeArtifacts} onKeyDown={(event) => { if (['ArrowLeft', 'ArrowRight'].includes(event.key)) { event.preventDefault(); const next = Math.max(320, Math.min(Math.max(320, Math.min(680, window.innerWidth - 744)), artifactWidth + (event.key === 'ArrowLeft' ? 24 : -24))); setArtifactWidth(next); localStorage.setItem('modeldesk.artifactWidth', String(next)); } }} /><ArtifactPanel job={artifactJob || job} onClose={toggleArtifacts} /></div>}</div></div>
   </div>;
 }

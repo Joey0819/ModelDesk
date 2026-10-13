@@ -86,10 +86,18 @@ class PlatformStore:
         temp.chmod(0o600)
         temp.replace(self.path)
 
-    def list(self, kind, archived=False):
+    def list(self, kind, archived=False, project_id=None, scope="all"):
         self.check_kind(kind)
         with self.lock:
             items = [copy.deepcopy(item) for item in self.read()[kind].values() if bool(item.get("archived")) == archived]
+        if scope not in {"all", "global", "project"} or (scope == "project" and not project_id):
+            raise HTTPException(422, "资源范围无效；项目范围需要选择项目")
+        if scope == "global":
+            items = [item for item in items if not item.get("project_id")]
+        elif scope == "project":
+            items = [item for item in items if item.get("project_id") == project_id]
+        elif project_id:
+            items = [item for item in items if item.get("project_id") in {None, project_id}]
         return sorted(items, key=lambda item: item.get("updated_at", ""), reverse=True)
 
     @staticmethod
@@ -147,7 +155,7 @@ class PlatformStore:
             for kind, body, old_id in validated:
                 identifier = str(uuid.UUID(old_id)) if old_id else str(uuid.uuid4())
                 existing = data[kind].get(identifier)
-                same = next((item for item in data[kind].values() if item["name"] == body["name"] and item["content"] == body["content"]), None)
+                same = next((item for item in data[kind].values() if item["name"] == body["name"] and item["content"] == body["content"] and item.get("project_id") == body.get("project_id")), None)
                 if (existing or same) and conflict == "skip":
                     if old_id:
                         mapping[old_id] = (existing or same)["id"]
@@ -173,12 +181,16 @@ class PlatformStore:
             self.save(data)
             return imported, skipped
 
-    def search(self, kind, query, identifiers=None, scope=None, limit=5):
+    def search(self, kind, query, identifiers=None, scope=None, limit=5, project_id=None):
         if kind not in {"knowledge", "memories"}:
             raise HTTPException(422, "此资源不支持检索")
         items = self.list(kind)
+        items = [item for item in items if item.get("project_id") in {None, project_id}]
         if identifiers is not None:
-            selected = {self.get(kind, identifier)["id"] for identifier in identifiers}
+            records = [self.get(kind, identifier) for identifier in identifiers]
+            if any(item.get("project_id") not in {None, project_id} for item in records):
+                raise HTTPException(403, "所选资源不属于当前项目")
+            selected = {item["id"] for item in records}
             items = [item for item in items if item["id"] in selected]
         if scope:
             items = [item for item in items if item["scope"] == scope]

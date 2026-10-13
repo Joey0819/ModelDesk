@@ -17,6 +17,8 @@ export function applyEvent(job, event) {
     next.result = { ...job.result, [keys[event.stage] || event.stage]: event.data, ...(event.metadata ? { metadata: event.metadata } : {}) };
     if (event.stage === 'context') { next.context_references = event.data?.references || []; next.context_truncated = Boolean(event.data?.truncated); }
     if (event.stage === 'memory_saved') next.remembered_memory = event.data;
+    if (event.stage === 'conversational_context') next.context_history = event.data;
+    if (event.stage === 'attachments') { next.attachments = event.data?.items || []; next.attachment_manifest = event.data?.manifest; next.history_attachment_manifest = event.data?.history_manifest; }
   }
   if (event.type === 'message') {
     const message = { model: event.model, round: event.round, content: event.content, ...(event.error !== undefined ? { error: event.error } : {}), ...(event.incomplete !== undefined ? { incomplete: event.incomplete } : {}) };

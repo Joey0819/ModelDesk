@@ -14,10 +14,14 @@ test('sandbox bridge exposes only fixed picker and original-app methods', async 
   const source = fs.readFileSync(path.join(__dirname, '..', 'preload.cjs'), 'utf8');
   vm.runInNewContext(source, { require: name => { assert.equal(name, 'electron'); return electron; } });
   assert.equal(exposed.name, 'modelDesk');
-  assert.deepEqual(Object.keys(exposed.value), ['chooseProjectDirectory', 'openOriginalApp']);
+  assert.deepEqual(Object.keys(exposed.value), ['chooseProjectDirectory', 'chooseInputFiles', 'chooseAttachmentDirectory', 'openOriginalApp']);
   assert.equal(Object.isFrozen(exposed.value), true);
   assert.equal(await exposed.value.chooseProjectDirectory('/arbitrary/path', 'execute'), '/Users/example/Project');
   assert.deepEqual(invocation, ['modeldesk:choose-project-directory']);
+  await exposed.value.chooseInputFiles('/arbitrary/path');
+  assert.deepEqual(invocation, ['modeldesk:choose-input-files']);
+  await exposed.value.chooseAttachmentDirectory('/arbitrary/path');
+  assert.deepEqual(invocation, ['modeldesk:choose-attachment-directory']);
   await exposed.value.openOriginalApp('chathub', 'https://malicious.invalid');
   assert.deepEqual(invocation, ['modeldesk:open-original-app', 'chathub']);
   for (const invalid of ['multibot', 'https://malicious.invalid', '../execute', null]) {

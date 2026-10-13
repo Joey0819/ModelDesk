@@ -12,7 +12,8 @@ from pathlib import Path, PurePosixPath
 from typing import Literal
 import httpx
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, File, Form, UploadFile
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field, field_validator
 
 from . import workbench
@@ -181,22 +182,71 @@ class ProjectStore:
         temporary.chmod(0o600)
         temporary.replace(path)
 
-    def register(self, name, path, project_id=None):
-        root = Path(path).expanduser()
-        if not root.is_absolute() or not root.is_dir():
-            raise ValueError("请选择已存在的本地项目绝对路径")
-        root = root.resolve()
+    def register(self, name, path=None, project_id=None, description="", instructions=""):
         with self.lock:
             registry = self.read_registry()
             if project_id and project_id not in registry:
                 raise HTTPException(404, "项目未登记")
+            identifier = project_id or str(uuid.uuid4())
+            previous = registry.get(identifier, {})
+            if path:
+                root = Path(path).expanduser()
+                if not root.is_absolute() or not root.is_dir() or root.is_symlink():
+                    raise ValueError("请选择已存在且非符号链接的本地项目目录")
+                root = root.resolve()
+                managed = previous.get("managed", False) and str(root) == previous.get("path")
+            elif previous:
+                root, managed = Path(previous["path"]), previous.get("managed", False)
+            else:
+                root = self.directory.parent / "workspaces" / identifier
+                root.mkdir(parents=True, mode=0o700)
+                root = root.resolve()
+                managed = True
+            from .attachments import secret_text
+            if secret_text(description + "\n" + instructions):
+                raise ValueError("项目说明或要求不能包含凭据")
             if any(item["path"] == str(root) and item["id"] != project_id for item in registry.values()):
                 raise ValueError("该项目路径已登记")
-            identifier = project_id or str(uuid.uuid4())
-            item = {"id": identifier, "name": name.strip(), "path": str(root), "created_at": registry.get(identifier, {}).get("created_at", workbench.now()), "updated_at": workbench.now()}
+            item = {"id": identifier, "name": name.strip(), "path": str(root), "managed": managed, "description": description, "instructions": instructions, "folders": previous.get("folders", []), "created_at": previous.get("created_at", workbench.now()), "updated_at": workbench.now()}
             registry[identifier] = item
             self.save(self.directory / "registry.json", registry)
             return item
+
+    def add_folder(self, project_id, path, name=None):
+        root = Path(path).expanduser()
+        if not root.is_absolute() or not root.is_dir() or root.is_symlink():
+            raise ValueError("请选择已存在且非符号链接的资料目录")
+        root = root.resolve()
+        if any(excluded(part) for part in root.parts):
+            raise ValueError("不能登记凭据或缓存目录")
+        with self.lock:
+            registry = self.read_registry()
+            project = self.get(project_id)
+            folders = project.get("folders", [])
+            existing = next((item for item in folders if item["path"] == str(root)), None)
+            if existing:
+                return existing
+            if len(folders) >= 20:
+                raise ValueError("每个项目最多登记 20 个资料目录")
+            item = {"id": str(uuid.uuid4()), "name": name or root.name, "path": str(root), "created_at": workbench.now(), "status": "available"}
+            project["folders"] = [*folders, item]
+            registry[project_id] = project
+            self.save(self.directory / "registry.json", registry)
+            return item
+
+    def folder(self, project_id, folder_id):
+        folder = next((item for item in self.get(project_id).get("folders", []) if item["id"] == folder_id), None)
+        if not folder:
+            raise HTTPException(404, "资料目录不存在")
+        return folder
+
+    def remove_folder(self, project_id, folder_id):
+        self.folder(project_id, folder_id)
+        with self.lock:
+            registry = self.read_registry()
+            registry[project_id]["folders"] = [item for item in registry[project_id].get("folders", []) if item["id"] != folder_id]
+            self.save(self.directory / "registry.json", registry)
+        return {"removed": True, "files_deleted": False}
 
     def get(self, identifier):
         with self.lock:
@@ -241,7 +291,9 @@ class ProjectStore:
                 omitted.append({"path": name, "reason": str(exc)})
                 continue
             files.append({"path": name, "status": status.get(name, "tracked" if info["available"] else "file")})
-        return {**project, "git": info, "files": files[:1000], "omitted": omitted[:1000], "truncated": len(files) > 1000}
+        from .attachments import store as assets
+        jobs = [{key: job.get(key) for key in ["id", "mode", "prompt", "status", "created_at", "conversation_id"]} for job in workbench.manager.jobs.values() if job.get("project_id") == identifier]
+        return {**project, "git": info, "files": files[:1000], "omitted": omitted[:1000], "truncated": len(files) > 1000, "assets": assets.list(identifier), "jobs": sorted(jobs, key=lambda item: item["created_at"], reverse=True)[:100]}
 
     def build_snapshot(self, identifier, request, persist=True):
         project = self.get(identifier)
@@ -367,7 +419,9 @@ class ProjectStore:
 
 class ProjectRequest(BaseModel):
     name: str = Field(min_length=1, max_length=100)
-    path: str = Field(min_length=1, max_length=4096)
+    path: str | None = Field(default=None, max_length=4096)
+    description: str = Field(default="", max_length=2000)
+    instructions: str = Field(default="", max_length=4000)
 
     @field_validator("name")
     @classmethod
@@ -392,6 +446,8 @@ class ReviewRequest(BaseModel):
     prompt: str = Field(default="检查所选范围中的真实缺陷，给出可核对的文件与行号。", max_length=12000)
     conversation_id: str | None = None
     context_turns: int = Field(default=12, ge=1, le=40)
+    attachment_ids: list[str] = Field(default_factory=list, max_length=30)
+    include_project_assets: bool = True
 
 
 store = ProjectStore()
@@ -407,7 +463,7 @@ async def list_projects():
 @router.post("", status_code=201)
 async def register_project(request: ProjectRequest):
     try:
-        return await asyncio.to_thread(store.register, request.name, request.path)
+        return await asyncio.to_thread(store.register, request.name, request.path, None, request.description, request.instructions)
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
 
@@ -420,7 +476,7 @@ async def project_detail(project_id: str):
 @router.put("/{project_id}")
 async def update_project(project_id: str, request: ProjectRequest):
     try:
-        return await asyncio.to_thread(store.register, request.name, request.path, project_id)
+        return await asyncio.to_thread(store.register, request.name, request.path, project_id, request.description, request.instructions)
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
 
@@ -428,6 +484,121 @@ async def update_project(project_id: str, request: ProjectRequest):
 @router.delete("/{project_id}")
 async def remove_project(project_id: str):
     return await asyncio.to_thread(store.remove, project_id)
+
+
+class FolderRequest(BaseModel):
+    path: str = Field(min_length=1, max_length=4096)
+    name: str | None = Field(default=None, max_length=100)
+
+
+class FolderImportRequest(BaseModel):
+    files: list[str] | None = Field(default=None, max_length=100)
+    shared: bool = True
+
+
+class AssetUpdate(BaseModel):
+    shared: bool
+
+
+@router.get("/{project_id}/assets")
+async def list_assets(project_id: str):
+    from .attachments import store as assets
+    store.get(project_id)
+    return await asyncio.to_thread(assets.list, project_id)
+
+
+@router.post("/{project_id}/assets", status_code=201)
+async def upload_asset(project_id: str, file: UploadFile = File(...), relative_path: str = Form(default=""), shared: bool = Form(default=False)):
+    from .attachments import store as assets, MAX_FILE_BYTES
+    raw = await file.read(MAX_FILE_BYTES + 1)
+    try:
+        return await asyncio.to_thread(assets.add, project_id, file.filename or "file.bin", raw, relative_path or None, shared)
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from error
+
+
+@router.post("/{project_id}/assets/batch", status_code=201)
+async def upload_assets(project_id: str, files: list[UploadFile] = File(...), relative_paths: str = Form(default=""), shared: bool = Form(default=False)):
+    from .attachments import store as assets, MAX_FILE_BYTES, MAX_BATCH_BYTES, MAX_BATCH_FILES
+    store.get(project_id)
+    try:
+        paths = json.loads(relative_paths) if relative_paths else [file.filename or "file.bin" for file in files]
+        if not isinstance(paths, list) or len(paths) != len(files) or len(files) > MAX_BATCH_FILES:
+            raise ValueError("批量上传路径数量不匹配或超过 100 个文件")
+        raw_files, total = [], 0
+        for file in files:
+            raw = await file.read(MAX_FILE_BYTES + 1)
+            total += len(raw)
+            if total > MAX_BATCH_BYTES:
+                raise ValueError("批量文件总量超过 100 MB")
+            raw_files.append(raw)
+    except (ValueError, TypeError) as error:
+        raise HTTPException(422, str(error)) from error
+    imported, omitted = [], []
+    for file, relative, raw in zip(files, paths, raw_files):
+        try:
+            imported.append(await asyncio.to_thread(assets.add, project_id, file.filename or "file.bin", raw, relative, shared))
+        except (ValueError, HTTPException) as error:
+            omitted.append({"relative_path": relative if isinstance(relative, str) else "invalid", "reason": error.detail if isinstance(error, HTTPException) else str(error)})
+    return {"assets": imported, "omitted": omitted, "coverage": {"files_seen": len(files), "files_imported": len(imported), "omitted_count": len(omitted), "truncated": bool(omitted), "limits": {"max_files": 100, "max_batch_bytes": 100000000}}}
+
+
+@router.put("/{project_id}/assets/{asset_id}")
+async def update_asset(project_id: str, asset_id: str, request: AssetUpdate):
+    from .attachments import store as assets
+    return await asyncio.to_thread(assets.update_shared, project_id, asset_id, request.shared)
+
+
+@router.delete("/{project_id}/assets/{asset_id}")
+async def delete_asset(project_id: str, asset_id: str):
+    from .attachments import store as assets
+    return await asyncio.to_thread(assets.remove, project_id, asset_id)
+
+
+@router.get("/{project_id}/assets/{asset_id}/content")
+async def asset_content(project_id: str, asset_id: str):
+    from .attachments import store as assets
+    item = assets.get(project_id, asset_id)
+    path = await asyncio.to_thread(assets.content_path, item)
+    return FileResponse(path, media_type=item["mime_type"] if item["kind"] == "image" else "application/octet-stream", filename=None if item["kind"] == "image" else item["name"], headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"})
+
+
+@router.post("/{project_id}/folders", status_code=201)
+async def add_folder(project_id: str, request: FolderRequest):
+    try:
+        return await asyncio.to_thread(store.add_folder, project_id, request.path, request.name)
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from error
+
+
+@router.delete("/{project_id}/folders/{folder_id}")
+async def delete_folder(project_id: str, folder_id: str):
+    return await asyncio.to_thread(store.remove_folder, project_id, folder_id)
+
+
+@router.get("/{project_id}/folders/{folder_id}/files")
+async def list_folder_files(project_id: str, folder_id: str):
+    from .attachments import folder_files
+    return await asyncio.to_thread(folder_files, store.folder(project_id, folder_id))
+
+
+@router.post("/{project_id}/folders/{folder_id}/import", status_code=201)
+async def import_folder(project_id: str, folder_id: str, request: FolderImportRequest):
+    from .attachments import store as assets, folder_files, read_local, MAX_BATCH_BYTES
+    folder = store.folder(project_id, folder_id)
+    inventory = await asyncio.to_thread(folder_files, folder)
+    selected = request.files if request.files is not None else [item["relative_path"] for item in inventory["files"][:100]]
+    imported, omitted, total = [], [], 0
+    for relative in dict.fromkeys(selected):
+        try:
+            raw = await asyncio.to_thread(read_local, Path(folder["path"]), relative)
+            total += len(raw)
+            if total > MAX_BATCH_BYTES:
+                raise ValueError("达到批量文件 100 MB 预算")
+            imported.append(await asyncio.to_thread(assets.add, project_id, PurePosixPath(relative).name, raw, relative, request.shared))
+        except (ValueError, OSError, HTTPException) as error:
+            omitted.append({"relative_path": relative, "reason": error.detail if isinstance(error, HTTPException) else str(error)[:200]})
+    return {"assets": imported, "omitted": omitted, "coverage": {"files_seen": len(selected), "files_imported": len(imported), "omitted_count": len(omitted), "truncated": bool(omitted) or inventory["coverage"]["truncated"] or (request.files is None and len(inventory["files"]) > 100), "limits": {"max_files": 100, "max_batch_bytes": 100000000}}}
 
 
 @router.post("/{project_id}/snapshots", status_code=201)
@@ -473,7 +644,7 @@ async def create_review(project_id: str, request: ReviewRequest):
             raise ValueError("选择的模型不在本地网关列表中")
         if request.engine in {"camel", "crewai"} and not (workbench.TOOLS / (".venv-" + request.engine) / "bin/python").exists():
             raise ValueError("该评审框架尚未安装")
-        job_request = workbench.JobRequest(mode="review", prompt=request.prompt or "检查代码中的真实缺陷。", models=request.models, chairman=request.chairman, rounds=request.rounds, project_id=project_id, snapshot_id=request.snapshot_id, engine=request.engine, conversation_id=request.conversation_id, context_turns=request.context_turns)
+        job_request = workbench.JobRequest(mode="review", prompt=request.prompt or "检查代码中的真实缺陷。", models=request.models, chairman=request.chairman, rounds=request.rounds, project_id=project_id, snapshot_id=request.snapshot_id, engine=request.engine, conversation_id=request.conversation_id, context_turns=request.context_turns, attachment_ids=request.attachment_ids, include_project_assets=request.include_project_assets)
     except (ValueError, httpx.HTTPError) as exc:
         raise HTTPException(422, workbench.public_error(exc)) from exc
     job = workbench.manager.create(job_request)

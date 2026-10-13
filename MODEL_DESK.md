@@ -1,6 +1,6 @@
 # ModelDesk 统一工作台
 
-ModelDesk 2.1.0：一个页面使用已有 ChatGPT 与 Google / Antigravity 登录，运行并排聊天、Council、CAMEL、CrewAI 和 MultiBot Chat 式接力群聊，并添加本地项目进行真实代码审查。网页地址保持 http://localhost:5173/，当前电脑安装入口为 `/Applications/ModelDesk.app`，构建产物位于相邻目录 `../llm-tools/releases/ModelDesk.app`。
+ModelDesk 2.2.0：一个页面使用已有 ChatGPT 与 Google / Antigravity 登录，运行并排聊天、Council、CAMEL、CrewAI 和 MultiBot Chat 式接力群聊。所有模块共用项目入口，支持普通项目、图片/文件资料、文件夹导入与固定源码快照的代码审查。网页地址保持 http://localhost:5173/，当前电脑安装入口为 `/Applications/ModelDesk.app`，构建产物位于相邻目录 `../llm-tools/releases/ModelDesk.app`。
 
 ## 多智能体平台
 
@@ -9,6 +9,22 @@ ModelDesk 2.1.0：一个页面使用已有 ChatGPT 与 Google / Antigravity 登�
 ## 使用
 
 打开 `ModelDesk.app` 自动启动本机共享服务。也可运行相邻目录 `../llm-tools/start.command`，通过浏览器使用同一页面。
+
+## 2.2.0：所有模块共用的项目与资料
+
+顶部项目栏在协作、代码评审、资源管理、SDK 和原版入口中始终保留，可直接新建或切换项目。普通项目只需名称，说明与默认要求可选；无需先有代码文件夹。新项目使用本机管理的工作目录，不初始化 Git。已有代码目录仍可登记，不迁移或修改源文件。项目切换恢复该项目的草稿与会话，项目之间不混用历史。
+
+任务输入区支持添加图片和文件、拖放、粘贴图片，以及文件夹选择后逐项导入。桌面版使用原生选择器，浏览器使用上传选择器；浏览器链接已有本地文件夹时需填写绝对路径。项目可关联多个文件夹，链接后先展示目录，明确选择文件再复制导入，不自动把整个目录发送给模型。
+
+资料分为本轮使用和项目共用。本轮附件在发送时选择；共用资料在项目资料管理中明确开启，后续统一任务默认纳入，并可在当次任务关闭。PNG/JPEG/WebP 会实际以图片内容进入模型请求，UTF-8 文本/源码、DOCX 和文字 PDF 提取文字；扫描 PDF、其他不支持类型显示原因，不声称已读取。每个任务冻结资料副本和摘要，后续修改或移除登记不改变旧任务的输入证据。
+
+同项目连续追问会重新校验并引用实际使用过的历史图片副本，不只引用旧回答。图片数量、总字节和历史字符都有明确预算，超出或缺失资料显示排除原因和来源任务。新会话、关闭会话记忆或切换项目不会继承旧图。代码评审仍要求先预览明确的源码范围，普通项目资料不构成执行源代码或扩大工具权限的授权。
+
+聊天、Council、CAMEL、CrewAI、群聊、Workforce、Flow、代码评审和 SDK 工作室均接入同一项目与资料层。SDK 模板提供 `CAMEL_MODEL` / `CREWAI_LLM` / `VISION_CLIENT`，保留原生框架并记录实际图片请求；自定义脚本也可使用 `ATTACHMENTS`、`IMAGE_PARTS` 和 `ATTACHMENT_CONTENT`。只准备图片内容但未派发模型请求的脚本会标注未核实，不冒充模型已看图。ChatHub 原扩展和内嵌 MultiBot 原版保留其自己的项目/账户状态；统一任务的项目和附件不会自动注入第三方原版页面。
+
+项目资料默认上限为单文件 20 MB、一次导入 100 个文件/100 MB；图片上限 10 MB、1600 万像素。单任务最多 30 个资料、8 张图片、40 MB 图片总量，文字预算按实际输入和历史分配。项目资源库支持本项目、全局以及本项目加全局三种范围。供应商凭据、认证文件、缓存、越界路径和符号链接不会作为文件夹材料导入；导入覆盖和遗漏原因保留。
+
+设计参考官方 [Codex Projects](https://learn.chatgpt.com/docs/projects) 的项目资料与独立会话组织，以及 [Image inputs](https://learn.chatgpt.com/docs/image-inputs) 的图片附件交互。这里复用这些交互原则，不表示已复制 Codex 的全部执行环境与能力。
 
 1. 从「快速开始」选择任务入口或模板，也可从左侧进入聊天、匿名评审、团队协作等模式。
 2. 在「资料与工具」调整模型和必要资料；默认 `gpt-6.1-sol` 与 `gemini-3-flash`，已有的有效模型选择会恢复。未经实测的网关模型会单独标识。
@@ -66,6 +82,12 @@ Workforce 规划依据各角色实际启用的工具与任务要求。角色缺�
 
 2.1.0 实际应用包已重建并安装到 `/Applications/ModelDesk.app`，版本、签名与 ASAR 一致性检查通过。2026-10-13 解锁后，已在安装版实际打开主窗口、恢复 Council 历史成果，并点击单份 Markdown 导出弹出“保存 ModelDesk 导出”原生对话框。随后 macOS ScreenCaptureKit 返回 invalid parameter（-3812），阻止继续自动读取与操作保存窗口；最后的保存点击由用户手动完成。下载文件 主席结论 Markdown（任务 `1a4d3a8d-890b-43dd-a933-56b0f00cb5e4`，实际文件路径见验收记录） 已在本机 Downloads 落盘，430 bytes，SHA256 与预期一致，并逐字节等于本次实际 `council:synthesis` 导出正文，包含“杉桥7392”和三条清单。实测状态记录于 `data/ux-native-validation.json`。本轮验证了这份单成果 Markdown 的保存；不声称全流程自动保存，整任务 JSON 的原生落盘与取消保存操作本轮未验收。Council 曾遇到上游 TLS 超时，现已提供有限传输重试与各模型诊断；一次成功重试不表示上游网络问题已永久消除。
 
+## 2.2.0 验证状态
+
+后端 89 项、前端 54 项、桌面 15 项，共 158 项自动检查通过，另通过 lint、生产构建与应用签名校验。九种任务真实识别自建图中的三组形状/颜色和 `T6R37`，并读取共用文稿的 `文稿2468`；两个原生 SDK 和保存流程也有实际派发记录。连续追问图片副本、跨项目隔离、资料指纹、正文提取、文件夹排除和公开 JSON 无图片载荷均验证。代码评审保留 `source.py:4` 的准确引用和未执行源码的边界。详见 `data/project-input-acceptance/platform-validation.json` 和 [功能验收表](docs/CAPABILITIES.md)。
+
+真实界面已完成新建普通项目、粘贴图片、预览本地文件夹、勾选导入并设为共用、双模型回答、复制回读，以及聊天 → Council 的历史图片接续。返回项目/刷新恢复草稿和历史。应用 2.2.0 已安装到 `/Applications/ModelDesk.app`，安装前用户退出旧版，版本/签名/ASAR 一致性校验通过，旧版备份保留。安装版已实测原生图片与文件夹选择、指定文件导入、双模型正确读取图片/文稿/子目录标记和单成果原生保存；落盘正文 310 bytes，与所选 GPT 的导出逐字节一致，记录于 `data/project-input-acceptance/native-validation.json`。本次 AX 操作正常，不保证此前窗口捕获故障永久解决。内置浏览器文件选择器事件未回传，其资料流程通过图片粘贴和明确目录清单验收。安装记录见 `data/modeldesk-install-2.2.0.json`。
+
 ## 界面参考
 
 布局参考官方公开的使用方式：Codex 示例中的 Projects / Recents 整理入口（[官方功能页](https://learn.chatgpt.com/docs/features)）；Claude 以模板开始、成果与会话并排并可再次打开（[Artifacts](https://support.claude.com/en/articles/17153992-what-are-artifacts-and-how-do-i-use-them)）；Cursor 统一跨项目工作区和差异审查（[Agents Window](https://cursor.com/docs/agent/agents-window)）；Dify 从输入、配置到明确 Test Run 的快速开始路径（[官方教程](https://docs.dify.ai/en/quick-start)）。ModelDesk 据此采用任务入口、最近会话、可预览代码与独立成果面板；这些是交互参考，不表示完整复制上述产品能力。
@@ -91,6 +113,10 @@ npm --prefix desktop ci
 # 平台、原生 SDK 和模型→工具真实链路
 .venv/bin/python scripts/verify_super_platform.py
 .venv/bin/python scripts/verify_platform_frameworks.py
+
+# 九种模式的真实图片/文稿、文件夹、项目隔离和历史图片验收
+# 仅发送脚本自建的合成资料，不执行用户项目源码
+.venv/bin/python scripts/verify_project_inputs.py --workers 2
 
 # 重建生产页面和实际 macOS 应用包
 .venv/bin/python scripts/package_modeldesk.py

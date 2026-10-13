@@ -6,7 +6,7 @@ import { DashboardWorkspace, MigrationWorkspace, OriginalsWorkspace, ToolsWorksp
 import './PlatformWorkspace.css';
 import { PLATFORM_SECTIONS } from '../platform-settings';
 
-export default function PlatformWorkspace({ section, onSection, status, jobs, models, context, onContextChange, onUsePrompt, onUseAgent, onRunJob, onOpenProjects, onOpenNavigation, onStartCollaboration, onOpenJob }) {
+export default function PlatformWorkspace({ section, onSection, status, jobs, models, context, onContextChange, onUsePrompt, onUseAgent, onRunJob, onOpenProjects, onOpenNavigation, onStartCollaboration, onOpenJob, onOpenArtifacts }) {
   const [agentTab, setAgentTab] = useState('agents');
   const config = PLATFORM_SECTIONS[section] || PLATFORM_SECTIONS.overview;
   return <main className="workspace platform-workspace">
@@ -15,11 +15,11 @@ export default function PlatformWorkspace({ section, onSection, status, jobs, mo
     {section === 'agents' && <div className="platform-inner-tabs agent-workspace-tabs"><button className={agentTab === 'agents' ? 'selected' : ''} onClick={() => setAgentTab('agents')}>智能体库</button><button className={agentTab === 'flows' ? 'selected' : ''} onClick={() => setAgentTab('flows')}>流程库与条件分支</button><button className={agentTab === 'sdk' ? 'selected' : ''} onClick={() => setAgentTab('sdk')}>原生 SDK 工作室</button></div>}
     <div className="platform-content">
       {section === 'overview' && <DashboardWorkspace jobs={jobs} models={models} onSection={(next) => { if (next === 'agents') setAgentTab('agents'); onSection(next); }} onOpenProjects={onOpenProjects} onStartCollaboration={onStartCollaboration} onOpenJob={onOpenJob} onUsePrompt={onUsePrompt} onUseAgent={onUseAgent} onOpenSdk={() => { setAgentTab('sdk'); onSection('agents'); }} />}
-      {['knowledge', 'memories', 'prompts'].includes(section) && <LibraryWorkspace key={section} kind={section} models={models} status={status} context={context} onUsePrompt={onUsePrompt} onRunJob={onRunJob} />}
-      {section === 'agents' && (agentTab === 'sdk' ? <SdkStudio models={models} context={context} onRunJob={onRunJob} /> : <LibraryWorkspace key={agentTab} kind={agentTab} models={models} status={status} context={context} onUsePrompt={onUsePrompt} onUseAgent={onUseAgent} onRunJob={onRunJob} />)}
+      {['knowledge', 'memories', 'prompts'].includes(section) && <LibraryWorkspace key={section} kind={section} models={models} status={status} context={context} onContextChange={onContextChange} onUsePrompt={onUsePrompt} onRunJob={onRunJob} onOpenArtifacts={onOpenArtifacts} />}
+      {section === 'agents' && (agentTab === 'sdk' ? <SdkStudio models={models} context={context} onContextChange={onContextChange} onRunJob={onRunJob} onOpenArtifacts={onOpenArtifacts} /> : <LibraryWorkspace key={agentTab} kind={agentTab} models={models} status={status} context={context} onContextChange={onContextChange} onUsePrompt={onUsePrompt} onUseAgent={onUseAgent} onRunJob={onRunJob} onOpenArtifacts={onOpenArtifacts} />)}
       {section === 'tools' && <ToolsWorkspace context={context} />}
       {section === 'migration' && <MigrationWorkspace />}
-      {section === 'originals' && <OriginalsWorkspace />}
+      {section === 'originals' && <><p className="project-assets-explanation">页面顶部项目适用于统一协作工作台。完整原版 ChatHub／MultiBot 使用自己的上下文；需要本项目图片或文件时，请回到统一聊天／群聊方式运行。</p><OriginalsWorkspace /></>}
     </div>
   </main>;
 }

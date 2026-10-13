@@ -80,8 +80,8 @@ class WorkflowConfig(BaseModel):
             raise ValueError("知识与 MCP 资源不得重复")
         if any(segment in ("", ".", "..") for segment in self.memory_scope.split("/")):
             raise ValueError("记忆范围只能使用命名路径，不能包含空段或相对路径")
-        if bool(self.project_id) != bool(self.snapshot_id):
-            raise ValueError("项目工具必须同时绑定项目与不可变快照")
+        if self.snapshot_id and not self.project_id:
+            raise ValueError("快照必须同时绑定所属项目")
         for agent in self.agents:
             if "knowledge_search" in agent.tools and not self.knowledge_ids:
                 raise ValueError("知识检索工具需要选择知识库")

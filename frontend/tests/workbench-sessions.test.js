@@ -33,14 +33,17 @@ test('saved sessions tolerate corrupt storage and sources never restore job inte
 
 test('refresh after handing a chat to Council restores the next-turn choices instead of the older chat source', () => {
   const job = { id: 'same', mode: 'chat', project_id: 'old-project', snapshot_id: 'old-snapshot', models: ['old-model'], context_turns: 12 };
-  const sessions = { chat: { job_id: 'same', context: job }, council: { job_id: 'same', context: { project_id: 'chosen-project', snapshot_id: 'chosen-snapshot' }, preferences: { models: ['chosen-model'], rounds: 4, context_turns: 7, system_prompt: '中文回答' } } };
+  const sessions = { chat: { job_id: 'same', context: job }, council: { job_id: 'same', context: { project_id: 'old-project', snapshot_id: 'chosen-snapshot' }, preferences: { models: ['chosen-model'], rounds: 4, context_turns: 7, system_prompt: '中文回答' } } };
   const restored = restoredSession(sessions, 'council', job);
-  assert.equal(restored.context.project_id, 'chosen-project');
+  assert.equal(restored.context.project_id, 'old-project');
+  assert.equal(restored.context.snapshot_id, 'chosen-snapshot');
   assert.deepEqual(restored.preferences.models, ['chosen-model']);
   assert.equal(restored.preferences.context_turns, 7);
   assert.equal(restored.preferences.rounds, 4);
   assert.equal(restored.preferences.system_prompt, '中文回答');
   assert.equal(restoredSession(sessions, 'crewai', job).context.project_id, 'old-project');
+  sessions.council.context.project_id = 'foreign-project';
+  assert.deepEqual(restoredSession(sessions, 'council', job).preferences.models, ['old-model']);
 });
 
 test('recent conversations group turns across modes and search prior prompts without losing latest status', () => {

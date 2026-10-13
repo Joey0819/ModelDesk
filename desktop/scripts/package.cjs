@@ -12,7 +12,7 @@ async function main() {
   const staging = path.join(root, 'dist', 'app-source');
   await fs.rm(staging, { recursive: true, force: true });
   await fs.mkdir(staging, { recursive: true });
-  for (const name of ['main.cjs', 'runtime.cjs', 'status.html', 'preload.cjs']) {
+  for (const name of ['main.cjs', 'runtime.cjs', 'status.html', 'preload.cjs', 'input-files.cjs']) {
     await fs.copyFile(path.join(root, name), path.join(staging, name));
   }
   // Explicit allowlist: runtime data, OAuth files, node_modules, and tests never enter the bundle.

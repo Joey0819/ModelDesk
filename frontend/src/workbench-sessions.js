@@ -1,7 +1,21 @@
 import { EMPTY_CONTEXT } from './platform-settings.js';
+import { projectDraftKey, projectSessionKey } from './project-context.js';
 
 export const SESSION_KEY = 'modeldesk.sessions.v1';
 export const DRAFT_KEY = 'modeldesk.conversation-drafts.v1';
+export const WORKSPACE_KEY = 'modeldesk.conversation-workspaces.v1';
+export function sessionFor(sessions, mode, projectId) {
+  const scoped = sessions[projectSessionKey(projectId, mode)];
+  const legacy = sessions[mode];
+  return scoped || ((legacy?.context?.project_id || null) === (projectId || null) ? legacy : null) || {};
+}
+export function readConversationWorkspaces(storage) {
+  try {
+    const saved = JSON.parse(storage.getItem(WORKSPACE_KEY) || '{}');
+    if (!saved || typeof saved !== 'object' || Array.isArray(saved)) return {};
+    return Object.fromEntries(Object.entries(saved).filter(([, item]) => item && typeof item === 'object' && !Array.isArray(item)).map(([key, item]) => [key, { draft: typeof item.draft === 'string' ? item.draft : '', context: sourceSelection(item.context), preferences: conversationPreferences(item.preferences), job_id: typeof item.job_id === 'string' ? item.job_id : null }]));
+  } catch { return {}; }
+}
 export function readConversationDrafts(storage, key = DRAFT_KEY) {
   try {
     const value = JSON.parse(storage.getItem(key) || '{}');
@@ -9,7 +23,7 @@ export function readConversationDrafts(storage, key = DRAFT_KEY) {
   } catch { return {}; }
 }
 export function conversationDraft(drafts, job) {
-  return drafts[job.conversation_id || job.id] || '';
+  return drafts[projectDraftKey(job.project_id, job.conversation_id || job.id)] || drafts[job.conversation_id || job.id] || '';
 }
 export function reviewContinuation(jobs, projectId) {
   return [...jobs].filter((job) => job.mode === 'review' && job.project_id === projectId && ['complete', 'completed'].includes(job.status) && job.conversation_id).sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at))[0] || null;
@@ -24,12 +38,13 @@ export function readSessions(storage) {
 export function sourceSelection(value = {}) {
   value = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
   const context = { ...EMPTY_CONTEXT };
-  for (const key of ['knowledge_ids', 'memory_ids', 'mcp_server_ids', 'tools']) {
+  for (const key of ['knowledge_ids', 'memory_ids', 'mcp_server_ids', 'tools', 'attachment_ids']) {
     context[key] = Array.isArray(value[key]) ? [...new Set(value[key].filter((id) => typeof id === 'string'))] : [];
   }
   for (const key of ['project_id', 'snapshot_id']) context[key] = typeof value[key] === 'string' ? value[key] : null;
   context.memory_scope = typeof value.memory_scope === 'string' && value.memory_scope.trim() ? value.memory_scope : 'default';
   context.remember = value.remember === true;
+  context.include_project_assets = value.include_project_assets !== false;
   return context;
 }
 
@@ -47,7 +62,7 @@ export function conversationPreferences(value = {}) {
 }
 
 export function restoredSession(sessions, selectedMode, job) {
-  const saved = sessions[selectedMode];
+  const saved = sessionFor(sessions, selectedMode, job.project_id);
   const matching = saved?.job_id === job.id;
   return { context: sourceSelection(matching && saved.context ? saved.context : job), preferences: conversationPreferences(matching && saved.preferences ? saved.preferences : job) };
 }

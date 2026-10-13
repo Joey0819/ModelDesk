@@ -10,8 +10,8 @@ test('a new platform task attaches no knowledge, memory, project, MCP or callabl
   assert.equal(context.remember, false);
 });
 
-test('only an explicitly paired project and snapshot may be submitted', () => {
-  assert(contextErrors({ project_id: 'project' }).length);
+test('ordinary projects work without a snapshot, while snapshots remain project-bound', () => {
+  assert.deepEqual(contextErrors({ project_id: 'project' }), []);
   assert(contextErrors({ snapshot_id: 'snapshot' }).length);
   assert.deepEqual(contextErrors({ project_id: 'project', snapshot_id: 'snapshot' }), []);
 });

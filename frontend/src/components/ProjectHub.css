@@ -1,0 +1,138 @@
+.modeldesk-main { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+.modeldesk-main > .workspace-shell { flex: 1; min-height: 0; }
+.project-hub { flex: 0 0 auto; position: relative; z-index: 20; background: var(--shell-paper, #fff); border-bottom: 1px solid var(--line, #e3e7ef); }
+.project-hub-bar { min-height: 48px; display: flex; flex-wrap: wrap; gap: 8px 17px; align-items: center; padding: 9px 22px; font-size: 12px; }
+.project-hub-bar > label { display: flex; align-items: center; gap: 7px; min-width: 0; }
+.project-hub-bar label > span { color: #7b8da5; font-size: 11px; white-space: nowrap; }
+.project-hub-bar select { border: 0; background: transparent; max-width: 270px; min-width: 125px; color: #354a66; outline: none; padding: 2px; }
+.project-hub-bar > button { border: 0; background: transparent; color: #667b99; padding: 3px 0; display: flex; align-items: center; gap: 6px; font-size: 11px; }
+.project-hub-bar button:disabled { opacity: .4; }
+.project-hub-loading { color: #a0adbe; font-size: 10px; }
+.project-materials-trigger > span { background: #edf1f8; border-radius: 4px; padding: 1px 5px; font-size: 9px; }
+.project-hub-service-error { margin: 0; padding: 6px 23px; color: #a46f59; font-size: 11px; }
+.project-hub-service-error button { margin-left: 10px; border: 0; background: none; color: #4658c8; }
+.project-create-inline { position: absolute; left: 20px; top: calc(100% + 7px); width: min(520px, calc(100vw - 35px)); max-height: 78vh; overflow: auto; border: 1px solid #d7dfec; border-radius: 9px; padding: 18px 20px; background: #fff; box-shadow: 0 9px 30px #17253a12; z-index: 90; }
+.project-create-inline > header, .project-assets-manager > header, .folder-import-dialog > header { display: flex; align-items: start; justify-content: space-between; gap: 15px; }
+.project-create-inline header > div, .project-assets-manager header > div:first-child, .folder-import-dialog header > div { display: grid; gap: 5px; min-width: 0; }
+.project-create-inline header strong, .project-assets-manager header strong, .folder-import-dialog header strong { font-size: 15px; font-weight: 550; color: #364d6a; }
+.project-create-inline header span, .project-assets-manager header span, .folder-import-dialog header span { font-size: 11px; color: #7b8da5; line-height: 1.9; }
+.project-create-inline form { margin-top: 16px; }
+.project-create-inline label, .project-settings-editor label { display: block; margin-bottom: 13px; }
+.project-create-inline label > span, .project-settings-editor label > span { display: block; font-size: 11px; color: #8090a7; margin-bottom: 5px; }
+.project-create-inline :is(input,select), .project-settings-editor :is(input,textarea) { width: 100%; padding: 8px 10px; border: 1px solid #dfe5ef; border-radius: 5px; color: #4d6380; background: #fff; font-size: 12px; }
+.project-create-inline details > summary { cursor: pointer; font-size: 11px; color: #8b9ab0; padding: 4px 0; }
+.project-create-inline footer { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin-top: 15px; }
+.project-create-inline footer > span { font-size: 10px; line-height: 1.8; color: #93a0b3; }
+.project-inline-existing { margin-top: 15px; }
+.project-optional-path { display: flex; gap: 6px; margin-top: 9px; }
+.project-optional-path button { border: 1px solid #dfe5ef; border-radius: 4px; background: #f7f9fc; color: #7b8da5; font-size: 10px; white-space: nowrap; }
+.project-hub-modal-backdrop { position: fixed; inset: 0; z-index: 75; background: #18243835; display: flex; align-items: center; justify-content: center; padding: 30px; }
+.project-assets-manager, .folder-import-dialog { width: min(890px, calc(100vw - 40px)); max-height: calc(100dvh - 55px); display: flex; flex-direction: column; background: #fff; border: 1px solid #dfe5ef; border-radius: 11px; overflow: hidden; box-shadow: 0 18px 80px #10223c24; }
+.project-assets-manager > header, .folder-import-dialog > header { padding: 20px 23px; border-bottom: 1px solid #e3e7ef; }
+.project-assets-manager header > div:last-child { display: flex; align-items: center; gap: 10px; }
+.project-manager-tabs { display: flex; align-items: center; gap: 25px; padding: 0 23px; border-bottom: 1px solid #e3e7ef; flex: 0 0 auto; }
+.project-manager-tabs button { padding: 12px 0; border: 0; border-bottom: 2px solid transparent; background: none; color: #8291a7; font-size: 12px; }
+.project-manager-tabs button.selected { color: #4658c8; border-bottom-color: #4658c8; }
+.project-manager-body { overflow: auto; padding: 19px 23px 25px; min-height: 0; }
+.project-assets-toolbar { display: flex; gap: 15px; align-items: center; margin-bottom: 13px; }
+.project-assets-toolbar input { flex: 1; min-width: 0; border: 1px solid #dfe5ef; border-radius: 5px; padding: 8px 10px; background: #fafbfd; color: #607590; font-size: 12px; }
+.project-assets-toolbar > span { color: #92a0b3; font-size: 11px; }
+.project-assets-explanation { font-size: 11px; line-height: 1.9; color: #8595ac; }
+.project-assets-list { display: grid; gap: 9px; margin-top: 16px; }
+.project-assets-list article { display: flex; align-items: center; gap: 13px; padding: 13px; border: 1px solid #e3e7ef; border-radius: 7px; }
+.asset-preview-button { width: 50px; height: 50px; border: 0; border-radius: 5px; background: #f1f4fa; color: #91a2b9; flex: 0 0 auto; padding: 0; overflow: hidden; }
+.asset-preview-button img { width: 100%; height: 100%; object-fit: cover; }
+.asset-row-main { min-width: 0; flex: 1; display: grid; gap: 4px; }
+.asset-row-main strong { font-size: 12px; color: #4d6380; font-weight: 550; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.asset-row-main small { font-size: 10px; color: #9ba8ba; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.asset-row-main > span { font-size: 10px; color: #8c9cb1; }
+.asset-row-main p { margin: 0; color: #a18065; font-size: 10px; line-height: 1.8; }
+.asset-row-choices { display: flex; align-items: center; gap: 12px; font-size: 11px; color: #7b8da5; flex: 0 0 auto; }
+.asset-row-choices label { display: flex; align-items: center; gap: 5px; }
+.asset-row-choices button, .asset-inline-preview header button { border: 0; background: transparent; font-size: 10px; color: #a2827a; }
+.asset-inline-preview { border: 1px solid #e3e7ef; border-radius: 7px; margin-top: 17px; }
+.asset-inline-preview > header { display: flex; justify-content: space-between; gap: 15px; padding: 13px 15px; border-bottom: 1px solid #e3e7ef; }
+.asset-inline-preview header strong { font-size: 12px; color: #607590; max-width: 65%; overflow: hidden; text-overflow: ellipsis; }
+.asset-inline-preview header > div { display: flex; gap: 12px; font-size: 10px; }
+.asset-inline-preview > img { display: block; width: auto; max-width: 100%; max-height: 420px; object-fit: contain; margin: 15px auto; }
+.asset-inline-preview > pre, .project-manager-settings pre { white-space: pre-wrap; overflow-wrap: anywhere; padding: 15px; font-size: 12px; line-height: 1.9; color: #7b8da5; }
+.project-folder-row { display: flex; align-items: center; gap: 13px; border-bottom: 1px solid #e3e7ef; padding: 16px 0; color: #7b8da5; }
+.project-folder-row > div { min-width: 0; flex: 1; display: grid; gap: 4px; }
+.project-folder-row strong { font-size: 12px; font-weight: 500; }
+.project-folder-row small { font-size: 10px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.project-folder-row button { font-size: 10px; color: #9e877e; border: 0; background: none; }
+.project-job-list button { width: 100%; border: 0; border-bottom: 1px solid #e3e7ef; background: transparent; padding: 14px 3px; display: flex; align-items: center; justify-content: space-between; gap: 15px; text-align: left; }
+.project-job-list button > span { min-width: 0; display: grid; gap: 5px; }
+.project-job-list strong { font-size: 12px; color: #607590; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.project-job-list small { font-size: 10px; color: #9ba8ba; }
+.project-job-list em { font-size: 10px; color: #93a6b8; font-style: normal; white-space: nowrap; }
+.project-manager-empty { font-size: 12px; color: #91a1b8; padding: 20px; text-align: center; }
+.project-manager-settings h3 { font-size: 16px; color: #607590; margin: 0 0 10px; }
+.project-manager-settings p { font-size: 12px; line-height: 1.9; color: #7b8da5; }
+.project-manager-settings > span { display: block; font-size: 10px; color: #a0adbf; margin-bottom: 15px; }
+.attachment-composer { position: relative; display: flex; flex-wrap: wrap; align-items: center; gap: 7px 12px; padding: 8px 14px; border-bottom: 1px solid #e7ebf2; background: #fafbfd; }
+.attachment-compact { padding: 7px 0; border: 0; background: transparent; }
+.attachment-add-control { position: relative; }
+.attachment-plus { display: flex; align-items: center; gap: 5px; border: 0; background: transparent; color: #778ea9; padding: 3px 0; font-size: 11px; }
+.attachment-plus:disabled { opacity: .45; }
+.attachment-add-menu { position: absolute; bottom: calc(100% + 8px); left: 0; z-index: 30; width: 210px; border: 1px solid #dfe5ef; border-radius: 7px; padding: 6px; background: #fff; box-shadow: 0 7px 30px #16284214; }
+.attachment-add-menu button { width: 100%; display: flex; align-items: center; gap: 8px; padding: 9px 7px; font-size: 11px; border: 0; color: #667e9e; background: transparent; text-align: left; }
+.attachment-add-menu button:hover { background: #f2f5fa; }
+.attachment-short-help { font-size: 10px; color: #9baabc; }
+.attachment-tray { flex-basis: 100%; display: flex; flex-wrap: wrap; gap: 8px; max-height: 115px; overflow: auto; scrollbar-width: thin; }
+.attachment-chip { display: inline-flex; align-items: center; gap: 8px; max-width: 220px; padding: 5px 7px; background: #fff; border: 1px solid #dfe5ef; border-radius: 5px; color: #8499b4; }
+.attachment-chip > img { width: 30px; height: 30px; object-fit: cover; border-radius: 3px; }
+.attachment-chip > span { display: grid; gap: 1px; min-width: 0; font-size: 10px; max-width: 155px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.attachment-chip small { font-size: 9px; color: #a3b1c3; }
+.attachment-chip button { display: flex; border: 0; background: transparent; padding: 2px; color: #a3b1c3; }
+.attachment-shared-toggle { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 10px; color: #8196b0; margin: 8px 0; }
+.attachment-shared-toggle > span { color: #a7b4c5; }
+.attachment-upload-queue { display: flex; flex-wrap: wrap; gap: 6px 10px; width: 100%; padding: 6px 0; font-size: 10px; color: #8ba0ba; }
+.attachment-upload-queue > span { display: inline-flex; align-items: center; gap: 5px; max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.attachment-upload-queue button { border: 0; background: none; font-size: 10px; color: #677eaa; }
+.attachment-notice { width: 100%; font-size: 10px; color: #649783; line-height: 1.8; margin: 2px 0; }
+.attachment-error { width: 100%; font-size: 11px; color: #b17f68; line-height: 1.85; margin: 5px 0; }
+.attachment-omitted { width: 100%; margin-top: 6px; font-size: 10px; color: #a29482; }
+.attachment-omitted summary { cursor: pointer; line-height: 1.8; }
+.attachment-omitted p { display: flex; flex-wrap: wrap; gap: 5px 16px; margin: 6px 0; }
+.attachment-omitted p > span { max-width: 70%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.folder-import-dialog { width: min(700px, calc(100vw - 30px)); }
+.folder-import-dialog > p { padding: 10px 22px; font-size: 11px; color: #899ab2; }
+.folder-selection-toolbar { padding: 0 22px 12px; display: flex; gap: 15px; align-items: center; font-size: 10px; color: #8fa0b7; }
+.folder-selection-toolbar button { border: 0; background: none; font-size: 10px; color: #7288ab; }
+.folder-inventory-list { flex: 1; min-height: 150px; max-height: 45vh; overflow: auto; padding: 0 22px; }
+.folder-inventory-list label { display: flex; align-items: center; gap: 9px; padding: 8px 0; border-top: 1px solid #eef1f6; font-size: 11px; color: #8195b0; }
+.folder-inventory-list label > span { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.folder-inventory-list small { font-size: 9px; color: #9cacbe; }
+.folder-import-dialog > .attachment-omitted, .folder-import-dialog > .attachment-shared-toggle { padding: 8px 22px; }
+.folder-import-dialog footer { padding: 13px 22px; border-top: 1px solid #e3e7ef; display: flex; justify-content: end; }
+.modeldesk[data-theme=dark] :is(.project-create-inline,.project-assets-manager,.folder-import-dialog,.attachment-add-menu,.attachment-chip) { background: #232e3d; border-color: #354255; }
+.modeldesk[data-theme=dark] :is(.project-create-inline header strong,.project-assets-manager header strong,.folder-import-dialog header strong,.asset-row-main strong,.project-hub-bar select) { color: #bfcee4; }
+.modeldesk[data-theme=dark] :is(.project-hub-bar > button,.project-hub-bar label > span,.project-create-inline header span,.project-assets-explanation,.asset-row-main small,.asset-row-main > span,.attachment-short-help,.attachment-plus,.attachment-chip,.attachment-shared-toggle) { color: #97abc6; }
+.modeldesk[data-theme=dark] :is(.attachment-composer,.asset-preview-button,.project-assets-toolbar input) { background: #202a39; border-color: #354255; }
+.modeldesk[data-theme=dark] :is(.project-manager-tabs,.project-assets-manager > header,.folder-import-dialog > header,.project-assets-list article,.folder-import-dialog footer,.asset-inline-preview,.asset-inline-preview > header,.project-folder-row,.project-job-list button) { border-color: #354255; }
+.job-attachments { margin: 12px 0; min-width: 0; }
+.job-attachment-chips { display: flex; gap: 8px; flex-wrap: wrap; max-height: 130px; overflow: auto; }
+.job-attachment-chips > button { display: flex; align-items: center; gap: 8px; border: 1px solid var(--line, #e3e7ef); border-radius: 6px; background: transparent; color: #7287a2; padding: 6px 9px; max-width: 230px; text-align: left; }
+.job-attachment-chips img { width: 33px; height: 33px; object-fit: cover; border-radius: 3px; }
+.job-attachment-chips button > span { display: grid; gap: 3px; min-width: 0; }
+.job-attachment-chips strong { font-weight: 500; font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.job-attachment-chips small { font-size: 9px; color: #94a3b8; }
+.job-attachment-preview { border: 1px solid var(--line, #e3e7ef); border-radius: 6px; margin-top: 10px; padding: 12px; }
+.job-attachment-preview > header { display: flex; align-items: center; justify-content: space-between; gap: 12px; font-size: 11px; color: #7287a2; }
+.job-attachment-preview header > strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.job-attachment-preview header > div { display: flex; gap: 12px; align-items: center; flex-shrink: 0; font-size: 10px; }
+.job-attachment-preview > img { display: block; max-width: 100%; max-height: 420px; margin: 13px auto; object-fit: contain; }
+.job-attachment-preview > pre { max-height: 330px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 11px; line-height: 1.8; }
+.job-attachment-preview > small, .attachment-manifest-digest { display: block; color: #94a3b8; font-size: 9px; overflow-wrap: anywhere; }
+.attachment-source-record { border-top: 1px solid var(--line, #e3e7ef); padding: 12px 0; color: #7c90aa; font-size: 11px; }
+.attachment-source-record summary { cursor: pointer; }
+.attachment-source-record pre { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 10px; }
+.resource-scope-picker { display: flex; gap: 10px; align-items: center; padding: 12px 0; color: #8291a7; font-size: 11px; }
+.resource-scope-picker select { border: 1px solid var(--line, #e3e7ef); background: transparent; padding: 4px 6px; color: inherit; border-radius: 4px; }
+.attachment-local-folder { color: #7c90aa; font-size: 11px; }
+.attachment-local-folder > div { display: flex; gap: 8px; align-items: end; margin-top: 8px; }
+.attachment-local-folder label { display: grid; gap: 5px; flex: 1; min-width: 0; }
+.attachment-local-folder input { width: 100%; min-width: 0; padding: 8px; border: 1px solid var(--line, #e3e7ef); background: transparent; color: inherit; border-radius: 4px; }
+.attachment-local-folder button { flex-shrink: 0; }
+@media (max-width: 600px) { .project-hub-bar { padding: 8px 12px; gap: 7px 12px; }.project-hub-bar > label { flex: 1; }.project-hub-bar label > span { display: none; }.project-hub-bar select { max-width: 55vw; min-width: 100px; }.project-create-inline { left: 10px; padding: 16px; }.project-hub-modal-backdrop { padding: 10px; }.project-assets-manager { width: 100%; max-height: calc(100dvh - 20px); }.project-assets-manager > header { padding: 15px; }.project-manager-tabs { padding: 0 15px; gap: 19px; }.project-manager-body { padding: 15px; }.project-assets-list article { flex-wrap: wrap; }.asset-row-choices { width: 100%; justify-content: end; }.attachment-short-help { display: none; }.attachment-chip { max-width: min(210px, 44vw); }.attachment-chip > span { max-width: 130px; }.folder-import-dialog > header { padding: 15px; } }

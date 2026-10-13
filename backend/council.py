@@ -3,9 +3,10 @@
 from typing import List, Dict, Any, Tuple
 from .openrouter import query_models_parallel, query_model
 from .config import COUNCIL_MODELS, CHAIRMAN_MODEL, TITLE_MODEL
+from .vision import user_content
 
 
-async def stage1_collect_responses(user_query: str, models: List[str] = None, max_tokens: int = None, system_prompt: str = None, diagnostics: Dict[str, Any] = None) -> List[Dict[str, Any]]:
+async def stage1_collect_responses(user_query: str, models: List[str] = None, max_tokens: int = None, system_prompt: str = None, diagnostics: Dict[str, Any] = None, image_parts: List[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
     """
     Stage 1: Collect individual responses from all council models.
 
@@ -15,7 +16,7 @@ async def stage1_collect_responses(user_query: str, models: List[str] = None, ma
     Returns:
         List of dicts with 'model' and 'response' keys
     """
-    messages = [{"role": "user", "content": user_query}]
+    messages = [{"role": "user", "content": user_content(user_query, image_parts)}]
     if system_prompt:
         messages.insert(0, {"role": "system", "content": system_prompt})
 
@@ -43,6 +44,7 @@ async def stage2_collect_rankings(
     max_tokens: int = None,
     system_prompt: str = None,
     diagnostics: Dict[str, Any] = None,
+    image_parts: List[Dict[str, Any]] = None,
 ) -> Tuple[List[Dict[str, Any]], Dict[str, str]]:
     """
     Stage 2: Each model ranks the anonymized responses.
@@ -100,7 +102,7 @@ FINAL RANKING:
 
 Now provide your evaluation and ranking:"""
 
-    messages = [{"role": "user", "content": ranking_prompt}]
+    messages = [{"role": "user", "content": user_content(ranking_prompt, image_parts)}]
     if system_prompt:
         messages.insert(0, {"role": "system", "content": system_prompt})
 
@@ -132,6 +134,7 @@ async def stage3_synthesize_final(
     max_tokens: int = None,
     system_prompt: str = None,
     diagnostics: Dict[str, Any] = None,
+    image_parts: List[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """
     Stage 3: Chairman synthesizes final response.
@@ -172,7 +175,7 @@ Your task as Chairman is to synthesize all of this information into a single, co
 
 Provide a clear, well-reasoned final answer that represents the council's collective wisdom:"""
 
-    messages = [{"role": "user", "content": chairman_prompt}]
+    messages = [{"role": "user", "content": user_content(chairman_prompt, image_parts)}]
     if system_prompt:
         messages.insert(0, {"role": "system", "content": system_prompt})
 

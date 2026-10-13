@@ -195,9 +195,11 @@ Path(sys.argv[2]).write_text(json.dumps(result,ensure_ascii=False))
         async def worker(job):
             calls.append(job)
             return {"answer": "complete workforce deliverable", "task_state": "DONE", "tasks": [], "partial": False}
-        project = str(uuid.uuid4())
+        from backend import projects
+        project_store = projects.ProjectStore(Path(self.temporary.name) / "project-state")
+        project = project_store.register("Context fixture")["id"]
         snapshot = str(uuid.uuid4())
-        with patch.object(self.manager, "worker", side_effect=worker), patch("backend.super_platform.context_material", return_value=("", [], False)):
+        with patch.object(projects, "store", project_store), patch.object(self.manager, "worker", side_effect=worker), patch("backend.super_platform.context_material", return_value=("", [], False)):
             initial = await self.finish(JobRequest(mode="camel_workforce", prompt="PRIVATE_PROJECT_TASK", models=["a", "b"], workflow=self.configuration("camel_workforce"), project_id=project, snapshot_id=snapshot, tools=["web_fetch"]))
             matching = await self.finish(JobRequest(mode="crewai", prompt="continue with no tools", models=["a", "b"], workflow=self.configuration("crewai"), conversation_id=initial["conversation_id"], project_id=project, snapshot_id=str(uuid.uuid4())))
             execution = calls[-1]

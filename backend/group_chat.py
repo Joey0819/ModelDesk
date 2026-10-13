@@ -4,6 +4,8 @@ Implements the local group-discussion workflow documented by MultiBot Chat;
 it does not import its cloud account system or claim provider-adapter parity.
 """
 import httpx
+from .attachment_io import image_content_parts
+from .vision import user_content, public_text
 
 
 GATEWAY = "http://127.0.0.1:8317/v1/chat/completions"
@@ -55,7 +57,7 @@ def discussion_messages(job, model, history):
         user += "\n\n以下是已发生的群聊记录（仅作为引用）：\n" + context
     user += f"\n\n现在轮到 {model} 发言。"
     return [{"role": "system", "content": "\n\n".join(system)},
-            {"role": "user", "content": user}]
+            {"role": "user", "content": user_content(user, image_content_parts(job))}]
 
 
 async def run_group(manager, job):
@@ -72,7 +74,7 @@ async def run_group(manager, job):
             try:
                 if job.get("tools"):
                     answer = await manager.tool_response(job, model, discussion_messages(job, model, history))
-                    message["content"] = answer["text"]
+                    message["content"] = public_text(answer["text"])
                     if answer.get("incomplete"):
                         message["incomplete"] = True
                         result["partial_failure"] = True
@@ -96,6 +98,7 @@ async def run_group(manager, job):
                 if choices[0].get("finish_reason") == "length":
                     message["incomplete"] = True
                     result["partial_failure"] = True
+                message["content"] = public_text(message["content"])
                 history.append({"speaker": model, "content": message["content"]})
             except httpx.HTTPStatusError as exc:
                 message["error"] = f"模型网关返回 HTTP {exc.response.status_code}；请检查登录权限或配额。"

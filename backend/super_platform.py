@@ -18,7 +18,7 @@ from urllib.parse import urlsplit
 import uuid
 from datetime import datetime
 
-from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import Response
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -35,6 +35,7 @@ class SearchRequest(BaseModel):
     memory_ids: list[str] | None = Field(default=None, max_length=100)
     scope: str | None = Field(default=None, max_length=100)
     limit: int = Field(default=5, ge=1, le=20)
+    project_id: str | None = None
 
 
 class ToolRequest(BaseModel):
@@ -57,6 +58,8 @@ class FlowRunRequest(BaseModel):
     project_id: str | None = None
     snapshot_id: str | None = None
     mcp_server_ids: list[str] = Field(default_factory=list, max_length=20)
+    attachment_ids: list[str] = Field(default_factory=list, max_length=30)
+    include_project_assets: bool = True
 
 
 def schema(properties, required=()):
@@ -90,11 +93,17 @@ def validate_context(value):
     from .projects import store as projects
     for kind, field in [("knowledge", "knowledge_ids"), ("memories", "memory_ids"), ("mcp", "mcp_server_ids")]:
         for identifier in clean_ids(value.get(field, [])):
-            store.get(kind, identifier)
-    if bool(value.get("project_id")) != bool(value.get("snapshot_id")):
-        raise HTTPException(422, "项目上下文需要同时选择项目与快照")
+            item = store.get(kind, identifier)
+            if item.get("project_id") not in {None, value.get("project_id")}:
+                raise HTTPException(403, "资源不属于当前项目")
+    if value.get("snapshot_id") and not value.get("project_id"):
+        raise HTTPException(422, "快照必须关联项目")
     if value.get("project_id"):
-        projects.snapshot(value["project_id"], value["snapshot_id"], True)
+        projects.get(value["project_id"])
+        if value.get("snapshot_id"):
+            projects.snapshot(value["project_id"], value["snapshot_id"], True)
+    from .attachments import store as assets
+    assets.validate(value)
 
 
 def prepare_runtime(job):
@@ -125,7 +134,7 @@ def context_material(job):
     from .projects import store as projects
     pieces, references = [], []
     if job.get("knowledge_ids"):
-        found = store.search("knowledge", job["prompt"], job["knowledge_ids"], limit=6)
+        found = store.search("knowledge", job["prompt"], job["knowledge_ids"], limit=6, project_id=job.get("project_id"))
         for item in found:
             pieces.append(f"[知识文档 {item['name']}，第 {item['start_line']}–{item['end_line']} 行]\n{item['content']}")
             references.append({"kind": "knowledge", **item})
@@ -135,11 +144,11 @@ def context_material(job):
             pieces.append(f"[用户选择的记忆 {item['name']}]\n{item['content'][:3000]}")
             references.append({"kind": "memory", "id": item["id"], "name": item["name"], "scope": item["scope"]})
     if isinstance(job.get("workflow"), dict) and job["workflow"].get("memory"):
-        found = store.search("memories", job["prompt"], scope=job.get("memory_scope") or "global", limit=5)
+        found = store.search("memories", job["prompt"], scope=job.get("memory_scope") or "global", limit=5, project_id=job.get("project_id"))
         for item in found:
             pieces.append(f"[记忆空间 {item['scope']}：{item['name']}]\n{item['content']}")
             references.append({"kind": "memory", **item})
-    if job.get("project_id") and job["mode"] != "review":
+    if job.get("project_id") and job.get("snapshot_id") and job["mode"] != "review":
         snapshot = projects.snapshot(job["project_id"], job["snapshot_id"], True)
         for item in snapshot["files"]:
             current = item.get("current") or item.get("base")
@@ -345,9 +354,9 @@ async def invoke_tool(name, arguments, context):
     elif name == "web_search":
         result = await web_search(arguments["query"], arguments.get("max_results", 5))
     elif name == "knowledge_search":
-        result = await asyncio.to_thread(store.search, "knowledge", arguments["query"], context.get("knowledge_ids") or [], None, arguments.get("limit", 5))
+        result = await asyncio.to_thread(store.search, "knowledge", arguments["query"], context.get("knowledge_ids") or [], None, arguments.get("limit", 5), context.get("project_id"))
     elif name == "memory_read":
-        result = await asyncio.to_thread(store.search, "memories", arguments.get("query", ""), None, context.get("memory_scope") or "global", arguments.get("limit", 5))
+        result = await asyncio.to_thread(store.search, "memories", arguments.get("query", ""), None, context.get("memory_scope") or "global", arguments.get("limit", 5), context.get("project_id"))
     elif name == "memory_save":
         result = await asyncio.to_thread(store.put, "memories", {"name": arguments.get("name") or arguments["content"][:80],
             "content": arguments["content"], "scope": context.get("memory_scope") or "global", "project_id": context.get("project_id")},
@@ -436,16 +445,16 @@ async def runtime_tool(name: str, request: ToolRequest):
 
 @router.post("/knowledge/search")
 async def knowledge_search(request: SearchRequest):
-    return await asyncio.to_thread(store.search, "knowledge", request.query, request.knowledge_ids, None, request.limit)
+    return await asyncio.to_thread(store.search, "knowledge", request.query, request.knowledge_ids, None, request.limit, request.project_id)
 
 
 @router.post("/memories/search")
 async def memories_search(request: SearchRequest):
-    return await asyncio.to_thread(store.search, "memories", request.query, request.memory_ids, request.scope, request.limit)
+    return await asyncio.to_thread(store.search, "memories", request.query, request.memory_ids, request.scope, request.limit, request.project_id)
 
 
 @router.post("/knowledge/upload", status_code=201)
-async def upload_knowledge(file: UploadFile = File(...)):
+async def upload_knowledge(file: UploadFile = File(...), project_id: str | None = Form(default=None)):
     name = Path(file.filename or "document.txt").name
     raw = await file.read(5_000_001)
     if len(raw) > 5_000_000:
@@ -471,12 +480,19 @@ async def upload_knowledge(file: UploadFile = File(...)):
             raise HTTPException(422, "文本文件需要 UTF-8 编码") from error
     else:
         raise HTTPException(422, "支持 PDF、DOCX、TXT、Markdown、CSV、JSON 和常见源码文本")
-    from .projects import KNOWN_TOKEN, SECRET_CONTENT
-    if KNOWN_TOKEN.search(content) or SECRET_CONTENT.search(content):
+    from .attachments import secret_text, safe_relative
+    try:
+        safe_relative(file.filename or name)
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from error
+    if secret_text(content):
         raise HTTPException(422, "文档包含疑似凭据，请移除后上传")
     if not content.strip():
         raise HTTPException(422, "没有可提取文本；扫描 PDF 需要先进行 OCR")
-    return await asyncio.to_thread(store.put, "knowledge", {"name": name, "content": content, "tags": [suffix.lstrip(".")]},
+    if project_id:
+        from .projects import store as projects
+        projects.get(project_id)
+    return await asyncio.to_thread(store.put, "knowledge", {"name": name, "content": content, "tags": [suffix.lstrip(".")], "project_id": project_id},
                                    None, {"source": "upload", "filename": name, "input_sha256": hashlib.sha256(raw).hexdigest()})
 
 
@@ -509,8 +525,13 @@ async def call_mcp(identifier: str, request: MCPCallRequest):
 async def run_flow(identifier: str, request: FlowRunRequest):
     from .workbench import JobRequest, create_job
     flow = store.get("flows", identifier)
+    values = request.model_dump(mode="json")
+    if "project_id" not in request.model_fields_set and flow.get("project_id"):
+        values["project_id"] = flow["project_id"]
+    if flow.get("project_id") not in {None, values.get("project_id")}:
+        raise HTTPException(403, "流程不属于当前项目")
     try:
-        job = JobRequest(mode=flow["mode"], models=flow["models"], rounds=flow["rounds"], workflow=flow["workflow"], **request.model_dump(mode="json"))
+        job = JobRequest(mode=flow["mode"], models=flow["models"], rounds=flow["rounds"], workflow=flow["workflow"], **values)
     except ValueError as error:
         raise HTTPException(422, "请检查流程配置，并明确选择知识、记忆和项目上下文。") from error
     return await create_job(job)
@@ -519,8 +540,8 @@ async def run_flow(identifier: str, request: FlowRunRequest):
 @router.get("/sdk/templates")
 async def sdk_templates():
     return [
-        {"id": "camel-agent", "name": "CAMEL 原生 ChatAgent", "sdk": "camel", "source": 'from camel.agents import ChatAgent\nfrom camel.models import ModelFactory\nfrom camel.types import ModelPlatformType\nmodel = ModelFactory.create(model_platform=ModelPlatformType.OPENAI_COMPATIBLE_MODEL, model_type=MODELS[0], url=GATEWAY, api_key="local-oauth", model_config_dict={"max_tokens":1024})\nagent = ChatAgent("你是一名科研助手。", model=model)\nresponse = agent.step(PROMPT)\nRESULT = {"answer": response.msgs[0].content, "sdk":"camel"}\n'},
-        {"id": "crewai-team", "name": "CrewAI 原生团队", "sdk": "crewai", "source": 'from crewai import Agent, Task, Crew, LLM\nllm = LLM(model="openai/"+MODELS[0], base_url=GATEWAY, api_key="local-oauth", max_tokens=1024)\nagent = Agent(role="分析员", goal="完成用户任务", backstory="重视证据", llm=llm)\ntask = Task(description=PROMPT, expected_output="简短中文结论", agent=agent)\noutput = Crew(agents=[agent], tasks=[task], verbose=False).kickoff()\nRESULT = {"answer": output.raw, "sdk":"crewai"}\n'},
+        {"id": "camel-agent", "name": "CAMEL 原生 ChatAgent", "sdk": "camel", "source": 'from camel.agents import ChatAgent\nagent = ChatAgent("依据用户材料回答，区分观察与推断。", model=CAMEL_MODEL(MODELS[0]))\nresponse = agent.step(PROMPT + "\\n\\n用户明确选择的文字材料：\\n" + CONTEXT)\nRESULT = {"answer": response.msgs[0].content, "sdk":"camel"}\n'},
+        {"id": "crewai-team", "name": "CrewAI 原生团队", "sdk": "crewai", "source": 'from crewai import Agent, Task, Crew\nagent = Agent(role="材料分析员", goal="依据用户提供的材料完成任务", backstory="保留事实、推断与限制", llm=CREWAI_LLM(MODELS[0]), max_iter=3)\ntask = Task(description=PROMPT + "\\n\\n用户明确选择的文字材料：\\n" + CONTEXT, expected_output="注明实际观察与限制的中文结论", agent=agent)\noutput = Crew(agents=[agent], tasks=[task], verbose=False).kickoff()\nRESULT = {"answer": output.raw, "sdk":"crewai"}\n'},
     ]
 
 
@@ -632,8 +653,8 @@ async def import_backup(request: ImportRequest):
 
 
 @router.get("/{kind}")
-async def list_resources(kind: str, archived: bool = False):
-    items = await asyncio.to_thread(store.list, kind, archived)
+async def list_resources(kind: str, archived: bool = False, project_id: str | None = None, scope: Literal["all", "global", "project"] = "all"):
+    items = await asyncio.to_thread(store.list, kind, archived, project_id, scope)
     if kind == "knowledge":
         return [{**item, "chunks": len(item["chunks"]), "characters": len(item["content"])} for item in items]
     return items
@@ -646,11 +667,17 @@ async def get_resource(kind: str, identifier: str):
 
 @router.post("/{kind}", status_code=201)
 async def create_resource(kind: str, request: Resource):
+    if request.project_id:
+        from .projects import store as projects
+        projects.get(request.project_id)
     return await asyncio.to_thread(store.put, kind, request.model_dump(mode="json"))
 
 
 @router.put("/{kind}/{identifier}")
 async def update_resource(kind: str, identifier: str, request: Resource):
+    if request.project_id:
+        from .projects import store as projects
+        projects.get(request.project_id)
     return await asyncio.to_thread(store.put, kind, request.model_dump(mode="json"), identifier)
 
 

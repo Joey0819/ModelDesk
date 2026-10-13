@@ -4,12 +4,14 @@ const { promisify } = require('node:util');
 const fs = require('node:fs');
 const path = require('node:path');
 const { UI_URL, HEALTH_URLS, workspaceRoot, serviceEnvironment, isWorkbenchURL, isOriginalFrameURL, isExportURL, exportFormat, isExternalURL, isStatusURL, isTrustedWorkbenchIPC } = require('./runtime.cjs');
+const { INPUT_EXTENSIONS, collectSelectedFiles } = require('./input-files.cjs');
 
 const execFileAsync = promisify(execFile);
 const statusPath = path.join(__dirname, 'status.html');
 let mainWindow;
 let startInProgress = false;
 let projectPickerInProgress = false;
+let attachmentPickerInProgress = false;
 
 app.setName('ModelDesk');
 app.enableSandbox();
@@ -67,6 +69,28 @@ function openExternal(value) {
 }
 
 function installProjectPicker() {
+  ipcMain.handle('modeldesk:choose-input-files', async event => {
+    const owner = mainWindow;
+    if (!owner || owner.isDestroyed() || !isTrustedWorkbenchIPC(event, owner.webContents) || attachmentPickerInProgress) return null;
+    attachmentPickerInProgress = true;
+    try {
+      const selection = await dialog.showOpenDialog(owner, { title: '选择图片或文字资料', buttonLabel: '选择资料', properties: ['openFile', 'multiSelections', 'dontAddToRecent'], filters: [{ name: '图片与文字资料', extensions: INPUT_EXTENSIONS }] });
+      if (selection.canceled || owner.isDestroyed() || !isTrustedWorkbenchIPC(event, owner.webContents)) return null;
+      const files = await collectSelectedFiles(selection.filePaths);
+      return owner.isDestroyed() || !isTrustedWorkbenchIPC(event, owner.webContents) ? null : files;
+    } catch { return null; } finally { attachmentPickerInProgress = false; }
+  });
+  ipcMain.handle('modeldesk:choose-attachment-directory', async event => {
+    const owner = mainWindow;
+    if (!owner || owner.isDestroyed() || !isTrustedWorkbenchIPC(event, owner.webContents) || attachmentPickerInProgress) return null;
+    attachmentPickerInProgress = true;
+    try {
+      const selection = await dialog.showOpenDialog(owner, { title: '选择资料文件夹', buttonLabel: '查看文件清单', properties: ['openDirectory', 'dontAddToRecent'] });
+      if (selection.canceled || selection.filePaths.length !== 1 || owner.isDestroyed() || !isTrustedWorkbenchIPC(event, owner.webContents)) return null;
+      const directory = selection.filePaths[0];
+      return path.isAbsolute(directory) && !/[\x00-\x1f\x7f]/.test(directory) ? { directory_path: directory, root_name: path.basename(directory) } : null;
+    } catch { return null; } finally { attachmentPickerInProgress = false; }
+  });
   ipcMain.handle('modeldesk:choose-project-directory', async event => {
     const owner = mainWindow;
     if (!owner || owner.isDestroyed() || !isTrustedWorkbenchIPC(event, owner.webContents) || projectPickerInProgress) return null;
@@ -139,9 +163,9 @@ function createWindow() {
     }
     const format = exportFormat(chain[0]);
     item.setSaveDialogOptions({
-      title: '保存 ModelDesk 导出',
+      title: format === 'attachment' ? '保存已选附件' : '保存 ModelDesk 导出',
       buttonLabel: '保存',
-      filters: [{ name: format === 'md' ? 'Markdown 文档' : 'JSON 数据', extensions: [format] }],
+      ...(['md', 'json'].includes(format) ? { filters: [{ name: format === 'md' ? 'Markdown 文档' : 'JSON 数据', extensions: [format] }] } : {}),
     });
     // Do not call setSavePath: the native save dialog keeps file choice/overwrite with the user.
   };

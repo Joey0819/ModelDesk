@@ -48,6 +48,8 @@ function isExportURL(value) {
   const rawPath = value.match(/^[a-z][a-z0-9+.-]*:\/\/[^/?#]+([^?#]*)/i)?.[1];
   if (rawPath !== url.pathname) return false;
   const query = Array.from(url.searchParams.entries());
+  if (/^\/api\/workbench\/projects\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/assets\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/content$/i.test(url.pathname)) return query.length === 0;
+  if (/^\/api\/workbench\/jobs\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/attachments\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/content$/i.test(url.pathname)) return query.length === 0;
   if (url.pathname === '/api/platform/data/export') {
     return query.length === 0 || (query.length === 1 && query[0][0] === 'include_jobs' && ['true', 'false'].includes(query[0][1]));
   }
@@ -61,6 +63,7 @@ function isExportURL(value) {
 function exportFormat(value) {
   if (!isExportURL(value)) return null;
   const url = new URL(value);
+  if (url.pathname.endsWith('/content')) return 'attachment';
   return url.pathname === '/api/platform/data/export' ? 'json' : url.searchParams.get('format');
 }
 

@@ -89,7 +89,7 @@ async def run_review(manager, job):
             sources = [(response["model"], response["response"]) for response in raw["stage1"]]
             sources.append((raw["stage3"]["model"], raw["stage3"]["response"]))
         else:
-            input_path.write_text(json.dumps({"engine": job["engine"], "prompt": derived["prompt"], "system": SYSTEM, "models": job["models"], "rounds": job["rounds"]}, ensure_ascii=False))
+            input_path.write_text(json.dumps({"engine": job["engine"], "prompt": derived["prompt"], "system": SYSTEM, "models": job["models"], "rounds": job["rounds"], "attachments": job.get("_attachments", []), "attachment_manifest": job.get("attachments", [])}, ensure_ascii=False))
             input_path.chmod(0o600)
             derived["_review_input"] = str(input_path)
             raw = await manager.worker(derived)

@@ -3,6 +3,7 @@
 Implements the local group-discussion workflow documented by MultiBot Chat;
 it does not import its cloud account system or claim provider-adapter parity.
 """
+import asyncio
 import httpx
 from .attachment_io import image_content_parts
 from .vision import user_content, public_text
@@ -11,6 +12,7 @@ from .model_connections import request_options
 
 GATEWAY = "http://127.0.0.1:8317/v1/chat/completions"
 MAX_CONTEXT_CHARS = 24000
+RETRYABLE_STATUS = {408, 409, 429, 502, 503, 504}
 
 
 def topic_history(manager, job):
@@ -110,10 +112,19 @@ async def run_group(manager, job):
                     manager.emit(job, "message", **message)
                     continue
                 payload = {"model": model, "messages": discussion_messages(job, model, history, member), "max_tokens": 1024}
-                async with httpx.AsyncClient(timeout=httpx.Timeout(180, connect=5), trust_env=False) as client:
-                    response = await client.post(**request_options(payload, GATEWAY))
-                    response.raise_for_status()
-                    data = response.json()
+                data = None
+                for attempt in range(3):
+                    try:
+                        async with httpx.AsyncClient(timeout=httpx.Timeout(180, connect=5), trust_env=False) as client:
+                            response = await client.post(**request_options(payload, GATEWAY))
+                            response.raise_for_status()
+                            data = response.json()
+                        break
+                    except httpx.HTTPStatusError as exc:
+                        if exc.response.status_code in RETRYABLE_STATUS and attempt < 2:
+                            await asyncio.sleep(0.35 * (attempt + 1))
+                            continue
+                        raise
                 if data.get("error"):
                     raise RuntimeError("模型网关返回调用错误，请检查登录权限或配额。")
                 choices = data.get("choices") or []

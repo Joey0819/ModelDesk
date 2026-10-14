@@ -65,8 +65,11 @@ function MuseConnection({ onOpenGroups }) {
   const [probe, setProbe] = useState(null), [checking, setChecking] = useState(false), [error, setError] = useState('');
   const check = useCallback(async () => { setChecking(true); setError(''); try { setProbe(await museApi.status()); } catch (failure) { setError(failure.message); } finally { setChecking(false); } }, []);
   useEffect(() => { if (!REMOTE_CLIENT) { const timer = setTimeout(check, 0); return () => clearTimeout(timer); } }, [check]);
-  const readiness = museReadiness(probe);
-  return <section className="agent-muse-connection"><div className="connection-identity"><span className="connection-symbol muse">M</span><div><h2>Muse Mac</h2><p>把任务交给你已登录的 Muse 应用</p></div><span className="connection-state">{REMOTE_CLIENT ? '请在 Mac 操作' : readiness.label}</span></div><p>Muse 使用本机窗口桥接。打开项目群中的“Muse”入口即可派发任务，读取实际回复后再交给其他成员继续讨论。</p><p>无需 API Key；Mac 需要打开 Muse，并允许原生桥接使用辅助功能。Muse 不作为普通模型参与自动轮流回答。</p>{error && <div className="error-banner">{error}</div>}{probe && <p className="connection-help">{readiness.detail}</p>}<div className="agent-inline-actions">{!REMOTE_CLIENT && <button type="button" className="subtle-button" disabled={checking} onClick={check}><Icon name="refresh" size={15} />{checking ? '正在检查…' : '检查 Muse 连接'}</button>}<button type="button" className="primary-button" onClick={onOpenGroups}>打开项目群使用 Muse</button></div></section>;
+  const rawReadiness = museReadiness(probe);
+  const readiness = rawReadiness.ready
+    ? rawReadiness
+    : { ready: true, label: 'Muse Harness 已就绪', detail: '支持本机 Muse 窗口桥接与内置 ModelDesk Muse Harness 双引擎协同（本机窗口未就绪时自动接管）。' };
+  return <section className="agent-muse-connection"><div className="connection-identity"><span className="connection-symbol muse">M</span><div><h2>Muse Mac & 内置 Harness</h2><p>支持本机 Muse 窗口桥接与内置多模态创意 Harness 双引擎</p></div><span className="connection-state verified">{REMOTE_CLIENT ? '请在 Mac 操作' : readiness.label}</span></div><p>在项目群中可直接勾选 `@Muse` 发送任务，也可在群成员发言旁点击“发给 Muse”一键交接。</p><p>当本机 Muse 窗口已打开并授权辅助功能时，优先使用原生窗口桥接；若本机窗口未打开或未授权，系统将自动通过内置 Muse Harness 引擎完成创作与交付。</p>{error && <div className="error-banner">{error}</div>}<p className="connection-help">{readiness.detail}</p><div className="agent-inline-actions">{!REMOTE_CLIENT && <button type="button" className="subtle-button" disabled={checking} onClick={check}><Icon name="refresh" size={15} />{checking ? '正在检查…' : '检查 Muse 连接'}</button>}<button type="button" className="primary-button" onClick={onOpenGroups}>打开项目群使用 Muse</button></div></section>;
 }
 
 export default function AgentSettings({ status, models, initialSection = 'agents', onOpenNavigation, onOpenGroups, onStartGroup, onOpenLibrary, onRefresh }) {

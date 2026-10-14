@@ -6,7 +6,21 @@ import { fileURLToPath } from 'node:url';
 import { buildSync } from 'esbuild';
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { groupScopeKey, groupDraftKey, readGroupSelection, readGroupDraft, scopedRooms, mergeRoomJobs, groupMessageRequest, groupMessages, groupRecipients, groupTimeline } from '../src/group-state.js';
+import {
+  GROUP_HARNESS_MODES,
+  buildMuseHandoffPrompt,
+  extractGroupDeliverable,
+  groupScopeKey,
+  groupDraftKey,
+  readGroupSelection,
+  readGroupDraft,
+  scopedRooms,
+  mergeRoomJobs,
+  groupMessageRequest,
+  groupMessages,
+  groupRecipients,
+  groupTimeline,
+} from '../src/group-state.js';
 import { applyEvent } from '../src/workbench-state.js';
 
 const members = [{ id: 'writer', name: 'Writer', model: 'model-a', role: 'Draft the proposal' }, { id: 'reviewer', name: 'Reviewer', model: 'model-b', role: 'Check the evidence' }];
@@ -14,10 +28,12 @@ const room = { id: 'room-a', project_id: 'project-a', team_snapshot: { name: 'Te
 const job = { id: 'job-a', project_id: 'project-a', group_room_id: 'room-a', group_team_snapshot: room.team_snapshot, prompt: 'Discuss our project', models: members.map((member) => member.model), status: 'complete', created_at: '2026-10-13T01:00:00Z', updated_at: '2026-10-13T01:01:00Z', result: { messages: [{ model: 'model-a', round: 1, content: 'Actual answer' }] } };
 
 test('group rooms and drafts remain isolated by project and room', () => {
-  const values = { [groupScopeKey('project-a')]: JSON.stringify({ roomId: 'room-a' }), [groupDraftKey('project-a', 'room-a')]: JSON.stringify({ prompt: 'private draft', recipientIds: ['reviewer'], contextTurns: 8, context: { attachment_ids: ['image-a'], project_id: 'wrong' } }) };
+  const values = { [groupScopeKey('project-a')]: JSON.stringify({ roomId: 'room-a' }), [groupDraftKey('project-a', 'room-a')]: JSON.stringify({ prompt: 'private draft', recipientIds: ['reviewer'], includeMuse: true, harnessMode: 'discuss_muse', contextTurns: 8, context: { attachment_ids: ['image-a'], project_id: 'wrong' } }) };
   const storage = { getItem: (key) => values[key] };
   assert.equal(readGroupSelection(storage, 'project-a'), 'room-a'); assert.equal(readGroupSelection(storage, 'project-b'), null);
   assert.equal(readGroupDraft(storage, 'project-a', 'room-a').prompt, 'private draft');
+  assert.equal(readGroupDraft(storage, 'project-a', 'room-a').includeMuse, true);
+  assert.equal(readGroupDraft(storage, 'project-a', 'room-a').harnessMode, 'discuss_muse');
   assert.equal(readGroupDraft(storage, 'project-a', 'room-b').prompt, '');
   assert.equal(readGroupDraft(storage, 'project-a', 'room-a').context.project_id, 'project-a');
   assert.deepEqual(readGroupDraft(storage, 'project-a', 'room-a').recipientIds, ['reviewer']);
@@ -37,6 +53,8 @@ test('group routing uses explicit member IDs and never text or model-generated m
   const body = groupMessageRequest({ prompt: ' @Writer please answer ', recipientIds: ['reviewer'], context: { project_id: 'different-project', attachment_ids: ['image'], tools: ['math'], model: 'fake', roles: 'override', secret: 'not copied' }, contextTurns: 4 });
   assert.equal(body.prompt, '@Writer please answer'); assert.deepEqual(body.recipient_member_ids, ['reviewer']);
   assert.deepEqual(body.attachment_ids, ['image']); assert.deepEqual(body.tools, ['math']); assert.equal(body.context_turns, 4);
+  assert.equal(body.rounds, 1);
+  assert.equal(groupMessageRequest({ prompt: 'Two rounds', recipientIds: [], context: {}, rounds: 2 }).rounds, 2);
   for (const key of ['project_id', 'model', 'roles', 'secret']) assert.equal(key in body, false);
 });
 
@@ -57,24 +75,42 @@ test('roster edits preserve recipients and role identities in saved turns', () =
   assert.deepEqual(groupMessages(sameModel, changed).map((message) => message.member_name), ['Writer', 'Reviewer']);
 });
 
-test('Muse actual replies join the room transcript in chronological order without crossing projects', () => {
+test('Muse actual replies and CLI agent tasks join the room transcript in chronological order without crossing projects', () => {
   const task = { id: 'muse-a', project_id: 'project-a', room_id: 'room-a', created_at: '2026-10-13T02:00:00Z', response: 'Observed reply' };
-  const entries = groupTimeline([job, { ...job, id: 'otherjob', project_id: 'project-b' }], [task, { ...task, id: 'othermuse', room_id: 'room-b' }], 'project-a', 'room-a');
-  assert.deepEqual(entries.map((item) => item.type), ['discussion', 'muse']);
-  assert.deepEqual(entries.map((item) => item.value.id), [job.id, task.id]);
+  const agentTask = { id: 'agent-a', project_id: 'project-a', room_id: 'room-a', created_at: '2026-10-13T03:00:00Z', output: 'Code updated' };
+  const entries = groupTimeline(
+    [job, { ...job, id: 'otherjob', project_id: 'project-b' }],
+    [task, { ...task, id: 'othermuse', room_id: 'room-b' }],
+    'project-a',
+    'room-a',
+    [agentTask, { ...agentTask, id: 'otheragent', room_id: 'room-b' }],
+  );
+  assert.deepEqual(entries.map((item) => item.type), ['discussion', 'muse', 'agent_task']);
+  assert.deepEqual(entries.map((item) => item.value.id), [job.id, task.id, agentTask.id]);
+});
+
+test('group harness synthesizes completed member deliverables for Muse and Agent handoff', () => {
+  assert.equal(GROUP_HARNESS_MODES.length, 4);
+  assert.match(extractGroupDeliverable(job, room), /【Writer】：Actual answer/);
+  const handoff = buildMuseHandoffPrompt('Create a scene prompt', job, room);
+  assert.match(handoff, /Create a scene prompt/);
+  assert.match(handoff, /【Writer】：Actual answer/);
 });
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const compiled = buildSync({ stdin: { contents: 'export {GroupTurn, GroupMuseTurn} from "./src/components/GroupWorkspace.jsx"; export {default as WorkspaceNavigation} from "./src/components/WorkspaceNavigation.jsx";', resolveDir: root }, bundle: true, platform: 'node', format: 'cjs', jsx: 'automatic', write: false, external: ['react', 'react/jsx-runtime'], define: { 'import.meta.env': '{}' }, loader: { '.css': 'empty' } });
+const compiled = buildSync({ stdin: { contents: 'export {GroupTurn, GroupMuseTurn, GroupAgentTaskTurn} from "./src/components/GroupWorkspace.jsx"; export {default as WorkspaceNavigation} from "./src/components/WorkspaceNavigation.jsx";', resolveDir: root }, bundle: true, platform: 'node', format: 'cjs', jsx: 'automatic', write: false, external: ['react', 'react/jsx-runtime'], define: { 'import.meta.env': '{}' }, loader: { '.css': 'empty' } });
 const filename = path.join(root, 'tests/group-virtual.cjs');
 const module = new Module(filename); module.paths = Module._nodeModulePaths(path.dirname(filename)); module._compile(compiled.outputFiles[0].text, filename);
-const { GroupTurn, GroupMuseTurn, WorkspaceNavigation } = module.exports;
+const { GroupTurn, GroupMuseTurn, GroupAgentTaskTurn, WorkspaceNavigation } = module.exports;
 
-test('actual continuous timeline exposes attributed full messages and useful actions', () => {
-  const html = renderToStaticMarkup(React.createElement(GroupTurn, { job, room, onOpenArtifacts() {} }));
+test('actual continuous timeline exposes attributed full messages and useful actions including Muse and Agent handoff', () => {
+  const html = renderToStaticMarkup(React.createElement(GroupTurn, { job, room, onOpenArtifacts() {}, onSendToMuse() {}, onHandOffToAgent() {} }));
   assert.match(html, /Discuss our project/); assert.match(html, /Actual answer/); assert.match(html, /Writer/); assert.match(html, /model-a/);
   assert.match(html, /复制这条提问/); assert.match(html, /复制 Writer 的发言/); assert.match(html, /查看本轮成果/);
+  assert.match(html, /发给 Muse/); assert.match(html, /交由代码 Agent/);
   assert.equal(html.includes('展开完整发言'), false);
+  const agentHtml = renderToStaticMarkup(React.createElement(GroupAgentTaskTurn, { task: { id: 't1', member: { name: 'Engineer' }, engine: 'codex', status: 'complete', prompt: 'Implement feature', output: 'All tests passed' }, onOpenTaskMode() {}, onUseAgentOutput() {} }));
+  assert.match(agentHtml, /Engineer/); assert.match(agentHtml, /All tests passed/); assert.match(agentHtml, /引用结果继续讨论/);
 });
 
 test('native Muse transcript distinguishes complete observed replies from partial output', () => {

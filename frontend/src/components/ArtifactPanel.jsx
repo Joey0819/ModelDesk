@@ -1,6 +1,7 @@
 import { useRef, useState } from 'react';
 import { workbenchApi } from '../api';
 import { groupTaskApi } from '../group-task-api';
+import { museApi } from '../muse-api';
 import { deriveArtifacts } from '../artifacts';
 import { Icon, Markdown } from './WorkbenchResults';
 import { CopyTextButton } from './ConversationActions';
@@ -9,11 +10,24 @@ import './ArtifactPanel.css';
 const statusLabel = (artifact) => artifact.status === 'live' ? '生成中' : artifact.status === 'partial' ? '部分输出' : artifact.kind === 'discussion' ? '已保存发言' : '已生成';
 
 function ArtifactPreview({ artifact, source }) {
-  if (source || ['code', 'text'].includes(artifact.format)) return <pre className="artifact-source-preview"><code>{artifact.content}</code></pre>;
-  return <Markdown>{artifact.content}</Markdown>;
+  return <>
+    {!source && artifact.video_url && (
+      <div className="artifact-video-container">
+        <video className="artifact-video-player" src={artifact.video_url} controls playsInline preload="metadata" loop />
+        <div className="artifact-video-actions">
+          <span>Muse 已将生成的视频回传至当前工作台</span>
+          <a className="primary-button" href={artifact.video_url} download="ModelDesk-Muse-Video.mp4">下载视频 MP4</a>
+        </div>
+      </div>
+    )}
+    {(source || ['code', 'text'].includes(artifact.format))
+      ? <pre className="artifact-source-preview"><code>{artifact.content}</code></pre>
+      : <Markdown>{artifact.content}</Markdown>}
+  </>;
 }
 
 function downloadUrl(job, artifact) {
+  if (job.mode === 'muse_task') return museApi.exportUrl(job.id, job.project_id);
   if (job.mode === 'group_agent') return groupTaskApi.exportUrl(job.id, job.project_id, job.room_id);
   return `${workbenchApi.exportUrl(job.id, 'md')}&artifact_id=${encodeURIComponent(artifact.id)}`;
 }

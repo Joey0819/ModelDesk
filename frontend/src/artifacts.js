@@ -74,6 +74,13 @@ function reviewMarkdown(result) {
 export function deriveArtifacts(job) {
   if (!job) return [];
   const result = job.result || {};
+  if (job.mode === 'muse_task') return [
+    makeArtifact(job, 'muse:deliverable', job.video_url ? 'Muse 视频成片与分镜方案' : 'Muse 任务成果', text(job.response) || text(job.prompt), {
+      source: job.harness_generated ? 'Muse Harness 视频与创意引擎' : 'Muse 本机桥接',
+      video_url: job.video_url || null,
+      note: job.verification || '由 Muse 完成并回传至 ModelDesk 工作台。',
+    }),
+  ].filter(Boolean);
   if (job.mode === 'group_agent') return [
     makeArtifact(job, 'group-agent:output', job.kind === 'review' ? '独立 Agent 审阅意见' : '独立 Agent 执行结果', text(job.output), { source: `${job.member?.name || '成员'} / ${job.engine === 'member_model' ? job.member?.model || '成员模型' : job.engine === 'claude' ? 'Claude Code' : 'Codex'}`, note: '这是执行引擎的实际返回；结论与测试说明需结合运行记录核查。代码合入需另行审批。' }),
     makeArtifact(job, 'group-agent:patch', '待审阅的实际补丁', text(job.diff), { source: `基准 ${job.base_sha?.slice(0, 12) || '未记录'} / 补丁 ${job.diff_sha256?.slice(0, 12) || '未记录'}`, format: 'code', language: 'diff', kind: 'evidence', note: '补丁保存在独立任务工作区。是否已经合入以审批卡片记录为准。' }),

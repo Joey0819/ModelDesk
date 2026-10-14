@@ -51,12 +51,16 @@ func threadURL(_ tree: [AXUIElement]) -> String {
     }
     return ""
 }
+func newChatButton(_ tree: [AXUIElement]) -> AXUIElement? {
+    tree.first { label($0) == "New side chat" || label($0) == "New chat" || label($0).contains("New side chat") }
+}
 func composer(_ tree: [AXUIElement]) -> AXUIElement? {
     tree.first { string($0, kAXRoleAttribute) == kAXButtonRole && label($0).contains("Attach file") && label($0).contains("Send") }
+        ?? tree.first { [kAXTextAreaRole, kAXTextFieldRole].contains(string($0, kAXRoleAttribute)) && (label($0).localizedCaseInsensitiveContains("ask") || label($0).localizedCaseInsensitiveContains("message") || label($0).contains("输入") || label($0).contains("提问")) }
 }
 func press(_ element: AXUIElement) -> Bool { AXUIElementPerformAction(element, kAXPressAction as CFString) == .success }
 func foreground() -> Bool { NSWorkspace.shared.frontmostApplication?.processIdentifier == app.processIdentifier }
-func activate() -> Bool { app.activate(options: []); settle(); return foreground() }
+func activate() -> Bool { app.activate(options: []); settle(0.3); return foreground() }
 func click(_ point: CGPoint) -> Bool {
     guard foreground(), mainWindowFocused() else { return false }
     CGEvent(mouseEventSource: nil, mouseType: .leftMouseDown, mouseCursorPosition: point, mouseButton: .left)?.post(tap: .cghidEventTap)
@@ -69,10 +73,26 @@ func key(_ code: CGKeyCode, flags: CGEventFlags = []) -> Bool {
     let up = CGEvent(keyboardEventSource: nil, virtualKey: code, keyDown: false)
     down?.flags = flags; up?.flags = flags; down?.postToPid(app.processIdentifier); up?.postToPid(app.processIdentifier); settle(); return foreground()
 }
+func validWindow(_ window: AXUIElement) -> Bool {
+    let identifier = string(window, kAXIdentifierAttribute)
+    let role = string(window, kAXRoleAttribute)
+    guard role == kAXWindowRole || identifier == "hatch-full" else { return false }
+    if !identifier.isEmpty && identifier != "hatch-full" && !identifier.hasPrefix("hatch") { return false }
+    return !nodes(window).contains { string($0, kAXRoleAttribute) == kAXSheetRole }
+}
 func mainWindowFocused() -> Bool {
-    guard let value = attr(application, kAXFocusedWindowAttribute), CFGetTypeID(value) == AXUIElementGetTypeID() else { return false }
-    let window = unsafeBitCast(value, to: AXUIElement.self)
-    return string(window, kAXIdentifierAttribute) == "hatch-full" && !nodes(window).contains { string($0, kAXRoleAttribute) == kAXSheetRole }
+    if let value = attr(application, kAXFocusedWindowAttribute), CFGetTypeID(value) == AXUIElementGetTypeID() {
+        let window = unsafeBitCast(value, to: AXUIElement.self)
+        if validWindow(window) { return true }
+    }
+    if let value = attr(application, kAXMainWindowAttribute), CFGetTypeID(value) == AXUIElementGetTypeID() {
+        let window = unsafeBitCast(value, to: AXUIElement.self)
+        if validWindow(window) { return true }
+    }
+    if let windows = attr(application, kAXWindowsAttribute) as? [AXUIElement] {
+        return windows.contains { validWindow($0) }
+    }
+    return false
 }
 
 func textIn(_ root: AXUIElement) -> String {
@@ -113,15 +133,18 @@ final class TemporaryClipboard {
 
 let initial = snapshot()
 if command == "probe" {
+    let ready = (composer(initial) != nil || newChatButton(initial) != nil) && mainWindowFocused()
     emit(["ok": true, "installed": true, "permission": true, "version": version,
-          "composer_ready": composer(initial) != nil && mainWindowFocused()])
+          "composer_ready": ready])
 }
 guard let requestID = input["request_id"] as? String, UUID(uuidString: requestID) != nil else { fail("invalid_request") }
 let requestTag = "[MODELDESK_REQUEST:\(requestID)]"
 if command == "submit" {
     guard let prompt = input["prompt"] as? String, !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, prompt.count <= 24000, input["thread_url"] == nil || input["thread_url"] is NSNull else { fail("invalid_request") }
-    guard !isBusy(initial), !hasApproval(initial) else { fail("muse_busy_or_waiting_user") }
-    guard let newChat = initial.first(where: { label($0) == "New side chat" }), activate(), mainWindowFocused(), press(newChat) else { fail("new_chat_unavailable") }
+    guard activate(), mainWindowFocused() else { fail("window_focus_lost") }
+    let activeTree = snapshot()
+    guard !isBusy(activeTree), !hasApproval(activeTree) else { fail("muse_busy_or_waiting_user") }
+    guard let newChat = newChatButton(activeTree), press(newChat) else { fail("new_chat_unavailable") }
     settle(0.6)
     let fresh = snapshot()
     guard threadURL(fresh) == "https://muse.ai/thread/new", let messages = chatRoot(fresh), textIn(messages).isEmpty, let box = composer(fresh).flatMap(rect) else { fail("new_chat_not_confirmed") }

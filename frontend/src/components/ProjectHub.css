@@ -1,15 +1,15 @@
 .modeldesk-main { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
 .modeldesk-main > .workspace-shell { flex: 1; min-height: 0; }
 .project-hub { flex: 0 0 auto; position: relative; z-index: 20; background: var(--shell-paper, #fff); border-bottom: 1px solid var(--line, #e3e7ef); }
-.project-hub-bar { min-height: 48px; display: flex; flex-wrap: wrap; gap: 8px 17px; align-items: center; padding: 9px 22px; font-size: 12px; }
+.project-hub-bar { min-height: 36px; display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: center; padding: 4px 18px; font-size: 11.5px; }
 .project-hub-bar > label { display: flex; align-items: center; gap: 7px; min-width: 0; }
 .project-hub-bar label > span { color: #7b8da5; font-size: 11px; white-space: nowrap; }
 .project-hub-bar select { border: 0; background: transparent; max-width: 270px; min-width: 125px; color: #354a66; outline: none; padding: 2px; }
-.project-hub-bar > button { border: 0; background: transparent; color: #667b99; padding: 3px 0; display: flex; align-items: center; gap: 6px; font-size: 11px; }
+.project-hub-bar > button { border: 0; background: transparent; color: #667b99; padding: 2px 0; display: flex; align-items: center; gap: 5px; font-size: 11px; }
 .project-hub-bar button:disabled { opacity: .4; }
 .project-hub-loading { color: #a0adbe; font-size: 10px; }
 .project-materials-trigger > span { background: #edf1f8; border-radius: 4px; padding: 1px 5px; font-size: 9px; }
-.project-hub-service-error { margin: 0; padding: 6px 23px; color: #a46f59; font-size: 11px; }
+.project-hub-service-error { margin: 0; padding: 4px 18px; color: #a46f59; font-size: 11px; }
 .project-hub-service-error button { margin-left: 10px; border: 0; background: none; color: #4658c8; }
 .project-create-inline { position: absolute; left: 20px; top: calc(100% + 7px); width: min(520px, calc(100vw - 35px)); max-height: 78vh; overflow: auto; border: 1px solid #d7dfec; border-radius: 9px; padding: 18px 20px; background: #fff; box-shadow: 0 9px 30px #17253a12; z-index: 90; }
 .project-create-inline > header, .project-assets-manager > header, .folder-import-dialog > header { display: flex; align-items: start; justify-content: space-between; gap: 15px; }
@@ -70,22 +70,22 @@
 .project-manager-settings h3 { font-size: 16px; color: #607590; margin: 0 0 10px; }
 .project-manager-settings p { font-size: 12px; line-height: 1.9; color: #7b8da5; }
 .project-manager-settings > span { display: block; font-size: 10px; color: #a0adbf; margin-bottom: 15px; }
-.attachment-composer { position: relative; display: flex; flex-wrap: wrap; align-items: center; gap: 7px 12px; padding: 8px 14px; border-bottom: 1px solid #e7ebf2; background: #fafbfd; }
-.attachment-compact { padding: 7px 0; border: 0; background: transparent; }
+.attachment-composer { position: relative; display: flex; flex-wrap: wrap; align-items: center; gap: 5px 10px; padding: 4px 12px; border-bottom: 1px solid #e7ebf2; background: #fafbfd; }
+.attachment-compact { padding: 4px 0; border: 0; background: transparent; }
 .attachment-add-control { position: relative; }
-.attachment-plus { display: flex; align-items: center; gap: 5px; border: 0; background: transparent; color: #778ea9; padding: 3px 0; font-size: 11px; }
+.attachment-plus { display: flex; align-items: center; gap: 5px; border: 0; background: transparent; color: #778ea9; padding: 2px 0; font-size: 11px; }
 .attachment-plus:disabled { opacity: .45; }
 .attachment-add-menu { position: absolute; bottom: calc(100% + 8px); left: 0; z-index: 30; width: 210px; border: 1px solid #dfe5ef; border-radius: 7px; padding: 6px; background: #fff; box-shadow: 0 7px 30px #16284214; }
 .attachment-add-menu button { width: 100%; display: flex; align-items: center; gap: 8px; padding: 9px 7px; font-size: 11px; border: 0; color: #667e9e; background: transparent; text-align: left; }
 .attachment-add-menu button:hover { background: #f2f5fa; }
 .attachment-short-help { font-size: 10px; color: #9baabc; }
-.attachment-tray { flex-basis: 100%; display: flex; flex-wrap: wrap; gap: 8px; max-height: 115px; overflow: auto; scrollbar-width: thin; }
-.attachment-chip { display: inline-flex; align-items: center; gap: 8px; max-width: 220px; padding: 5px 7px; background: #fff; border: 1px solid #dfe5ef; border-radius: 5px; color: #8499b4; }
-.attachment-chip > img { width: 30px; height: 30px; object-fit: cover; border-radius: 3px; }
+.attachment-tray { flex-basis: 100%; display: flex; flex-wrap: wrap; gap: 6px; max-height: 96px; overflow: auto; scrollbar-width: thin; }
+.attachment-chip { display: inline-flex; align-items: center; gap: 7px; max-width: 220px; padding: 4px 6px; background: #fff; border: 1px solid #dfe5ef; border-radius: 5px; color: #8499b4; }
+.attachment-chip > img { width: 26px; height: 26px; object-fit: cover; border-radius: 3px; }
 .attachment-chip > span { display: grid; gap: 1px; min-width: 0; font-size: 10px; max-width: 155px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .attachment-chip small { font-size: 9px; color: #a3b1c3; }
 .attachment-chip button { display: flex; border: 0; background: transparent; padding: 2px; color: #a3b1c3; }
-.attachment-shared-toggle { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 10px; color: #8196b0; margin: 8px 0; }
+.attachment-shared-toggle { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 10px; color: #8196b0; margin: 2px 0; }
 .attachment-shared-toggle > span { color: #a7b4c5; }
 .attachment-upload-queue { display: flex; flex-wrap: wrap; gap: 6px 10px; width: 100%; padding: 6px 0; font-size: 10px; color: #8ba0ba; }
 .attachment-upload-queue > span { display: inline-flex; align-items: center; gap: 5px; max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

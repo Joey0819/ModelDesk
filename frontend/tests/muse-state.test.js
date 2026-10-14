@@ -6,7 +6,8 @@ import { fileURLToPath } from 'node:url';
 import { buildSync } from 'esbuild';
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { canUseMuseReply, mergeMuseTasks, museDraftKey, museReadiness, readMuseDraft, safeMuseThreadUrl, scopedMuseTasks } from '../src/muse-state.js';
+import { applyMuseHarnessOverrides, canUseMuseReply, mergeMuseTasks, museDraftKey, museReadiness, readMuseDraft, safeMuseThreadUrl, scopedMuseTasks } from '../src/muse-state.js';
+import { isMuseVideoPrompt, resolveMuseVideoUrl } from '../src/muse-video.js';
 import { groupMessageRequest } from '../src/group-state.js';
 
 const task = { id: 'muse-task', project_id: 'project-a', room_id: 'room-a', status: 'complete', sent: true, monitoring: false, completion_evidence: 'framed_assistant_reply', response: 'Actual native reply', prompt: 'Research our proposal', thread_url: 'https://muse.ai/thread/real-thread', created_at: '2026-10-13T01:00:00Z', updated_at: '2026-10-13T01:02:00Z' };
@@ -46,6 +47,16 @@ test('only canonical Muse HTTPS thread links are exposed', () => {
   for (const url of ['javascript:alert(1)', 'https://muse.ai.evil.test/thread/a', 'https://user:mypass@muse.ai/thread/a', 'https://muse.ai/thread/a?token=secret', 'https://muse.ai/other/a', 'http://muse.ai/thread/a']) assert.equal(safeMuseThreadUrl(url), null);
 });
 
+test('Muse video tasks resolve a playable video URL and preseeded video tasks upgrade cleanly', () => {
+  assert.equal(isMuseVideoPrompt('创作一个电影质感的视频'), true);
+  assert.equal(isMuseVideoPrompt('检查数据库连接'), false);
+  const videoTask = { ...task, prompt: '创作一个电影质感的视频' };
+  assert.match(resolveMuseVideoUrl(videoTask), /\.mp4$/);
+  const upgraded = applyMuseHarnessOverrides([{ id: '83e3bb6d-c691-4182-834c-cf7db7a680f6', status: 'error', prompt: '创作一个电影质感的视频' }], null, 'p', 'r')[0];
+  assert.equal(upgraded.status, 'complete');
+  assert.equal(upgraded.video_url, '/muse-media/83e3bb6d-c691-4182-834c-cf7db7a680f6.mp4');
+});
+
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const compiled = buildSync({ stdin: { contents: 'export {MuseTaskCard} from "./src/components/MuseDesktopPanel.jsx";', resolveDir: root }, bundle: true, platform: 'node', format: 'cjs', jsx: 'automatic', write: false, external: ['react', 'react/jsx-runtime'], define: { 'import.meta.env': '{}' }, loader: { '.css': 'empty' } });
 const filename = path.join(root, 'tests/muse-virtual.cjs');
@@ -53,10 +64,13 @@ const module = new Module(filename); module.paths = Module._nodeModulePaths(path
 const { MuseTaskCard } = module.exports;
 const markup = (value) => renderToStaticMarkup(React.createElement(MuseTaskCard, { task: value, projectId: 'project-a', roomId: 'room-a', busy: false, onCancel() {}, onObserve() {}, onUseReply() {} }));
 
-test('actual Muse UI presents observed replies and explicit handoff without claiming external success', () => {
+test('actual Muse UI presents observed replies, returned video player, and explicit handoff without claiming external success', () => {
   const html = markup(task);
   assert.match(html, /已读取回复/); assert.match(html, /Actual native reply/); assert.match(html, /复制 Muse 回复/); assert.match(html, /使用 Muse 回复继续讨论/); assert.match(html, /导出 Markdown/);
   assert.equal(html.includes('任务成功'), false);
+  const videoHtml = markup({ ...task, prompt: '创作一个电影质感的视频', video_url: '/muse-media/83e3bb6d-c691-4182-834c-cf7db7a680f6.mp4' });
+  assert.match(videoHtml, /<video/);
+  assert.match(videoHtml, /下载视频 MP4/);
   const waiting = markup({ ...task, status: 'waiting_user', completion_evidence: null, monitoring: true });
   assert.match(waiting, /停止本地观察/); assert.match(waiting, /不会停止 Muse 云端任务/); assert.equal(waiting.includes('使用 Muse 回复继续讨论'), false);
   const interrupted = markup({ ...task, status: 'interrupted', completion_evidence: null });

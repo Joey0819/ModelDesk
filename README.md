@@ -1,92 +1,152 @@
 # ModelDesk
 
-本机多模型、多智能体协作工作台。围绕同一个项目，把资料、模型讨论、团队执行、评审和最终成果放在一个工作区。
+**A local workspace where LLMs and executable Agents collaborate in project groups.**
 
-ModelDesk 基于 [Karpathy 的 LLM Council](https://github.com/karpathy/llm-council) 扩展，保留三阶段匿名评审，并接入 CAMEL、CrewAI、接力群聊、原生 SDK 和本地项目资料。原项目说明保留在 [上游 README](docs/UPSTREAM_COUNCIL.md)。
+把模型、执行 Agent、项目资料、代码审查和最终成果放在同一个工作区。你可以指定一个 LLM 担任 **统筹模型（Ruler）**，让它规划讨论、综合结论，再明确派发 Codex、Claude Code 或 Muse 完成具体任务。
 
-## 从一个目标开始
+**当前桌面版本：2.7.0** · macOS / Apple Silicon · 中文界面 · 本机服务与私有手机入口
 
-1. 创建项目，添加需要的图片、文件，或从关联文件夹中选择资料。
-2. 打开「协作任务」，选一个流程模板，写下目标。可直接选择模型，也可新建项目协作组，保存成员名称、模型和分工。
-3. 启动任务，查看步骤进度。需要人工把关的步骤可设置为完成后等待确认。
-4. 在右侧查看、复制或导出实际成果。中断后可查看已完成步骤，再明确选择继续或重试。
+ModelDesk 基于 [Karpathy 的 LLM Council](https://github.com/karpathy/llm-council) 扩展，保留独立回答 → 匿名互评 → 主席综合的三阶段流程，并复用 CAMEL、CrewAI 和 LangGraph 的执行能力。原项目说明见 [上游 README](docs/UPSTREAM_COUNCIL.md)。
 
-「单项协作」保留直接聊天、Council、CAMEL、CrewAI、群聊、Workforce 和 Flow。代码评审使用明确预览的源码快照；SDK 工作室保留原生框架接口。
+## 从项目群开始 / Quick start
 
-需要长期讨论时，进入「项目群聊」，为同一项目创建多个固定成员的群，指定成员回复并接续群内历史。群内的「Muse Mac · 本机桥接」可向已登录的原生 Muse 窗口派发文本任务；读取回复后，由你选择交给群内成员继续讨论。操作步骤、恢复方式和权限边界见 [项目群聊与 Muse 指南](docs/PROJECT_GROUPS_AND_MUSE.md)。
+1. **创建项目**：添加图片、文件，或关联本地文件夹。代码执行需要关联一个已有提交且工作区干净的 Git 仓库。
+2. **设置团队**：打开「Agent 与连接 → 项目 Agent → 成员与分工」，选择统筹模型，为成员设置名称、类型与职责。需要 Grok 或其他模型时，先到「模型连接 / API Key」添加连接。
+3. **进入群聊**：保存协作组并新建项目群；修改已有群时，保存后点击「应用到当前群聊」。@ 指定模型回复，或广播给所有 LLM。
+4. **派发 Agent**：选择 @Codex、@Claude Code 或 @Muse 成员，填写任务并点击明确的派发按钮。实际执行记录、代码补丁和回复进入同一条群时间线。
+5. **审阅与交付**：检查结果，选择另一位成员独立审查代码，通过审批卡合入本地项目；在右侧成果栏预览、复制或导出内容。
 
-2.7 新增可选统筹模型（Ruler）和有明确执行器的群成员：LLM、Codex、Claude Code、Muse。统筹规划与总结调用所选模型；执行 Agent 从群聊明确派发，保留真实任务与来源记录。见 [统筹模型与执行 Agent](docs/COORDINATOR_AND_AGENTS.md)。
+每个协作组可保存 **2–4 名成员**，统筹模型单独选择；LLM 成员与统筹合计最多使用四个不同模型。群聊历史、草稿、成员职责和资料按项目保存，同一个模型也可以担任不同角色。
 
-2.6 新增自定义模型连接（Grok / xAI、兼容 OpenAI 的自定义 API、本机 Ollama）、Worker 凭据隔离与动态群协作组管理。见 [模型连接与动态协作组](docs/MODEL_CONNECTIONS.md)；2.5 新增「Agent 任务」与私有 Tailscale HTTPS 手机入口，见 [Agent 群协作与手机操作](docs/AGENT_GROUPS_AND_PHONE.md)。
+## Ruler 与执行 Agent
 
-## 协作与执行
+统筹模型与执行器分别配置。广播时，所选统筹 LLM 先给出计划，模型成员依次讨论，最后由统筹 LLM 汇总；@ 指定模型成员时只调用该成员。规划与汇总不会自动授予工具权限、启动原生操作或批准代码合并。
 
-| 层 | 职责 |
+| 成员类型 | 实际工作方式 | 配置与要求 |
+| --- | --- | --- |
+| **LLM 模型** | 群内发言、交叉讨论、只读审阅 | 已接入的模型、角色与职责；支持同模型多角色 |
+| **Codex Agent** | 在隔离项目副本中编辑文件、运行可用测试、返回补丁 | 官方 CLI 现有登录；可单独指定执行模型 |
+| **Claude Code Agent** | 通过受限 CLI 在隔离副本中读写文件 | 支持受限执行的 CLI 版本与可用登录；当前执行路径不提供终端测试 |
+| **Muse 应用 Agent** | 操作本机 Muse，保存原生回执与实际读取的回复 | Mac 上安装并登录 Muse，原生桥接和辅助功能权限就绪 |
+
+后续讨论可引用同群已完成 Agent 任务的有界输出，并保留任务 ID、执行器、输出与补丁指纹。计划、失败结果和不完整发言不会被当作完整交付。
+
+操作细节见 [统筹模型与执行 Agent](docs/COORDINATOR_AND_AGENTS.md)。
+
+## 模型连接 / Model connections
+
+- **已有登录**：复用当前本机网关支持的 ChatGPT / Codex 与 Gemini 认证路径。订阅登录和通用 API Key 分开处理。
+- **Grok / xAI**：在设置页填写 xAI API Key，读取账户模型列表，选择模型并测试实际调用。
+- **其他兼容 API**：配置 OpenAI-compatible Chat Completions 地址、密钥与模型 ID；支持明确启用的本机模型服务，例如 Ollama。
+- **凭据隔离**：API Key 只保存在本机后端私有文件中，不返回页面、不写入浏览器存储或任务导出。原生框架 Worker 使用临时、限定模型范围的调用授权。
+
+读取到模型列表或发现登录凭据，不等于实际调用已经通过。界面单独记录调用测试状态。xAI API 接入的是 Grok 模型成员；已有独立 Grok Bot 的云端计算机、记忆和工具不会随 API Key 自动接入。
+
+见 [模型连接与动态协作组](docs/MODEL_CONNECTIONS.md)。
+
+## 一个工作区中的功能
+
+| 功能 | 用途 |
 | --- | --- |
-| 模型连接与 API | Grok / xAI、OpenAI 兼容 API、本机 Ollama，安全存储与 Worker 临时 Token 隔离 |
-| 项目与资料 | 项目范围、文件夹导入、图片/文本资料、不可变任务输入与来源记录 |
-| 项目协作组与 Agent | 每项目保存 2–4 个不同模型的成员与角色，支持动态更新群成员与单模型多角色 |
-| 项目群聊 | 固定成员和分工、按群保存历史与草稿、指定成员接力、图片/文件和成果引用 |
-| 独立 Agent | 按成员派发 Codex / Claude Code，独立快照、真实进程、改动与审查、人工审批合入本地 |
-| 手机控制 | Tailscale 私有 HTTPS、一次性配对、设备撤销、同源上传和流式状态 |
-| Muse 外部智能体 | 复用本机 Muse Mac 登录，每任务独立会话，文本派发、实际回复、来源导出和显式交接 |
-| 协作任务 | LangGraph 顺序调度、步骤检查点、人工确认、停止、明确重试与运行预算 |
-| 原生执行器 | 复用 Council、CAMEL、CrewAI、并排聊天和模型群聊的实际执行路径 |
-| 成果与证据 | 真实子任务、模型来源、历史尝试、部分失败、Markdown/JSON 导出 |
-| 本地桌面 | Electron 原生选择/保存窗口，复用本机服务与现有模型登录 |
+| 项目与资料 | 普通项目、本地目录、图片和文件、明确选择的文件夹导入、源码快照 |
+| 项目群聊 | 固定成员与职责、统筹模型、@ 指定成员、连续上下文、动态应用成员变更 |
+| 独立代码 Agent | 隔离快照、真实进程输出、停止与中断记录、固定补丁的独立审阅 |
+| 群内审批 | 绑定基准提交与补丁指纹，人工批准后 fast-forward 合入本地项目 |
+| 协作任务 | LangGraph 步骤调度、检查点、人工确认、停止、明确继续与重试 |
+| 单项协作 | 并排聊天、LLM Council、接力群聊、CAMEL、Workforce、CrewAI 与 Flow |
+| 项目资源 | 提示词、角色模板、知识、记忆、工具和 MCP 连接 |
+| 原生 SDK 工作室 | 在明确审查源码后运行 CAMEL / CrewAI Python 脚本 |
+| 成果侧栏 | 预览实际返回内容、复制、Markdown / JSON 导出、来源和部分失败记录 |
+| 手机控制 | Tailscale 私有 HTTPS、一次性配对、上传、群消息、任务状态与设备撤销 |
+| macOS 桌面 | Electron 窗口、原生资料选择与保存、复用本机服务 |
 
-详细设计和开源选型见 [Harness 架构](docs/HARNESS_ARCHITECTURE.md)，完整操作见 [ModelDesk 使用说明](MODEL_DESK.md)，验收和功能边界见 [功能表](docs/CAPABILITIES.md)。
+ChatHub 和 MultiBot Chat 保留原版应用入口；它们自己的账户、设置与上下文独立管理。ModelDesk 并未将五个原项目的全部界面或所有上游功能完整内嵌。
 
-## 当前电脑运行
+## 手机访问与执行边界
 
-已配置环境可打开 `/Applications/ModelDesk.app`，或从仓库根目录执行：
+Mac 与手机连接同一 Tailscale 网络后，在 Mac 的「手机连接」启动私有入口、生成一次性配对码。手机使用界面显示的 HTTPS 地址，不使用手机自身的 `localhost`。会话可从 Mac 撤销；Mac 需要保持开机、联网且服务运行。
+
+原生 Muse 操作、API Key 管理、原生文件夹选择和任意 SDK Python 脚本执行需要在 Mac 操作。代码任务的命令网络关闭，原项目保持隔离；代码合入仍由人工审批。**本地审批合入不会自动推送或合并 GitHub PR。**
+
+见 [Agent 群协作与手机操作](docs/AGENT_GROUPS_AND_PHONE.md) 和 [项目群聊与 Muse 指南](docs/PROJECT_GROUPS_AND_MUSE.md)。
+
+## 本机启动与依赖 / Running locally
+
+### 已配置的工作区
+
+打开 `/Applications/ModelDesk.app`，或从本仓库根目录运行：
 
 ```bash
-python3 ../llm-tools/scripts/services.py start
+.venv/bin/python ../llm-tools/scripts/services.py start
 ```
 
-页面位于 http://localhost:5173/，API 位于 http://127.0.0.1:8001。模型通过本机网关调用，认证信息保留在本机私有目录。
+| 服务 | 地址 |
+| --- | --- |
+| 工作台 | http://localhost:5173/ |
+| API | http://127.0.0.1:8001 |
+| 已有登录网关 | http://127.0.0.1:8317/v1 |
 
-此桌面包目前依赖相邻的 `llm-tools`、独立 CAMEL/CrewAI 环境和本机网关配置。克隆本仓库可取得工作台源码，不能自动取得这些运行环境或账户登录。
+### 克隆本仓库前需要了解
 
-Muse 集成另外要求本机安装并登录 Muse Mac，以及辅助功能授权；不复制登录凭据。当前仅传递明确填写的文本，Muse 的账户级记忆和连接器由其自身管理。停止本地观察不会停止 Muse 云端任务，重启也不会自动重发。已读取回复表示取得原生窗口输出，不代表外部动作已经独立核实。
+此桌面包是当前本机工作区的启动入口，依赖相邻的 **`llm-tools`**、本机网关配置，以及单独安装的 CAMEL / CrewAI 运行环境。**克隆本仓库不会自动安装这些外部环境、取得模型登录或得到可独立分发的完整应用。**
 
-## 开发与验证
-
-Python 3.12+，Node/npm，以及 [uv](https://docs.astral.sh/uv/)：
+基础开发需要 Python 3.12+、Node.js 20.19+（20.x）或 22.12+、npm 和 [uv](https://docs.astral.sh/uv/)。桌面打包需要 Apple Silicon Mac 与可用的 Xcode Command Line Tools（包括 Swift 编译器）。Codex / Claude Code 执行需要相应官方 CLI；Muse 需要原生 Mac 应用。具体已验证范围见 [功能与验收记录](docs/CAPABILITIES.md)。
 
 ```bash
 uv sync --locked
 npm --prefix frontend ci
 npm --prefix desktop ci
-
-# 后端、前端组件与状态、lint、桌面策略
-.venv/bin/python scripts/verify_modeldesk.py
-
-# 使用自建合成资料的真实跨框架验收（需要已有本地服务与登录）
-.venv/bin/python scripts/verify_harness.py
-.venv/bin/python scripts/verify_project_teams.py
-
-# 重建生产页面和实际 macOS 应用
-.venv/bin/python scripts/package_modeldesk.py
 ```
 
-本地开发 API 和页面分别运行：
+本地开发分别启动 API 与前端：
 
 ```bash
 .venv/bin/python -m uvicorn backend.main:app --host 127.0.0.1 --port 8001
 npm --prefix frontend run dev -- --host 127.0.0.1 --port 5173
 ```
 
-凭据、用户项目资料、运行记录、构建缓存和应用包不进入 Git。自动检查使用隔离测试数据；真实模型验收使用脚本生成的合成材料。
+上述命令安装和启动本仓库的开发环境，不安装外部网关或 CAMEL / CrewAI 环境。项目群推理依赖本机网关；独立 Council 流程默认使用 OpenRouter，可通过 `LLM_API_BASE`、`LLM_API_KEY` 配置兼容端点。API 和页面启动成功只说明本地服务可用；真实推理、框架任务与原生 Agent 仍需要各自的运行环境和登录。
 
-## 来源
+## 验证、打包与已知限制
+
+```bash
+# 后端、前端组件与状态、lint、桌面策略
+.venv/bin/python scripts/verify_modeldesk.py
+
+# 合成资料的真实跨框架验收：需要已有服务、框架环境与模型登录
+.venv/bin/python scripts/verify_harness.py
+.venv/bin/python scripts/verify_project_teams.py
+
+# 重建生产页面、实际 macOS 应用并校验签名
+.venv/bin/python scripts/package_modeldesk.py
+```
+
+应用包输出到相邻目录 `llm-tools/releases/ModelDesk.app`，使用本机 ad-hoc 签名，未经 Apple 公证。凭据、用户项目资料、运行记录、缓存和生成的应用包不进入 Git；自动检查使用隔离测试数据。
+
+2.7 的现场验收验证了真实 Gemini 统筹三阶段调用、群内 Codex 写文件、Bash 测试，以及模型读取 Agent 执行记录。当前限制包括：
+
+- 系统 Python 在隔离环境中未能取得开发者工具，Python 测试未运行；这与已通过的 Bash 用例分别记录。
+- Claude Code 的受限执行环境尚未发现可用登录。
+- 最近一次 Muse 派发未取得确认送达回执；输入框就绪不表示任务完成。失败不会用其他模型、固定模板或示例视频冒充成功。
+- 手机连接、模型服务和原生应用的可用性需要在当前设备与当前登录下检查，历史通过记录不代表所有适配器始终可用。
+
+## 文档导航
+
+- [完整操作说明](MODEL_DESK.md)
+- [统筹模型与执行 Agent](docs/COORDINATOR_AND_AGENTS.md)
+- [模型连接与动态协作组](docs/MODEL_CONNECTIONS.md)
+- [项目群聊与 Muse](docs/PROJECT_GROUPS_AND_MUSE.md)
+- [手机访问、独立执行与审批](docs/AGENT_GROUPS_AND_PHONE.md)
+- [Harness 架构](docs/HARNESS_ARCHITECTURE.md)
+- [功能与验收边界](docs/CAPABILITIES.md)
+
+## 来源与许可
 
 - [LLM Council](https://github.com/karpathy/llm-council)：三阶段匿名评审与初始代码。
 - [LangGraph](https://github.com/langchain-ai/langgraph)：图调度内核，MIT。
 - [CAMEL](https://github.com/camel-ai/camel)：角色对话与 Workforce，Apache-2.0。
 - [CrewAI](https://github.com/crewAIInc/crewAI)：团队任务与 Flow，MIT。
-- [ChatHub](https://github.com/chathub-dev/chathub) 与 [MultiBot Chat](https://github.com/gptzm/multibot-chat)：保留原版应用入口，各自 GPL-3.0。
-- [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI)：现有本机登录网关。
+- [ChatHub](https://github.com/chathub-dev/chathub) 与 [MultiBot Chat](https://github.com/gptzm/multibot-chat)：原版应用入口，各自 GPL-3.0。
+- [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI)：已有本机登录网关。
 
-各来源保留自己的许可与运行要求，详见功能表。本仓库没有为上游未明确授权的代码另行授予许可。
+各来源保留自己的许可与运行要求；本仓库没有为上游未明确授权的代码另行授予许可。

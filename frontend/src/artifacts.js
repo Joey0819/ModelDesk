@@ -95,6 +95,13 @@ export function deriveArtifacts(job) {
     if (synthesis) return [synthesis];
     return (result.stage1 || []).map((response) => makeArtifact(job, `council:response:${response.model}`, `独立回答 · ${response.model}`, text(response.response), { model: response.model, source: 'LLM Council 第一阶段', kind: 'evidence', partial: true, note: '评审尚未形成主席综合结论。' })).filter(Boolean);
   }
+  if (job.mode === 'group' && (job.group_delivery_mode === 'auto' || result.delivery)) {
+    const delivery = result.delivery || {};
+    return [makeArtifact(job, 'group:delivery', delivery.title || '完整交付结果', text(delivery.content), {
+      model: delivery.model, source: '项目群自动交付', partial: delivery.status !== 'complete',
+      note: Array.isArray(delivery.limitations) ? delivery.limitations.filter((item) => typeof item === 'string').join('\n') : '',
+    })].filter(Boolean);
+  }
   if (['camel', 'group'].includes(job.mode)) return lastMessages(job, job.mode);
   if (job.mode === 'sdk_script') {
     const answer = makeArtifact(job, 'sdk:answer', 'SDK 返回内容', text(result.answer), { source: `${job.sdk || result.sdk || ''} 原生 SDK 返回` });

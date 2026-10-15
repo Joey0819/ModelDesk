@@ -45,6 +45,7 @@ class GroupRoomTests(unittest.IsolatedAsyncioTestCase):
         api.include_router(groups.router)
         api.include_router(workbench.router)
         api.include_router(super_platform.router)
+        self.api = api
         self.client_type = httpx.AsyncClient
         self.client = self.client_type(transport=httpx.ASGITransport(app=api), base_url="http://local")
         self.calls = []
@@ -158,6 +159,72 @@ class GroupRoomTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([call["model"] for call in self.calls], ["b", "b"])
         self.assertEqual([item["phase"] for item in result["result"]["messages"]], ["plan", "synthesis"])
         self.assertEqual(result["result"]["recipient_member_ids"], [])
+
+    async def test_automatic_delivery_requires_local_same_origin_before_creating_work(self):
+        room = await self.room()
+        endpoint = f"/api/groups/{room['id']}/messages"
+        body = {"prompt": "完成文章", "delivery_mode": "auto"}
+        for headers in [{}, {"Origin": "https://untrusted.example"},
+                        {"Origin": "http://localhost:5173", "Sec-Fetch-Site": "cross-site"}]:
+            response = await self.client.post(endpoint, params=self.params(room), json=body, headers=headers)
+            self.assertEqual(response.status_code, 403, response.text)
+        async with self.client_type(transport=httpx.ASGITransport(app=self.api, client=("192.0.2.1", 12345)),
+                                    base_url="http://local") as nonlocal_client:
+            response = await nonlocal_client.post(endpoint, params=self.params(room), json=body,
+                                                   headers={"Origin": "http://localhost:5173"})
+        self.assertEqual(response.status_code, 403, response.text)
+        self.assertFalse(self.jobs.jobs)
+        self.assertFalse(self.calls)
+        self.catalog.assert_not_awaited()
+
+    async def test_automatic_authority_is_derived_from_transport_not_json_fields(self):
+        room = await self.room()
+        endpoint = f"/api/groups/{room['id']}/messages"
+        body = {"prompt": "完成文章", "delivery_mode": "auto"}
+        headers = {"Origin": "http://localhost:5173"}
+        for field in ["group_runtime_allowed", "group_native_allowed"]:
+            denied = await self.client.post(endpoint, params=self.params(room),
+                                             json={**body, field: True}, headers=headers)
+            self.assertEqual(denied.status_code, 422, denied.text)
+        with patch.object(self.jobs, "run", AsyncMock()):
+            local = await self.client.post(endpoint, params=self.params(room), json=body, headers=headers)
+            flagged = await self.client.post(endpoint, params=self.params(room), json=body,
+                                              headers={**headers, "X-ModelDesk-Remote": "phone"})
+        self.assertEqual(local.status_code, 202, local.text)
+        self.assertTrue(local.json()["group_runtime_allowed"])
+        self.assertTrue(local.json()["group_native_allowed"])
+        self.assertEqual(flagged.status_code, 202, flagged.text)
+        self.assertTrue(flagged.json()["group_runtime_allowed"])
+        self.assertFalse(flagged.json()["group_native_allowed"])
+
+    async def test_paired_phone_automatic_delivery_can_never_gain_native_authority(self):
+        from backend import remote_access
+        room = await self.room()
+        origin = "https://modeldesk-test.example.ts.net:8443"
+        auth = remote_access.RemoteStore(self.root / "phone-auth")
+        auth.configure(origin)
+        frontend = self.root / "phone-ui"
+        frontend.mkdir()
+        (frontend / "index.html").write_text("<html>ModelDesk</html>")
+        gateway = remote_access.create_gateway(auth, frontend=frontend,
+                    upstream_transport=httpx.ASGITransport(app=self.api, client=("127.0.0.1", 8766)))
+        # This path exercises the real gateway and local route. No provider or
+        # native execution is needed to verify the resulting server authority.
+        with patch.object(self.jobs, "run", AsyncMock()), \
+             patch.object(group_chat.httpx, "AsyncClient", self.client_type):
+            async with gateway.router.lifespan_context(gateway):
+                async with self.client_type(transport=httpx.ASGITransport(app=gateway), base_url=origin) as phone:
+                    pairing = await phone.post("/remote/pair", json={"code": auth.create_pairing("test phone")["code"]},
+                                                 headers={"Origin": origin})
+                    self.assertEqual(pairing.status_code, 200, pairing.text)
+                    response = await phone.post(f"/api/groups/{room['id']}/messages", params=self.params(room),
+                        json={"prompt": "完成文章", "delivery_mode": "auto"},
+                        headers={"Origin": origin, "X-ModelDesk-Remote": "", "Content-Type": "application/json"})
+        self.assertEqual(response.status_code, 202, response.text)
+        self.assertEqual(response.json()["group_delivery_mode"], "auto")
+        self.assertTrue(response.json()["group_runtime_allowed"])
+        self.assertFalse(response.json()["group_native_allowed"])
+        self.assertFalse(self.calls)
 
     async def test_runtime_context_only_quotes_completed_scoped_frozen_deliveries(self):
         from backend import group_tasks

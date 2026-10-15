@@ -52,7 +52,16 @@ func threadURL(_ tree: [AXUIElement]) -> String {
     return ""
 }
 func newChatButton(_ tree: [AXUIElement]) -> AXUIElement? {
-    tree.first { label($0) == "New side chat" || label($0) == "New chat" || label($0).contains("New side chat") }
+    tree.first { string($0, kAXRoleAttribute) == kAXButtonRole && ["New side chat", "New chat"].contains(label($0)) }
+}
+func chatMenuButton(_ tree: [AXUIElement]) -> AXUIElement? {
+    tree.first { string($0, kAXRoleAttribute) == kAXPopUpButtonRole && label($0) == "Chats Open chat and side chats" }
+}
+func backToMainButton(_ tree: [AXUIElement]) -> AXUIElement? {
+    tree.first { string($0, kAXRoleAttribute) == kAXButtonRole && label($0) == "Back to main chat" }
+}
+func emptyNewThread(_ tree: [AXUIElement]) -> Bool {
+    threadURL(tree) == "https://muse.ai/thread/new" && chatRoot(tree).map { textIn($0).isEmpty } == true
 }
 func composer(_ tree: [AXUIElement]) -> AXUIElement? {
     tree.first { string($0, kAXRoleAttribute) == kAXButtonRole && label($0).contains("Attach file") && label($0).contains("Send") }
@@ -133,19 +142,30 @@ final class TemporaryClipboard {
 
 let initial = snapshot()
 if command == "probe" {
-    let ready = (composer(initial) != nil || newChatButton(initial) != nil) && mainWindowFocused()
+    let ready = (emptyNewThread(initial) || newChatButton(initial) != nil || chatMenuButton(initial) != nil || backToMainButton(initial) != nil) && mainWindowFocused()
     emit(["ok": true, "installed": true, "permission": true, "version": version,
           "composer_ready": ready])
 }
 guard let requestID = input["request_id"] as? String, UUID(uuidString: requestID) != nil else { fail("invalid_request") }
 let requestTag = "[MODELDESK_REQUEST:\(requestID)]"
+let closingTag = "[MODELDESK_DONE:\(requestID)]"
 if command == "submit" {
     guard let prompt = input["prompt"] as? String, !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, prompt.count <= 24000, input["thread_url"] == nil || input["thread_url"] is NSNull else { fail("invalid_request") }
     guard activate(), mainWindowFocused() else { fail("window_focus_lost") }
-    let activeTree = snapshot()
+    var activeTree = snapshot()
     guard !isBusy(activeTree), !hasApproval(activeTree) else { fail("muse_busy_or_waiting_user") }
-    guard let newChat = newChatButton(activeTree), press(newChat) else { fail("new_chat_unavailable") }
-    settle(0.6)
+    if !emptyNewThread(activeTree) {
+        if newChatButton(activeTree) == nil, chatMenuButton(activeTree) == nil, let back = backToMainButton(activeTree) {
+            guard press(back) else { fail("new_chat_unavailable") }
+            settle(0.3); activeTree = snapshot()
+        }
+        if newChatButton(activeTree) == nil, let menu = chatMenuButton(activeTree) {
+            guard press(menu) else { fail("new_chat_unavailable") }
+            settle(0.3); activeTree = snapshot()
+        }
+        guard let newChat = newChatButton(activeTree), press(newChat) else { fail("new_chat_unavailable") }
+        settle(0.6)
+    }
     let fresh = snapshot()
     guard threadURL(fresh) == "https://muse.ai/thread/new", let messages = chatRoot(fresh), textIn(messages).isEmpty, let box = composer(fresh).flatMap(rect) else { fail("new_chat_not_confirmed") }
     guard click(CGPoint(x: box.minX + box.width * 0.35, y: box.midY)) else { fail("window_focus_lost") }
@@ -180,10 +200,23 @@ if command == "observe" {
     for item in children(chat) {
         let text = textIn(item)
         if text.contains(requestTag) { sawRequest = true; continue }
-        guard sawRequest, !text.isEmpty, !text.hasPrefix("You:"), !text.hasPrefix("你：") else { continue }
+        guard sawRequest, !text.isEmpty, !text.hasPrefix("You:"), !text.hasPrefix("User message:"), !text.hasPrefix("你：") else { continue }
         // Assistant containers expose their own Copy response control; dates,
         // user messages, suggested prompts and tool approval cards do not.
-        if nodes(item).contains(where: { label($0) == "Copy response" }) { messages.append(["role": "assistant", "text": String(text.prefix(100000))]) }
+        let controls = nodes(item)
+        let legacyAssistant = controls.contains { label($0) == "Copy response" }
+        // New Muse versions expose reply actions via a popup rather than a
+        // permanent Copy response button. Accept this shape only with the
+        // unique current-task closing marker, never for an arbitrary popup.
+        let framedReply = text.trimmingCharacters(in: .whitespacesAndNewlines).hasSuffix(closingTag)
+            && controls.contains { string($0, kAXRoleAttribute) == kAXPopUpButtonRole && label($0) == "More options" }
+        if legacyAssistant || framedReply {
+            // Restore only the marker boundary lost by rendered soft breaks;
+            // do not alter the observed response body or invent any content.
+            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            let reply = framedReply ? String(trimmed.dropLast(closingTag.count)).trimmingCharacters(in: .whitespacesAndNewlines) + "\n" + closingTag : text
+            messages.append(["role": "assistant", "text": String(reply.prefix(100000))])
+        }
     }
     guard threadURL(snapshot()) == expected else { fail("thread_changed") }
     emit(["ok": true, "request_id": requestID, "thread_url": expected, "messages": messages, "busy": isBusy(initial), "waiting_user": hasApproval(initial)])

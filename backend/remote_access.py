@@ -346,10 +346,10 @@ def create_gateway(remote_store=None, *, frontend=None, upstream_transport=None,
         # A fixed origin and narrow header allowlist prevent SSRF and identity spoofing.
         headers = {key: value for key, value in request.headers.items()
                    if key.lower() in {"content-type", "accept", "last-event-id", "range", "if-none-match", "origin"}}
-        # These four explicit user-control endpoints share the local API approval
+        # These explicit user-control endpoints share the local API approval
         # boundary. Only an authenticated, same-origin gateway request is promoted.
         if request.method == "POST" and (request.url.path in {"/api/group-tasks", "/api/group-approvals"} or re.fullmatch(
-                r"/api/(?:group-tasks/[0-9a-f-]{36}/cancel|group-approvals/[0-9a-f-]{36}/decision)", request.url.path)):
+                r"/api/(?:group-tasks/[0-9a-f-]{36}/cancel|group-approvals/[0-9a-f-]{36}/decision|groups/[0-9a-f-]{36}/messages)", request.url.path)):
             headers["origin"] = "http://localhost:5173"
         headers["X-ModelDesk-Remote"] = "phone"
         query = request.url.query

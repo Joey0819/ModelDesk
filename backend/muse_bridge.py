@@ -30,6 +30,28 @@ STATES = ACTIVE | {"complete", "error", "uncertain", "interrupted", "stopped_mon
 VERIFICATION = "回复来源为 Muse 原生窗口；结束标记仅标识回复边界，不证明回复事实或外部操作已验证。"
 HARNESS_VERIFICATION = "回复由 ModelDesk 内置 Muse Harness 引擎生成（本机窗口未就绪时自动接管）；可直接引用到群聊继续讨论。"
 UNVERIFIED_GENERATION = "历史 ModelDesk 本地生成内容；没有 Muse 原生送达或回复证据，不能作为 Muse 已完成交付。"
+# Only fixed helper codes are surfaced. Native diagnostics must never include
+# clipboard contents, another conversation, or arbitrary helper output.
+NATIVE_FAILURES = {
+    "accessibility_permission_required": "尚未授予原生桥接的辅助功能权限。",
+    "muse_not_running": "Muse 应用尚未运行。",
+    "window_focus_lost": "无法确认 Muse 主窗口焦点，请关闭弹窗并保持主窗口可用。",
+    "muse_busy_or_waiting_user": "Muse 正在生成内容或等待权限确认。",
+    "new_chat_unavailable": "未找到可操作的新建会话按钮。",
+    "new_chat_not_confirmed": "未能确认新建的空白会话和输入框。",
+    "composer_has_draft": "输入框已有草稿，为避免覆盖而停止。",
+    "draft_not_verified": "未能核对输入框中的完整任务，未确认发送。",
+    "send_outcome_unknown": "已尝试发送但没有取得匹配回执，请先在 Muse 核对。",
+    "thread_changed": "Muse 当前会话已变化，无法继续核对原任务。",
+    "request_not_visible": "当前会话中未找到本任务的请求标记。",
+}
+
+
+def native_failure(result):
+    code = result.get("error") if isinstance(result, dict) else None
+    if not isinstance(code, str) or code not in NATIVE_FAILURES:
+        return "", {}
+    return " " + NATIVE_FAILURES[code], {"native_error_code": code}
 
 
 class MuseTaskRequest(BaseModel):
@@ -258,7 +280,8 @@ class MuseManager:
         self.validate_member(task)
         return result
 
-    async def create(self, request):
+    async def create(self, request, *, parent_job_id=None):
+        parent_link = {"parent_job_id": checked_id(parent_job_id)} if parent_job_id is not None else {}
         body = request.model_dump(mode="json")
         if body["project_id"]:
             from .projects import store as projects
@@ -267,7 +290,7 @@ class MuseManager:
         if sum(task.get("monitoring", False) for task in self.records.values()) >= 8:
             raise HTTPException(429, "Muse 最多排队八个任务，请等待当前任务完成")
         identifier, timestamp = str(uuid.uuid4()), now()
-        task = {**body, "schema_version": 1, "id": identifier, "request_id": identifier, "status": "queued", "thread_url": None,
+        task = {**body, **parent_link, "schema_version": 1, "id": identifier, "request_id": identifier, "status": "queued", "thread_url": None,
                 "response": "", "messages": [], "sent": False, "uncertain": False, "remote_state": "not_sent", "error": None,
                 "created_at": timestamp, "updated_at": timestamp, "submitted_at": None, "finished_at": None, "events": [],
                 "monitoring": True, "verification": VERIFICATION, "completion_evidence": None,
@@ -291,8 +314,10 @@ class MuseManager:
                         probe = {"ok": False, "installed": False, "permission": False}
                     if (not probe.get("ok") or not probe.get("installed") or probe.get("permission") is not True
                             or probe.get("composer_ready") is False):
-                        task.update(status="error", error="Muse 原生窗口尚未就绪。请打开 Muse、授权辅助功能并确认输入窗口可用。")
-                        self.save(task, "unavailable_before_send")
+                        detail, diagnostic = native_failure(probe)
+                        task.update(status="error", error="Muse 原生窗口尚未就绪。请打开 Muse、授权辅助功能并确认输入窗口可用。" + detail,
+                                    **diagnostic)
+                        self.save(task, "unavailable_before_send", **diagnostic)
                         return
                     # Persist uncertainty BEFORE dispatch: a crash cannot safely
                     # distinguish 'not delivered' from 'delivered but no receipt'.
@@ -305,10 +330,11 @@ class MuseManager:
                         task.update(sent=True, thread_url=receipt["thread_url"], submitted_at=now(), remote_state="submitted")
                     if not receipt.get("ok") or task["sent"] is not True:
                         confirmed_unsent = receipt.get("sent") is False and receipt.get("uncertain") is False
+                        detail, diagnostic = native_failure(receipt)
                         task.update(status="error" if confirmed_unsent else "uncertain", sent=False if confirmed_unsent else task["sent"],
                                     uncertain=not confirmed_unsent, remote_state="not_sent" if confirmed_unsent else "unknown",
-                                    error="未确认任务已送达，请在 Muse 核对后操作；不会自动重发。")
-                        self.save(task, "dispatch_unconfirmed")
+                                    error="未确认任务已送达，请在 Muse 核对后操作；不会自动重发。" + detail, **diagnostic)
+                        self.save(task, "dispatch_unconfirmed", **diagnostic)
                         return
                     task.update(status="running", uncertain=False)
                     self.save(task, "sent", thread_url=task["thread_url"])
@@ -344,7 +370,9 @@ class MuseManager:
             messages = safe_messages(result.get("messages"))
             replies = [item["text"] for item in messages if item["role"] == "assistant"]
             closing = marker(task["request_id"])
-            completed = [text for text in replies if re.search(r"(?:^|\n)\s*" + re.escape(closing) + r"\s*$", text)]
+            # Accessibility text can collapse Markdown newlines into spaces.
+            # Still require this task's exact, whitespace-delimited suffix.
+            completed = [text for text in replies if re.search(r"(?:^|\s)" + re.escape(closing) + r"\s*$", text)]
             busy, waiting = result.get("busy"), result.get("waiting_user")
             if type(busy) is not bool or type(waiting) is not bool:
                 raise RuntimeError("Muse progress could not be determined")

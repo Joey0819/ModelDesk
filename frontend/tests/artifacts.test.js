@@ -4,6 +4,33 @@ import { artifactMarkdown, copyText, deriveArtifacts } from '../src/artifacts.js
 
 const job = (mode, result, extra = {}) => ({ id: 'job', mode, status: 'complete', models: ['gpt', 'gemini'], result, events: [], ...extra });
 
+test('automatic group delivery presents the actual complete body instead of the last participant utterance', () => {
+  const result = {
+    messages: [{ member_id: 'reviewer', model: 'gemini', content: 'I approve the writer draft.' }],
+    delivery: { status: 'complete', title: '可发布的文章', content: '# 实际完整正文\n\n第一节与第二节的完整内容。', model: 'gpt', steps: [] },
+  };
+  const artifacts = deriveArtifacts(job('group', result, { group_delivery_mode: 'auto' }));
+  assert.equal(artifacts.length, 1);
+  assert.equal(artifacts[0].id, 'group:delivery');
+  assert.equal(artifacts[0].kind, 'deliverable');
+  assert.equal(artifacts[0].status, 'complete');
+  assert.equal(artifacts[0].content, result.delivery.content);
+  assert.doesNotMatch(artifactMarkdown(artifacts[0]), /I approve|最后发言/);
+  assert.equal(deriveArtifacts(job('group', result, { status: 'running' }))[0].status, 'live');
+});
+
+test('automatic partial and blocked deliveries preserve limitations and never promote discussion as a result', () => {
+  const messages = [{ model: 'gpt', content: 'Use Muse to generate the missing images.' }];
+  for (const delivery of [undefined, { status: 'working', content: '' }, { status: 'blocked', limitations: ['Muse 无法读取实际回复'] }]) {
+    assert.deepEqual(deriveArtifacts(job('group', { messages, delivery }, { group_delivery_mode: 'auto' })), []);
+  }
+  const partial = deriveArtifacts(job('group', { messages, delivery: { status: 'partial', title: '文章初稿', content: '实际收到的正文', limitations: ['配图未生成'] } }, { group_delivery_mode: 'auto' }));
+  assert.equal(partial[0].status, 'partial');
+  assert.match(partial[0].note, /配图未生成/);
+  assert.match(artifactMarkdown(partial[0]), /整体任务未完成/);
+  assert.equal(deriveArtifacts(job('group', { messages }))[0].kind, 'discussion');
+});
+
 test('independent model responses retain attribution, partial errors and live content', () => {
   const result = { responses: [{ model: 'gpt', text: '完整回答' }, { model: 'gemini', text: '已收到的文字', error: '请求中断' }] };
   const artifacts = deriveArtifacts(job('chat', result));

@@ -95,6 +95,20 @@ class MuseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(final["status"], "complete")
         self.assertEqual([call.args[0] for call in driver.await_args_list].count("submit"), 1)
 
+    async def test_rendered_inline_marker_accepts_only_exact_whitespace_suffix(self):
+        for prefix, suffix, success in [("实际回复 ", "", True), ("实际回复\n", " ", True),
+                                         ("实际回复x", "", False), ("实际回复 ", " trailing", False)]:
+            async def inline_driver(command, payload=None):
+                if command != "observe":
+                    return await self.driver()(command, payload)
+                return {"ok": True, "thread_url": payload["thread_url"], "request_id": payload["request_id"],
+                        "messages": [{"role": "assistant", "text": prefix + marker(payload["request_id"]) + suffix}],
+                        "busy": False, "waiting_user": False}
+            with patch.object(self.manager, "helper_call", side_effect=inline_driver):
+                task = await self.manager.create(self.request())
+                result = await self.settle(task)
+            self.assertEqual(result["status"] == "complete", success)
+
     async def test_one_native_account_serializes_whole_tasks(self):
         started, release = asyncio.Event(), asyncio.Event()
         calls = []
@@ -242,6 +256,41 @@ class MuseTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(result["thread_url"])
         self.assertIsNone(result["completion_evidence"])
         self.assertFalse(result["response"])
+
+    async def test_known_native_send_failures_preserve_safe_diagnostics_without_resending(self):
+        for code, sent, uncertain in [("new_chat_not_confirmed", False, False),
+                                      ("send_outcome_unknown", None, True)]:
+            original = self.driver()
+
+            async def failed_submit(command, payload=None):
+                if command == "submit":
+                    return {"ok": False, "sent": sent, "uncertain": uncertain, "error": code,
+                            "request_id": payload["request_id"], "private_detail": "unrelated draft text"}
+                return await original(command, payload)
+
+            with patch.object(self.manager, "helper_call", side_effect=failed_submit) as helper:
+                result = await self.settle(await self.manager.create(self.request()))
+            self.assertEqual(result["native_error_code"], code)
+            self.assertIn(muse.NATIVE_FAILURES[code], result["error"])
+            self.assertEqual(result["events"][-1]["native_error_code"], code)
+            self.assertEqual(result["status"], "uncertain" if uncertain else "error")
+            self.assertEqual(result["sent"], sent)
+            self.assertEqual([call.args[0] for call in helper.await_args_list], ["probe", "submit"])
+            self.assertNotIn("unrelated draft text", json.dumps(result))
+
+    async def test_unknown_native_error_is_not_exposed_and_known_probe_error_is_helpful(self):
+        async def failed_probe(command, payload=None):
+            self.assertEqual(command, "probe")
+            return {"ok": False, "installed": True, "permission": False,
+                    "error": "accessibility_permission_required"}
+
+        with patch.object(self.manager, "helper_call", side_effect=failed_probe):
+            result = await self.settle(await self.manager.create(self.request()))
+        self.assertEqual(result["native_error_code"], "accessibility_permission_required")
+        self.assertIn(muse.NATIVE_FAILURES["accessibility_permission_required"], result["error"])
+        self.assertFalse(result["sent"])
+        self.assertEqual(muse.native_failure({"error": "private raw clipboard text"}), ("", {}))
+        self.assertEqual(muse.native_failure({"error": {"nested": "private raw clipboard text"}}), ("", {}))
 
     async def test_native_account_without_composer_never_submits(self):
         async def no_composer(command, payload=None):

@@ -41,6 +41,7 @@ export default function ArtifactPanel({ job, onClose }) {
   const [source, setSource] = useState(false);
   const dialog = useRef(null);
   const artifacts = deriveArtifacts(job);
+  const delivery = job?.result?.delivery;
   const downloadLabel = job?.mode === 'group_agent' ? '下载任务记录 Markdown' : '下载当前成果 Markdown';
   const selected = (selection?.jobId === job?.id && artifacts.find((artifact) => artifact.id === selection.id)) || artifacts[0];
   const choose = (id) => { setSelection({ jobId: job.id, id }); setSource(false); };
@@ -52,6 +53,6 @@ export default function ArtifactPanel({ job, onClose }) {
       <div className="artifact-preview-scroll"><div className="artifact-document-heading"><h2>{selected.title}</h2><p>{selected.source}{selected.model && ` · ${selected.model}`}</p></div>{selected.status === 'partial' && <p className="artifact-partial-note">这是已收到的部分内容，整体任务尚未完整完成。</p>}{selected.note && <p className="artifact-content-note">{selected.note}</p>}<ArtifactPreview artifact={selected} source={source} /></div>
       <footer className="artifact-panel-footer"><span>{selected.status === 'live' ? '内容随模型输出更新' : '来自当前任务的实际输出'}</span><a href={downloadUrl(job, selected)} download={downloadName(job, selected)}>{job?.mode === 'group_agent' ? '下载任务记录' : '下载 Markdown'}</a></footer>
       <dialog className="artifact-preview-dialog" ref={dialog}><header><div><strong>{selected.title}</strong><span>{selected.source} · {statusLabel(selected)}</span></div><div><CopyTextButton text={selected.content} label="复制内容" /><a className="artifact-icon-button" href={downloadUrl(job, selected)} download={downloadName(job, selected)} aria-label={downloadLabel}><Icon name="export" size={17} /></a><button type="button" className="artifact-icon-button" aria-label="关闭放大预览" onClick={() => dialog.current?.close()}><Icon name="close" size={18} /></button></div></header><div className="artifact-dialog-content">{selected.status === 'partial' && <p className="artifact-partial-note">部分输出，任务尚未完整完成。</p>}{selected.note && <p className="artifact-content-note">{selected.note}</p>}<ArtifactPreview artifact={selected} source={source} /></div></dialog>
-    </> : <div className="artifact-empty"><Icon name="file" size={29} /><strong>{job ? ['error', 'failed', 'cancelled', 'interrupted'].includes(job.status) ? '本次没有可预览的成果' : '等待成果生成' : '成果会显示在这里'}</strong><p>{job ? '实际回答、交付内容或保留下来的证据生成后，会自动出现在此处。' : '选择一条记录或发起任务，查看本次输出并复制、下载。'}</p></div>}
+    </> : <div className="artifact-empty"><Icon name="file" size={29} /><strong>{delivery?.status === 'blocked' || delivery?.status === 'partial' ? '本次未形成完整成果' : job ? ['error', 'failed', 'cancelled', 'interrupted'].includes(job.status) ? '本次没有可预览的成果' : '等待成果生成' : '成果会显示在这里'}</strong><p>{delivery ? '模型与 Agent 的执行进度显示在群聊中。完整交付正文生成后会在此呈现，讨论发言单独保留在时间线。' : job ? '实际回答、交付内容或保留下来的证据生成后，会自动出现在此处。' : '选择一条记录或发起任务，查看本次输出并复制、下载。'}</p>{Array.isArray(delivery?.limitations) && delivery.limitations.filter((item) => typeof item === 'string').map((limit, index) => <p key={index}>{limit}</p>)}</div>}
   </aside>;
 }

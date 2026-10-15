@@ -25,6 +25,7 @@ import {
   groupMessages,
   groupRecipients,
   groupTimeline,
+  groupDeliveryMode,
 } from '../src/group-state.js';
 import { applyEvent } from '../src/workbench-state.js';
 
@@ -43,6 +44,8 @@ test('group rooms and drafts remain isolated by project and room', () => {
   assert.equal(readGroupDraft(storage, 'project-a', 'room-a').context.project_id, 'project-a');
   assert.deepEqual(readGroupDraft(storage, 'project-a', 'room-a').recipientIds, ['reviewer']);
   assert.equal(readGroupDraft({ getItem: () => '{invalid' }, 'p', 'r').contextTurns, 6);
+  assert.equal(readGroupDraft(storage, 'project-a', 'room-a').deliveryMode, 'auto');
+  assert.equal(readGroupDraft({ getItem: () => JSON.stringify({ deliveryMode: 'discussion' }) }, 'p', 'r').deliveryMode, 'discussion');
   assert.deepEqual(scopedRooms([room, { id: 'other', project_id: 'project-b' }, { id: 'standalone' }], 'project-a'), [room]);
 });
 
@@ -59,6 +62,9 @@ test('group routing uses explicit member IDs and never text or model-generated m
   assert.equal(body.prompt, '@Writer please answer'); assert.deepEqual(body.recipient_member_ids, ['reviewer']);
   assert.deepEqual(body.attachment_ids, ['image']); assert.deepEqual(body.tools, ['math']); assert.equal(body.context_turns, 4);
   assert.equal(body.rounds, 1);
+  assert.equal(body.delivery_mode, 'auto');
+  assert.equal(groupMessageRequest({ prompt: 'Discuss', recipientIds: [], context: {}, deliveryMode: 'discussion' }).delivery_mode, 'discussion');
+  assert.equal(groupMessageRequest({ prompt: 'Work', recipientIds: [], context: {}, deliveryMode: 'unknown' }).delivery_mode, 'auto');
   assert.equal(groupMessageRequest({ prompt: 'Two rounds', recipientIds: [], context: {}, rounds: 2 }).rounds, 2);
   for (const key of ['project_id', 'model', 'roles', 'secret']) assert.equal(key in body, false);
 });
@@ -103,10 +109,44 @@ test('group harness synthesizes completed member deliverables for Muse and Agent
 });
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const compiled = buildSync({ stdin: { contents: 'export {GroupTurn, GroupMuseTurn, GroupAgentTaskTurn} from "./src/components/GroupWorkspace.jsx"; export {default as WorkspaceNavigation} from "./src/components/WorkspaceNavigation.jsx";', resolveDir: root }, bundle: true, platform: 'node', format: 'cjs', jsx: 'automatic', write: false, external: ['react', 'react/jsx-runtime'], define: { 'import.meta.env': '{}' }, loader: { '.css': 'empty' } });
+const compiled = buildSync({ stdin: { contents: 'export {GroupTurn, GroupMuseTurn, GroupAgentTaskTurn, GroupDeliveryProgress, GroupDeliveryModeSelector} from "./src/components/GroupWorkspace.jsx"; export {default as WorkspaceNavigation} from "./src/components/WorkspaceNavigation.jsx";', resolveDir: root }, bundle: true, platform: 'node', format: 'cjs', jsx: 'automatic', write: false, external: ['react', 'react/jsx-runtime'], define: { 'import.meta.env': '{}' }, loader: { '.css': 'empty' } });
 const filename = path.join(root, 'tests/group-virtual.cjs');
 const module = new Module(filename); module.paths = Module._nodeModulePaths(path.dirname(filename)); module._compile(compiled.outputFiles[0].text, filename);
-const { GroupTurn, GroupMuseTurn, GroupAgentTaskTurn, WorkspaceNavigation } = module.exports;
+const { GroupTurn, GroupMuseTurn, GroupAgentTaskTurn, GroupDeliveryProgress, GroupDeliveryModeSelector, WorkspaceNavigation } = module.exports;
+
+test('automatic delivery timeline distinguishes execution progress, full results, and blocked steps', () => {
+  const delivery = { status: 'partial', title: '实际文章初稿', content: '完整收到的文章正文', steps: [
+    { id: 'writing', member_id: 'writer', member_name: 'Writer', status: 'complete', instruction: '完成文章正文' },
+    { id: 'images', member_id: 'muse', member_name: 'Muse', status: 'error', instruction: '生成配图', error: '未收到实际回复' },
+  ], limitations: ['配图尚未生成'] };
+  const html = renderToStaticMarkup(React.createElement(GroupTurn, { job: { ...job, group_delivery_mode: 'auto', result: { ...job.result, delivery } }, room, onOpenArtifacts() {}, onSendToMuse() {}, onHandOffToAgent() {} }));
+  assert.match(html, /已保留部分成果/);
+  assert.match(html, /Writer/); assert.match(html, /已完成/); assert.match(html, /Muse/); assert.match(html, /执行失败/);
+  assert.match(html, /未收到实际回复/); assert.match(html, /配图尚未生成/); assert.match(html, /查看部分成果/);
+  assert.match(html, /<details class="group-delivery-discussion"><summary>查看讨论与规划记录/);
+  assert.doesNotMatch(html, /准备 Muse 任务|交由代码 Agent/);
+  const blocked = renderToStaticMarkup(React.createElement(GroupDeliveryProgress, { job: { ...job, result: { delivery: { status: 'blocked' } } }, onOpenArtifacts() {} }));
+  assert.match(blocked, /尚未生成完整成果/); assert.doesNotMatch(blocked, /查看完整成果/);
+  const mode = renderToStaticMarkup(React.createElement(GroupDeliveryModeSelector, { value: 'auto', onChange() {} }));
+  assert.match(mode, /aria-pressed="true" class="selected">自动完成/); assert.match(mode, /仅讨论/);
+});
+
+test('automatic delivery replay and context retain real final content without treating unfinished plans as output', () => {
+  assert.equal(groupDeliveryMode(job), 'discussion');
+  const active = { ...job, status: 'running', group_delivery_mode: 'auto', result: { messages: [{ model: 'gpt', content: 'A plan that is not delivered' }] }, events: [] };
+  const progress = { job_id: job.id, seq: 9, type: 'delivery', delivery: { status: 'working', title: 'Article', steps: [{ id: 'a', status: 'running' }] } };
+  const streamed = applyEvent(active, progress);
+  assert.equal(streamed.result.delivery.status, 'working');
+  assert.equal(streamed.result.messages.length, 1);
+  assert.equal(applyEvent(streamed, progress).events.length, 1);
+  const completed = { ...streamed, status: 'complete', result: { ...streamed.result, delivery: { status: 'complete', content: 'Actual final article body' } } };
+  assert.equal(extractGroupDeliverable(active, room), '');
+  assert.equal(extractGroupDeliverable({ ...completed, result: { ...completed.result, delivery: { status: 'partial', content: 'Incomplete' } } }, room), '');
+  assert.equal(extractGroupDeliverable(completed, room), 'Actual final article body');
+  const runtimePrompt = buildGroupRuntimePrompt('Review the completed article', [completed], room);
+  assert.match(runtimePrompt, /Actual final article body/); assert.doesNotMatch(runtimePrompt, /A plan that is not delivered/);
+  assert.equal(buildGroupRuntimePrompt('Review', [{ ...active, status: 'complete' }], room), 'Review');
+});
 
 test('actual continuous timeline exposes attributed full messages and useful actions including Muse and Agent handoff', () => {
   const html = renderToStaticMarkup(React.createElement(GroupTurn, { job, room, onOpenArtifacts() {}, onSendToMuse() {}, onHandOffToAgent() {} }));
@@ -116,6 +156,22 @@ test('actual continuous timeline exposes attributed full messages and useful act
   assert.equal(html.includes('展开完整发言'), false);
   const agentHtml = renderToStaticMarkup(React.createElement(GroupAgentTaskTurn, { task: { id: 't1', member: { name: 'Engineer' }, engine: 'codex', status: 'complete', prompt: 'Implement feature', output: 'All tests passed' }, onOpenTaskMode() {}, onUseAgentOutput() {} }));
   assert.match(agentHtml, /Engineer/); assert.match(agentHtml, /All tests passed/); assert.match(agentHtml, /引用结果继续讨论/);
+});
+
+test('automatically assigned child tasks keep generated prompts collapsed and actual outputs visible', () => {
+  const prompt = 'Task instructions\n{"quoted_context":"<script>never execute</script>"}';
+  const autoTask = { id: 'child', parent_job_id: 'parent', project_id: 'project-a', room_id: 'room-a', member: { name: 'Engineer' }, engine: 'codex', status: 'complete', prompt, output: 'Actual code result', response: 'Actual Muse reply', sent: true, completion_evidence: 'framed_assistant_reply' };
+  const agent = renderToStaticMarkup(React.createElement(GroupAgentTaskTurn, { task: autoTask, onOpenTaskMode() {} }));
+  const muse = renderToStaticMarkup(React.createElement(GroupMuseTurn, { task: autoTask, projectId: 'project-a', roomId: 'room-a', onUseReply() {}, onOpenMuse() {} }));
+  for (const html of [agent, muse]) {
+    assert.match(html, /<strong>自动分配<\/strong>/);
+    assert.match(html, /<details class="group-task-prompt-details"><summary>查看任务说明与引用上下文<\/summary><pre>/);
+    assert.match(html, /&quot;quoted_context&quot;/); assert.match(html, /&lt;script&gt;never execute&lt;\/script&gt;/);
+    assert.doesNotMatch(html, /<details[^>]*open|<strong>你<\/strong>/);
+  }
+  assert.match(agent, /Actual code result/); assert.match(muse, /Actual Muse reply/);
+  const manual = renderToStaticMarkup(React.createElement(GroupAgentTaskTurn, { task: { ...autoTask, parent_job_id: null }, onOpenTaskMode() {} }));
+  assert.match(manual, /<strong>你<\/strong>/); assert.doesNotMatch(manual, /group-task-prompt-details/);
 });
 
 test('native Muse transcript distinguishes complete observed replies from partial output', () => {

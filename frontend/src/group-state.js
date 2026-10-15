@@ -5,6 +5,15 @@ import { canUseMuseReply } from './muse-state.js';
 export const groupScopeKey = (projectId) => `modeldesk.groups.v1:${projectId || 'unassigned'}`;
 export const groupDraftKey = (projectId, roomId) => `${groupScopeKey(projectId)}:${roomId}:draft`;
 export const groupActive = (job) => ['running', 'queued'].includes(job?.status);
+export const groupDeliveryMode = (job) => job?.group_delivery_mode === 'auto' || job?.result?.delivery ? 'auto' : 'discussion';
+
+export const GROUP_DELIVERY_STATUS = {
+  planning: '正在安排任务', working: '成员正在执行', assembling: '正在整理完整成果',
+  complete: '完整成果已生成', partial: '已保留部分成果', blocked: '任务未完成',
+};
+export const GROUP_DELIVERY_STEP_STATUS = {
+  pending: '等待执行', running: '执行中', complete: '已完成', error: '执行失败', blocked: '无法执行', cancelled: '已停止',
+};
 
 export const GROUP_HARNESS_MODES = [
   { id: 'relay', label: '单轮接力', rounds: 1, description: '所选成员按顺序依次发言' },
@@ -23,6 +32,7 @@ export function readGroupDraft(storage, projectId, roomId) {
     prompt: typeof value.prompt === 'string' ? value.prompt : '',
     recipientIds: Array.isArray(value.recipientIds) ? value.recipientIds.filter((id) => typeof id === 'string') : [],
     includeMuse: Boolean(value.includeMuse),
+    deliveryMode: value.deliveryMode === 'discussion' ? 'discussion' : 'auto',
     harnessMode: GROUP_HARNESS_MODES.some((item) => item.id === value.harnessMode) ? value.harnessMode : 'relay',
     context: { ...EMPTY_CONTEXT, ...(value.context || {}), project_id: projectId || null },
     contextTurns: [1, 4, 6, 8, 12].includes(value.contextTurns) ? value.contextTurns : 6,
@@ -40,10 +50,10 @@ export function mergeRoomJobs(current, incoming, projectId, roomId) {
   }
   return [...values.values()].sort((a, b) => String(a.created_at || '').localeCompare(String(b.created_at || '')) || a.id.localeCompare(b.id));
 }
-export function groupMessageRequest({ prompt, recipientIds, context, contextTurns = 6, rounds = 1 }) {
+export function groupMessageRequest({ prompt, recipientIds, context, contextTurns = 6, rounds = 1, deliveryMode = 'auto' }) {
   const allowed = ['snapshot_id', 'attachment_ids', 'include_project_assets', 'knowledge_ids', 'memory_ids', 'memory_scope', 'remember', 'tools', 'mcp_server_ids', 'muse_task_id'];
   const boundedRounds = [1, 2, 3, 4, 5, 6].includes(Number(rounds)) ? Number(rounds) : 1;
-  return { ...Object.fromEntries(allowed.filter((key) => context[key] !== undefined).map((key) => [key, structuredClone(context[key])])), prompt: prompt.trim(), recipient_member_ids: [...recipientIds], context_turns: contextTurns, rounds: boundedRounds };
+  return { ...Object.fromEntries(allowed.filter((key) => context[key] !== undefined).map((key) => [key, structuredClone(context[key])])), prompt: prompt.trim(), recipient_member_ids: [...recipientIds], context_turns: contextTurns, rounds: boundedRounds, delivery_mode: deliveryMode === 'discussion' ? 'discussion' : 'auto' };
 }
 export function groupMessages(job, room) {
   const members = job.group_team_snapshot?.members || room.team_snapshot?.members || [];
@@ -68,6 +78,7 @@ export function groupTimeline(jobs, museTasks, projectId, roomId, agentTasks = [
 
 export function extractGroupDeliverable(job, room) {
   if (job?.status !== 'complete' || job.result?.partial_failure) return '';
+  if (groupDeliveryMode(job) === 'auto') return job.result?.delivery?.status === 'complete' ? String(job.result.delivery.content || '').trim().slice(0, 8000) : '';
   const messages = groupMessages(job, room || { team_snapshot: { members: [] } }).filter((item) => item.content?.trim() && !item.error && !item.incomplete && item.phase !== 'plan');
   if (!messages.length) return '';
   const summary = messages.map((item) => `【${item.member_name || item.model}】：${item.content.trim()}`).join('\n\n');
@@ -108,7 +119,13 @@ export function buildGroupRuntimePrompt(prompt, jobs, room, tasks = [], museTask
   const clean = String(prompt || '').trim();
   const recent = groupTimeline(jobs, museTasks, room.project_id, room.id, tasks).filter(({ value }) => value.status === 'complete').slice(-Math.max(1, Math.min(12, contextTurns)));
   const quoted = recent.flatMap(({ type, value }) => {
-    if (type === 'discussion') return groupMessages(value, room).filter((message) => message.content?.trim() && !message.error && !message.incomplete && message.phase !== 'plan').map((message) => `【${message.member_name || message.model}】${message.content.slice(0, 1100)}`);
+    if (type === 'discussion') {
+      if (groupDeliveryMode(value) === 'auto') {
+        const delivery = extractGroupDeliverable(value, room);
+        return delivery ? [`【项目群实际交付结果】${delivery.slice(0, 1100)}`] : [];
+      }
+      return groupMessages(value, room).filter((message) => message.content?.trim() && !message.error && !message.incomplete && message.phase !== 'plan').map((message) => `【${message.member_name || message.model}】${message.content.slice(0, 1100)}`);
+    }
     if (type === 'agent_task' && value.output) return [`【${value.member?.name || value.member_id || 'Agent'} 执行结果】${value.output.slice(0, 1100)}`];
     if (type === 'muse' && canUseMuseReply(value, room.project_id, room.id)) return [`【${value.member?.name || 'Muse'} 实际回复】${value.response.slice(0, 1100)}`];
     return [];

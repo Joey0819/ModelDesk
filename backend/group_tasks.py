@@ -36,6 +36,9 @@ ACTIVE = {"queued", "running"}
 MAX_BYTES = 30_000_000
 MAX_PATCH = 1_000_000
 MAX_OUTPUT = 100_000
+MAX_COMMANDS = 100
+MAX_COMMAND_TEXT = 2000
+MAX_COMMAND_OUTPUT = 6000
 MAX_FILES = 3000
 GENERATED_DIRS = {"node_modules", "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", ".venv", "venv", "dist", "build", "target", "coverage"}
 BLOCKED_PARTS = {".git", ".codex", ".claude", ".mcp.json", ".gitmodules"}
@@ -425,7 +428,8 @@ class TaskManager:
         encoded = json.dumps(value, ensure_ascii=False)
         return encoded[:11000], hashlib.sha256(encoded.encode()).hexdigest()
 
-    async def create(self, request):
+    async def create(self, request, *, parent_job_id=None):
+        parent_link = {"parent_job_id": checked_id(parent_job_id)} if parent_job_id is not None else {}
         body = request.model_dump(mode="json")
         room = groups.store.get(body["room_id"], body["project_id"])
         member = next((member for member in room["team_snapshot"]["members"] if member["id"] == body["member_id"]), None)
@@ -459,8 +463,9 @@ class TaskManager:
             raise HTTPException(409, "所选成员模型当前不在网关可用模型中，请检查登录")
         if groups.store.get(body["room_id"], body["project_id"])["team_revision"] != room["team_revision"]:
             raise HTTPException(409, "群成员在派发期间发生变化，请确认新成员后重新派发")
-        item = {**body, "id": str(uuid.uuid4()), "schema_version": 1, "member": copy.deepcopy(member), "status": "queued", "created_at": now(),
+        item = {**body, **parent_link, "id": str(uuid.uuid4()), "schema_version": 1, "member": copy.deepcopy(member), "status": "queued", "created_at": now(),
                 "updated_at": now(), "finished_at": None, "events": [], "output": "", "error": None, "exit_code": None,
+                "commands": [], "command_count": 0,
                 "base_sha": head, "base_snapshot_sha256": None, "diff": "", "diff_sha256": None, "patch_sha256": None, "changed_files": [], "diff_stats": "",
                 "review_of_patch_sha256": source["diff_sha256"] if source else None, "isolation": capability["isolation"],
                 "verification": "CLI 执行结果；测试与审阅结论需查看过程证据", "engine_model": None, "omitted": []}
@@ -575,7 +580,18 @@ class TaskManager:
                 item["engine_error"] = True
             content = payload.get("text") or payload.get("command") or event.get("message") or kind
             if kind == "item.completed" and payload.get("type") == "command_execution":
-                content = str(payload.get("command", "")) + "\nexit=" + str(payload.get("exit_code")) + "\n" + str(payload.get("aggregated_output", ""))[:1800]
+                command = str(payload.get("command", ""))
+                output = str(payload.get("aggregated_output", ""))
+                exit_code = payload.get("exit_code")
+                commands = item.setdefault("commands", [])
+                commands.append({"command": clean_output(command)[:MAX_COMMAND_TEXT],
+                                 "exit_code": exit_code if type(exit_code) is int else None,
+                                 "aggregated_output": clean_output(output)[:MAX_COMMAND_OUTPUT],
+                                 "output_sha256": hashlib.sha256(output.encode()).hexdigest(),
+                                 "truncated": len(command) > MAX_COMMAND_TEXT or len(output) > MAX_COMMAND_OUTPUT})
+                item["command_count"] = item.get("command_count", len(commands) - 1) + 1
+                item["commands"] = commands[-MAX_COMMANDS:]
+                content = command + "\nexit=" + str(exit_code) + "\n" + output[:1800]
             self.save(item, kind, str(content)[:3000])
         else:
             if kind == "system" and event.get("subtype") == "init":

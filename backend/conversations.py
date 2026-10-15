@@ -44,6 +44,15 @@ def deliverables(job):
         if isinstance(result.get("metadata"), dict) and result["metadata"].get("partial_failure"):
             caveats.append("上轮部分成员或评审失败；引用的是实际主席结论，不代表所有模型均成功。")
     elif mode in {"camel", "group"}:
+        delivery = result.get("delivery") if mode == "group" else None
+        if delivery:
+            if delivery.get("status") == "complete" and not delivery.get("incomplete"):
+                add("group_delivery", delivery.get("content"), delivery.get("model"), "完整交付结果")
+            else:
+                caveats.append("上轮自动交付尚未完整完成；其正文不作为已完成成果复用。")
+            # Discussions stay in the audit log; subsequent turns primarily
+            # remember the actual final work rather than the roles' proposals.
+            return items, caveats
         for message in records("messages"):
             if not isinstance(message, dict) or message.get("error") or message.get("incomplete") or message.get("phase") == "plan":
                 continue

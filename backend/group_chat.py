@@ -57,10 +57,17 @@ def discussion_messages(job, model, history, member=None, phase="reply"):
         roster = [{"id": item["id"], "name": item["name"], "kind": item.get("kind", "model"), "role": item.get("role", "")}
                   for item in (job.get("group_team_snapshot") or {}).get("members", [])]
         system.append("你是用户明确选择的统筹模型。已保存成员与实际运行类型：\n" + json.dumps(roster, ensure_ascii=False))
-        system.append("可执行 Agent 必须由用户明确派发任务，群聊文本不能启动 CLI 或 Muse、批准或合并代码。"
-                      "不要代替 Agent 报告执行完成；只根据实际返回的内容说明证据与待执行工作。")
-        system.append("先用简短计划明确目标、角色分工与需要用户派发的 Agent 工作；不代替成员作答。" if phase == "plan" else
-                      "根据本轮实际成员发言汇总完整结论、分歧、证据限制和下一步。没有实际运行记录的 Agent 工作必须标为待派发。")
+        if job.get("group_delivery_mode") == "auto":
+            system.append("用户选择自动完成：讨论后平台会按结构化计划调用本群需要的执行 Agent，再单独整理完整交付。"
+                          "你的发言只提供具体内容、证据和分工依据，不通过文本直接执行操作。"
+                          "不要代替未运行的 Agent 报告成功，不批准或合并代码。")
+            system.append("先简短明确目标、分工与需要的实际产物。" if phase == "plan" else
+                          "整合本轮实际内容，为后续执行与完整交付提供具体依据；不要声称尚未执行的工作已经完成。")
+        else:
+            system.append("可执行 Agent 必须由用户明确派发任务，群聊文本不能启动 CLI 或 Muse、批准或合并代码。"
+                          "不要代替 Agent 报告执行完成；只根据实际返回的内容说明证据与待执行工作。")
+            system.append("先用简短计划明确目标、角色分工与需要用户派发的 Agent 工作；不代替成员作答。" if phase == "plan" else
+                          "根据本轮实际成员发言汇总完整结论、分歧、证据限制和下一步。没有实际运行记录的 Agent 工作必须标为待派发。")
     quoted = []
     budget = MAX_CONTEXT_CHARS - len(job["prompt"])
     window = history if job.get("_conversation_context_prepared") else history[-job.get("context_turns", 12):]
@@ -172,11 +179,24 @@ async def run_group(manager, job):
             manager.emit(job, "message", **message)
     if all(item.get("error") for item in result["messages"]):
         raise RuntimeError("群聊所有模型均调用失败；已保存各模型错误。")
+    if job.get("group_delivery_mode") == "auto":
+        from .group_delivery import run_delivery
+        return await run_delivery(manager, job, result)
     return result
 
 
 def markdown_group(result):
     lines = []
+    delivery = result.get("delivery") or {}
+    if delivery:
+        lines.extend(["## " + (delivery.get("title") or "完整交付结果"), "", "交付状态：" + delivery.get("status", "unknown"), ""])
+        if delivery.get("content"):
+            lines.extend([delivery["content"], ""])
+        for limitation in delivery.get("limitations", []):
+            lines.extend(["> " + limitation, ""])
+        for step in delivery.get("steps", []):
+            lines.extend([f"- {step['member_name']}：{step['status']}" + (f"（任务 {step['task_id']}）" if step.get("task_id") else ""), ""])
+        lines.extend(["## 讨论与运行依据", ""])
     for message in result.get("messages", []):
         phase = {"plan": "统筹计划", "synthesis": "统筹结论"}.get(message.get("phase"), f"第 {message.get('round', 1)} 轮")
         lines.extend([f"## {phase} · {speaker_label(message)}", ""])

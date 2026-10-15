@@ -183,7 +183,14 @@ def _context_material(job):
 def remember_result(job):
     if not job.get("remember"):
         return None
-    text = json.dumps(job.get("result"), ensure_ascii=False)[:12000]
+    result = job.get("result") or {}
+    delivery = result.get("delivery") if job.get("mode") == "group" else None
+    if delivery:
+        # Put the final work ahead of a potentially long discussion. Partial
+        # delivery is retained with its explicit status, never remembered as done.
+        text = json.dumps({key: delivery.get(key) for key in ("status", "title", "content", "limitations", "sources")}, ensure_ascii=False)[:12000]
+    else:
+        text = json.dumps(result, ensure_ascii=False)[:12000]
     return store.put("memories", {"name": job["prompt"][:100], "content": "任务：" + job["prompt"][:2000] + "\n结果：" + text,
                                   "scope": job.get("memory_scope") or "global", "project_id": job.get("project_id"), "tags": [job["mode"]]},
                      metadata={"job_id": job["id"], "models": job["models"], "source": "explicit_remember"})

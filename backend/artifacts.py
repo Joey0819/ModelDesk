@@ -31,6 +31,12 @@ def selected_artifact(job, identifier):
             for response in result.get("stage1", []):
                 add(f"council:response:{response.get('model')}", "独立回答", response.get("response"), partial=True, source="尚未形成主席结论的独立回答")
     elif mode in {"camel", "group"}:
+        delivery = result.get("delivery") or {}
+        if mode == "group" and delivery:
+            add("group:delivery", delivery.get("title") or "完整交付结果", delivery.get("content"),
+                partial=delivery.get("status") != "complete", source="项目群自动整理的实际交付")
+            if "group:delivery" in candidates:
+                candidates["group:delivery"]["note"] = "\n".join(delivery.get("limitations") or [])
         latest = {}
         messages = result.get("messages", [])
         def identity(message):
@@ -98,4 +104,5 @@ def artifact_markdown(job, identifier):
     if artifact["code"]:
         fence = "`" * max(3, max((len(match) for match in re.findall(r"`+", body)), default=0) + 1)
         body = f"{fence}\n{body}\n{fence}"
-    return f"# {artifact['title']}\n\n> {status}\n> 来源：{artifact['source']}\n> 任务记录：{job['id']}\n\n{body}\n"
+    note = artifact.get("note")
+    return f"# {artifact['title']}\n\n> {status}\n> 来源：{artifact['source']}\n> 任务记录：{job['id']}\n\n" + (note + "\n\n" if note else "") + f"{body}\n"

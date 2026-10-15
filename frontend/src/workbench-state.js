@@ -24,6 +24,13 @@ export function applyEvent(job, event) {
     const message = { model: event.model, round: event.round, content: event.content, ...Object.fromEntries(['member_id', 'member_name', 'role', 'phase'].filter((key) => event[key] !== undefined).map((key) => [key, event[key]])), ...(event.error !== undefined ? { error: event.error } : {}), ...(event.incomplete !== undefined ? { incomplete: event.incomplete } : {}) };
     next.result = { ...job.result, partial_failure: Boolean(job.result?.partial_failure || event.error || event.incomplete), messages: [...(job.result?.messages || []), message] };
   }
+  if (event.type === 'delivery') {
+    const delivery = event.delivery || event.data;
+    if (delivery && typeof delivery === 'object' && !Array.isArray(delivery)) {
+      next.group_delivery_mode = 'auto';
+      next.result = { ...job.result, delivery: { ...job.result?.delivery, ...delivery } };
+    }
+  }
   if (event.type === 'framework_message') {
     next.result = { ...job.result, partial: true, messages: [...(job.result?.messages || []), { role: event.role, model: event.model, round: event.round, content: event.content }] };
     if (['research', 'finalization', 'finalization_error'].includes(event.phase)) {

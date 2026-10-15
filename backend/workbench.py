@@ -210,6 +210,13 @@ class JobManager:
                 if job["status"] not in TERMINAL:
                     job["status"] = "interrupted"
                     job["error"] = "服务重启中断了此任务，请重新运行。"
+                    delivery = (job.get("result") or {}).get("delivery")
+                    if delivery and delivery.get("status") in {"planning", "working", "assembling"}:
+                        delivery["status"] = "partial"
+                        delivery.setdefault("limitations", []).append("服务重启中断交付；不会自动重新派发 Agent。")
+                        for step in delivery.get("steps", []):
+                            if step.get("status") in {"pending", "running"}:
+                                step["status"] = "cancelled"
                     self.emit(job, "error", message=job["error"])
             except (ValueError, KeyError, TypeError, OSError):
                 # A malformed local file must not prevent all other jobs loading.

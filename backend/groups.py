@@ -6,8 +6,9 @@ import json
 import threading
 import uuid
 from datetime import datetime
+from typing import Literal
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from . import workbench
@@ -52,6 +53,7 @@ class MessageRequest(BaseModel):
     tools: list[str] = Field(default_factory=list, max_length=11)
     mcp_server_ids: list[uuid.UUID] = Field(default_factory=list, max_length=20)
     system_prompt: str = Field(default="", max_length=4000)
+    delivery_mode: Literal["auto", "discussion"] = "discussion"
 
     @field_validator("prompt")
     @classmethod
@@ -304,7 +306,10 @@ async def list_messages(identifier: str, project_id: str | None = None, before: 
 
 
 @router.post("/{identifier}/messages", status_code=202)
-async def send_message(identifier: str, request: MessageRequest, project_id: str | None = None):
+async def send_message(identifier: str, request: MessageRequest, transport: Request, project_id: str | None = None):
+    if request.delivery_mode == "auto":
+        from .muse_bridge import local_mutation
+        local_mutation(transport)
     room = await asyncio.to_thread(store.get, identifier, project_id)
     muse_source = freeze_muse_source(room, request.muse_task_id)
     members = room["team_snapshot"]["members"]
@@ -326,7 +331,7 @@ async def send_message(identifier: str, request: MessageRequest, project_id: str
     missing = list(dict.fromkeys(model for model in requested_models if model not in catalog))
     if missing:
         raise HTTPException(422, "这些接收成员的模型尚未连接：" + "、".join(missing))
-    body = request.model_dump(mode="json", exclude={"recipient_member_ids", "muse_task_id"})
+    body = request.model_dump(mode="json", exclude={"recipient_member_ids", "muse_task_id", "delivery_mode"})
     try:
         job_request = workbench.JobRequest(**body, mode="group", project_id=room["project_id"], conversation_id=room["id"],
                                            models=room_models(room), roles=room_roles(room))
@@ -339,7 +344,9 @@ async def send_message(identifier: str, request: MessageRequest, project_id: str
     metadata = {"group_room_id": room["id"], "group_title": room["title"],
                 "group_team_snapshot": room["team_snapshot"], "group_recipient_member_ids": selected,
                 "group_broadcast": broadcast, "group_coordinator_model": room["team_snapshot"].get("coordinator_model"),
-                "group_agent_sources": freeze_agent_sources(room)}
+                "group_agent_sources": freeze_agent_sources(room), "group_delivery_mode": request.delivery_mode,
+                "group_runtime_allowed": request.delivery_mode == "auto",
+                "group_native_allowed": request.delivery_mode == "auto" and not transport.headers.get("x-modeldesk-remote")}
     if muse_source:
         metadata["group_muse_source"] = muse_source
     job = workbench.manager.create(job_request, metadata=metadata, group_authorization=_ROOM_WRITE)

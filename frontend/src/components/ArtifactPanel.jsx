@@ -3,13 +3,16 @@ import { workbenchApi } from '../api';
 import { groupTaskApi } from '../group-task-api';
 import { museApi } from '../muse-api';
 import { deriveArtifacts } from '../artifacts';
+import { API_BASE } from '../api-base';
+import { managedDeliveryMedia, mediaBundleUrl } from '../delivery-media';
 import { Icon, Markdown } from './WorkbenchResults';
 import { CopyTextButton } from './ConversationActions';
+import { DeliveryMediaProgress, MediaDelivery } from './MediaDelivery';
 import './ArtifactPanel.css';
 
 const statusLabel = (artifact) => artifact.status === 'live' ? '生成中' : artifact.status === 'partial' ? '部分输出' : artifact.kind === 'discussion' ? '已保存发言' : '已生成';
 
-function ArtifactPreview({ artifact, source }) {
+function ArtifactPreview({ artifact, source, job }) {
   return <>
     {!source && artifact.video_url && (
       <div className="artifact-video-container">
@@ -22,7 +25,7 @@ function ArtifactPreview({ artifact, source }) {
     )}
     {(source || ['code', 'text'].includes(artifact.format))
       ? <pre className="artifact-source-preview"><code>{artifact.content}</code></pre>
-      : <Markdown>{artifact.content}</Markdown>}
+      : artifact.id === 'group:delivery' ? <MediaDelivery job={job} content={artifact.content} /> : <Markdown>{artifact.content}</Markdown>}
   </>;
 }
 
@@ -44,15 +47,16 @@ export default function ArtifactPanel({ job, onClose }) {
   const delivery = job?.result?.delivery;
   const downloadLabel = job?.mode === 'group_agent' ? '下载任务记录 Markdown' : '下载当前成果 Markdown';
   const selected = (selection?.jobId === job?.id && artifacts.find((artifact) => artifact.id === selection.id)) || artifacts[0];
+  const bundleUrl = selected?.id === 'group:delivery' && managedDeliveryMedia(job, API_BASE).length ? mediaBundleUrl(job, API_BASE) : null;
   const choose = (id) => { setSelection({ jobId: job.id, id }); setSource(false); };
   return <aside className="artifact-panel" aria-label="当前任务成果">
     <header className="artifact-panel-header"><div><Icon name="file" size={18} /><strong>成果</strong>{artifacts.length > 0 && <span>{artifacts.length}</span>}</div>{onClose && <button className="artifact-icon-button" type="button" onClick={onClose} aria-label="收起成果面板" title="收起成果面板"><Icon name="close" size={17} /></button>}</header>
     {selected ? <>
       <div className="artifact-selection"><label><span>当前成果</span><select aria-label="选择预览成果" value={selected.id} onChange={(event) => choose(event.target.value)}>{artifacts.map((artifact) => <option key={artifact.id} value={artifact.id}>{artifact.title}{artifact.status === 'partial' ? ' · 部分输出' : ''}</option>)}</select></label><span className={`artifact-status artifact-status-${selected.status}`}>{statusLabel(selected)}</span></div>
       <div className="artifact-preview-toolbar"><div className="artifact-preview-tabs" aria-label="预览方式"><button className={!source ? 'selected' : ''} type="button" onClick={() => setSource(false)}>预览</button><button className={source ? 'selected' : ''} type="button" onClick={() => setSource(true)}>{selected.format === 'markdown' ? 'Markdown' : '文本'}</button></div><div className="artifact-toolbar-actions"><CopyTextButton text={selected.content} label="复制" /><a className="artifact-icon-button" title={downloadLabel} aria-label={downloadLabel} href={downloadUrl(job, selected)} download={downloadName(job, selected)}><Icon name="export" size={15} /></a><button className="artifact-icon-button" type="button" title="放大预览" aria-label="放大预览" onClick={() => dialog.current?.showModal()}><Icon name="expand" size={15} /></button></div></div>
-      <div className="artifact-preview-scroll"><div className="artifact-document-heading"><h2>{selected.title}</h2><p>{selected.source}{selected.model && ` · ${selected.model}`}</p></div>{selected.status === 'partial' && <p className="artifact-partial-note">这是已收到的部分内容，整体任务尚未完整完成。</p>}{selected.note && <p className="artifact-content-note">{selected.note}</p>}<ArtifactPreview artifact={selected} source={source} /></div>
-      <footer className="artifact-panel-footer"><span>{selected.status === 'live' ? '内容随模型输出更新' : '来自当前任务的实际输出'}</span><a href={downloadUrl(job, selected)} download={downloadName(job, selected)}>{job?.mode === 'group_agent' ? '下载任务记录' : '下载 Markdown'}</a></footer>
-      <dialog className="artifact-preview-dialog" ref={dialog}><header><div><strong>{selected.title}</strong><span>{selected.source} · {statusLabel(selected)}</span></div><div><CopyTextButton text={selected.content} label="复制内容" /><a className="artifact-icon-button" href={downloadUrl(job, selected)} download={downloadName(job, selected)} aria-label={downloadLabel}><Icon name="export" size={17} /></a><button type="button" className="artifact-icon-button" aria-label="关闭放大预览" onClick={() => dialog.current?.close()}><Icon name="close" size={18} /></button></div></header><div className="artifact-dialog-content">{selected.status === 'partial' && <p className="artifact-partial-note">部分输出，任务尚未完整完成。</p>}{selected.note && <p className="artifact-content-note">{selected.note}</p>}<ArtifactPreview artifact={selected} source={source} /></div></dialog>
-    </> : <div className="artifact-empty"><Icon name="file" size={29} /><strong>{delivery?.status === 'blocked' || delivery?.status === 'partial' ? '本次未形成完整成果' : job ? ['error', 'failed', 'cancelled', 'interrupted'].includes(job.status) ? '本次没有可预览的成果' : '等待成果生成' : '成果会显示在这里'}</strong><p>{delivery ? '模型与 Agent 的执行进度显示在群聊中。完整交付正文生成后会在此呈现，讨论发言单独保留在时间线。' : job ? '实际回答、交付内容或保留下来的证据生成后，会自动出现在此处。' : '选择一条记录或发起任务，查看本次输出并复制、下载。'}</p>{Array.isArray(delivery?.limitations) && delivery.limitations.filter((item) => typeof item === 'string').map((limit, index) => <p key={index}>{limit}</p>)}</div>}
+      <div className="artifact-preview-scroll"><div className="artifact-document-heading"><h2>{selected.title}</h2><p>{selected.source}{selected.model && ` · ${selected.model}`}</p></div>{selected.status === 'partial' && <p className="artifact-partial-note">这是已收到的部分内容，整体任务尚未完整完成。</p>}{selected.note && <p className="artifact-content-note">{selected.note}</p>}{selected.id === 'group:delivery' && <DeliveryMediaProgress job={job} />}<ArtifactPreview artifact={selected} source={source} job={job} /></div>
+      <footer className="artifact-panel-footer"><span>{selected.status === 'live' ? '内容随模型输出更新' : '来自当前任务的实际输出'}</span><div className="artifact-download-links">{bundleUrl && <a href={bundleUrl} download={`ModelDesk-${job.id.slice(0, 8)}.zip`}><Icon name="export" size={13} />下载图文成果包</a>}<a href={downloadUrl(job, selected)} download={downloadName(job, selected)}>{job?.mode === 'group_agent' ? '下载任务记录' : '下载 Markdown'}</a></div></footer>
+      <dialog className="artifact-preview-dialog" ref={dialog}><header><div><strong>{selected.title}</strong><span>{selected.source} · {statusLabel(selected)}</span></div><div>{bundleUrl && <a className="artifact-bundle-button" href={bundleUrl} download={`ModelDesk-${job.id.slice(0, 8)}.zip`}>下载图文成果包</a>}<CopyTextButton text={selected.content} label="复制内容" /><a className="artifact-icon-button" href={downloadUrl(job, selected)} download={downloadName(job, selected)} aria-label={downloadLabel}><Icon name="export" size={17} /></a><button type="button" className="artifact-icon-button" aria-label="关闭放大预览" onClick={() => dialog.current?.close()}><Icon name="close" size={18} /></button></div></header><div className="artifact-dialog-content">{selected.status === 'partial' && <p className="artifact-partial-note">部分输出，任务尚未完整完成。</p>}{selected.note && <p className="artifact-content-note">{selected.note}</p>}{selected.id === 'group:delivery' && <DeliveryMediaProgress job={job} />}<ArtifactPreview artifact={selected} source={source} job={job} /></div></dialog>
+    </> : <div className="artifact-empty"><Icon name="file" size={29} /><strong>{delivery?.status === 'blocked' || delivery?.status === 'partial' ? '本次未形成完整成果' : job ? ['error', 'failed', 'cancelled', 'interrupted'].includes(job.status) ? '本次没有可预览的成果' : '等待成果生成' : '成果会显示在这里'}</strong><p>{delivery ? '模型与 Agent 的执行进度显示在群聊中。完整交付正文生成后会在此呈现，讨论发言单独保留在时间线。' : job ? '实际回答、交付内容或保留下来的证据生成后，会自动出现在此处。' : '选择一条记录或发起任务，查看本次输出并复制、下载。'}</p>{delivery && <DeliveryMediaProgress job={job} />}{Array.isArray(delivery?.limitations) && delivery.limitations.filter((item) => typeof item === 'string').map((limit, index) => <p key={index}>{limit}</p>)}</div>}
   </aside>;
 }

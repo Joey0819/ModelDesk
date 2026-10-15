@@ -48,6 +48,11 @@ function isExportURL(value) {
   const rawPath = value.match(/^[a-z][a-z0-9+.-]*:\/\/[^/?#]+([^?#]*)/i)?.[1];
   if (rawPath !== url.pathname) return false;
   const query = Array.from(url.searchParams.entries());
+  if (/^\/api\/media\/jobs\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/(?:bundle|assets\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/content)$/i.test(url.pathname)) {
+    const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    return new Set(query.map(([key]) => key)).size === query.length && query.every(([key, value]) =>
+      (key === 'project_id' && uuid.test(value)) || (key === 'download' && value === '1' && url.pathname.endsWith('/content')));
+  }
   if (/^\/api\/group-tasks\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/export$/i.test(url.pathname)) {
     const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
     return query.length === 3 && new Set(query.map(([key]) => key)).size === 3 && ['md', 'json'].includes(url.searchParams.get('format')) && uuid.test(url.searchParams.get('project_id') || '') && uuid.test(url.searchParams.get('room_id') || '') && query.every(([key]) => ['format', 'project_id', 'room_id'].includes(key));
@@ -74,6 +79,7 @@ function exportFormat(value) {
   if (!isExportURL(value)) return null;
   const url = new URL(value);
   if (url.pathname.endsWith('/content')) return 'attachment';
+  if (url.pathname.endsWith('/bundle')) return 'zip';
   return url.pathname === '/api/platform/data/export' ? 'json' : url.searchParams.get('format');
 }
 

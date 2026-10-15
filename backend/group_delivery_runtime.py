@@ -130,6 +130,9 @@ def _command_evidence(item):
 
 def _result(item, engine, status, error=None):
     from .attachments import secret_text
+    if engine == "muse":
+        from .muse_bridge import public_task
+        item = public_task(item)
     raw = item.get("response" if engine == "muse" else "output", "")
     raw = raw if isinstance(raw, str) else ""
     hidden = secret_text(raw)

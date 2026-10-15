@@ -53,8 +53,8 @@ function MarkdownCodeBlock({ children }) {
 
 const markdownComponents = { pre: MarkdownCodeBlock };
 
-export function Markdown({ children }) {
-  return <div className="markdown"><ReactMarkdown components={markdownComponents} skipHtml>{asText(children)}</ReactMarkdown></div>;
+export function Markdown({ children, components, urlTransform }) {
+  return <div className="markdown"><ReactMarkdown components={{ ...markdownComponents, ...components }} urlTransform={urlTransform} skipHtml>{asText(children)}</ReactMarkdown></div>;
 }
 
 export function ResultProvenance({ job }) {

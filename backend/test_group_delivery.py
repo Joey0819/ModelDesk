@@ -29,7 +29,7 @@ def current(**changes):
                {"id": "muse", "name": "素材 Agent", "kind": "muse"}]
     return {"id": str(uuid.uuid4()), "project_id": str(uuid.uuid4()), "group_room_id": str(uuid.uuid4()),
             "conversation_id": str(uuid.uuid4()), "created_at": "2026-10-15T00:00:00+00:00", "events": [],
-            "mode": "group", "models": ["a"], "rounds": 1, "prompt": "写出完整的文章，并由 Muse 制作配图",
+            "mode": "group", "models": ["a"], "rounds": 1, "prompt": "写出完整的文章，请 Muse 提供两句介绍",
             "group_team_snapshot": {"members": members}, "group_recipient_member_ids": ["writer", "muse"],
             "group_broadcast": True, "group_delivery_mode": "auto", "group_runtime_allowed": True,
             "group_native_allowed": True, **changes}
@@ -127,7 +127,7 @@ class DeliveryTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_missing_requested_media_retains_body_without_claiming_completion(self):
         job = current(group_team_snapshot={"members": [{"id": "writer", "name": "作者", "model": "a"}]},
-                      group_recipient_member_ids=["writer"])
+                      group_recipient_member_ids=["writer"], prompt="写出完整文章，调用 Muse 生成配图", group_media_provider="muse")
         with patch.object(group_delivery, "model_output", AsyncMock(return_value=(final_packet("# 已完成正文\n\n文章内容。", ["群内没有 Muse 成员，未取得要求的配图"]), False))):
             result = await group_delivery.run_delivery(Owner(job), job, discussion())
         self.assertEqual(result["delivery"]["status"], "partial")

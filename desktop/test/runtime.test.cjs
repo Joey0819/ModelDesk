@@ -6,6 +6,21 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const { workspaceRoot, serviceEnvironment, isWorkbenchURL, isOriginalFrameURL, isExportURL, exportFormat, isExternalURL, isStatusURL, isTrustedWorkbenchIPC } = require('../runtime.cjs');
 
+test('media originals and portable bundles use canonical scoped export routes', () => {
+  const id = 'df9d3857-3d01-4c24-9e64-b9343e217f9a';
+  const base = `http://localhost:8001/api/media/jobs/${id}`;
+  const content = `${base}/assets/${id}/content`;
+  const bundle = `${base}/bundle`;
+  for (const url of [content, `${content}?project_id=${id}&download=1`, `${content}?download=1`, bundle, `${bundle}?project_id=${id}`]) {
+    assert.equal(isExportURL(url), true, url);
+    assert.equal(exportFormat(url), url.includes('/bundle') ? 'zip' : 'attachment');
+  }
+  for (const url of [`${bundle}?download=1`, `${bundle}?project_id=foreign`, `${content}?download=true`, `${content}?project_id=${id}&project_id=${id}`, `${content}?token=private`, `${content}#hash`, content.replace('localhost', 'example.com'), content.replace('/assets/', '/%2e%2e/assets/')]) {
+    assert.equal(isExportURL(url), false, url);
+    assert.equal(exportFormat(url), null, url);
+  }
+});
+
 test('only the local workbench origin is allowed in the app window', () => {
   assert.equal(isWorkbenchURL('http://localhost:5173/agents?mode=camel'), true);
   assert.equal(isWorkbenchURL('http://127.0.0.1:5173/#council'), true);

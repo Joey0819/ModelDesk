@@ -82,6 +82,16 @@ func key(_ code: CGKeyCode, flags: CGEventFlags = []) -> Bool {
     let up = CGEvent(keyboardEventSource: nil, virtualKey: code, keyDown: false)
     down?.flags = flags; up?.flags = flags; down?.postToPid(app.processIdentifier); up?.postToPid(app.processIdentifier); settle(); return foreground()
 }
+func panelKey(_ code: CGKeyCode, flags: CGEventFlags = []) -> Bool {
+    guard foreground(), snapshot().contains(where: { ["save-panel", "GoToWindow"].contains(string($0, kAXIdentifierAttribute)) }) else { return false }
+    let down = CGEvent(keyboardEventSource: nil, virtualKey: code, keyDown: true)
+    let up = CGEvent(keyboardEventSource: nil, virtualKey: code, keyDown: false)
+    // The native save panel can be hosted by AppKit's XPC service. Posting to
+    // the Muse PID misses that key window; use normal focused-window routing
+    // only while the verified Muse save/Go To modal is present and foreground.
+    down?.flags = flags; up?.flags = flags; down?.post(tap: .cghidEventTap); up?.post(tap: .cghidEventTap)
+    settle(); return foreground()
+}
 func validWindow(_ window: AXUIElement) -> Bool {
     let identifier = string(window, kAXIdentifierAttribute)
     let role = string(window, kAXRoleAttribute)
@@ -108,6 +118,32 @@ func textIn(_ root: AXUIElement) -> String {
     nodes(root).filter { string($0, kAXRoleAttribute) == kAXStaticTextRole }.map { string($0, kAXValueAttribute) }.filter { !$0.isEmpty }.joined(separator: "\n")
 }
 func chatRoot(_ tree: [AXUIElement]) -> AXUIElement? { tree.first { label($0) == "Chat messages" } }
+func resourcesIn(_ root: AXUIElement) -> [[String: String]] {
+    var resources: [[String: String]] = []; var seen = Set<String>()
+    // Read actual AXURL values only. Labels, prose, thumbnails without a URL,
+    // and guessed Muse endpoints do not establish downloadable media.
+    for element in nodes(root) where ["AXLink", "AXImage"].contains(string(element, kAXRoleAttribute)) {
+        let raw = attr(element, kAXURLAttribute)
+        let value = (raw as? URL)?.absoluteString ?? (raw as? String ?? "")
+        guard value.count <= 8192, let url = URL(string: value), url.scheme == "https",
+              url.host != nil, url.user == nil, url.password == nil, url.fragment == nil,
+              url.port == nil || url.port == 443, !value.contains(where: { $0.isWhitespace }), !seen.contains(value) else { continue }
+        let resourceLabel = label(element)
+        let decoration = resourceLabel.lowercased()
+        let decorationPaths = Set(["avatar", "avatars", "favicon", "icons", "logos"])
+        guard !decoration.contains("avatar"), !decoration.contains("profile picture"), !resourceLabel.contains("头像"),
+              !url.pathComponents.contains(where: { decorationPaths.contains($0.lowercased()) }) else { continue }
+        seen.insert(value)
+        resources.append(["url": value, "label": String(resourceLabel.prefix(200))])
+        if resources.count >= 12 { break }
+    }
+    return resources
+}
+func isUserMessage(_ element: AXUIElement, _ text: String) -> Bool {
+    let textPrefixes = ["You:", "User message:", "你：", "用户消息："]
+    if textPrefixes.contains(where: { text.hasPrefix($0) || label(element).hasPrefix($0) }) { return true }
+    return nodes(element).contains { ["Copy message", "Edit message", "Edit prompt", "复制消息", "编辑消息"].contains(label($0)) }
+}
 func isBusy(_ tree: [AXUIElement]) -> Bool {
     tree.contains { element in
         guard string(element, kAXRoleAttribute) == kAXButtonRole else { return false }
@@ -138,6 +174,133 @@ final class TemporaryClipboard {
         let items = original.map { values -> NSPasteboardItem in let item = NSPasteboardItem(); for (type, data) in values { item.setData(data, forType: type) }; return item }
         if !items.isEmpty { board.writeObjects(items) }
     }
+}
+
+func stagingDirectory() -> URL? {
+    guard let value = input["download_directory"] as? String, value.hasPrefix("/"),
+          let request = input["request_id"] as? String else { return nil }
+    let directory = URL(fileURLWithPath: value, isDirectory: true).standardizedFileURL
+    guard directory.lastPathComponent == request.lowercased(), directory.deletingLastPathComponent().lastPathComponent == "muse-native-staging",
+          directory.resolvingSymlinksInPath().path == directory.path,
+          let details = try? FileManager.default.attributesOfItem(atPath: directory.path),
+          details[.type] as? FileAttributeType == .typeDirectory,
+          (details[.ownerAccountID] as? NSNumber)?.uint32Value == getuid(),
+          ((details[.posixPermissions] as? NSNumber)?.intValue ?? 0) & 0o077 == 0 else { return nil }
+    return directory
+}
+
+var downloadDiagnostic = "native_attachment_download_unconfirmed"
+func downloadFailed(_ code: String) -> [String: String]? { downloadDiagnostic = code; return nil }
+func downloadAttachment(_ button: AXUIElement, filename expectedFilename: String, directory: URL, expected: String) -> [String: String]? {
+    guard threadURL(snapshot()) == expected else { return downloadFailed("native_download_thread_changed") }
+    guard activate() else { return downloadFailed("native_download_activation_unconfirmed") }
+    guard mainWindowFocused() else { return downloadFailed("native_download_focus_unconfirmed") }
+    let receiptURL = directory.appendingPathComponent(".download-attempt.json")
+    func matchingAttempt(_ saveName: String) -> Bool {
+        guard let attributes = try? FileManager.default.attributesOfItem(atPath: receiptURL.path),
+              attributes[.type] as? FileAttributeType == .typeRegular,
+              ((attributes[.size] as? NSNumber)?.intValue ?? 5000) <= 4096,
+              let raw = try? Data(contentsOf: receiptURL),
+              let record = (try? JSONSerialization.jsonObject(with: raw)) as? [String: Any],
+              record["request_id"] as? String == input["request_id"] as? String,
+              record["thread_url"] as? String == expected, record["filename"] as? String == expectedFilename,
+              let time = record["created_at"] as? Double else { return false }
+        let age = Date().timeIntervalSince1970 - time
+        return age >= -60 && age <= 1800 && (saveName == expectedFilename || saveName == record["staging_filename"] as? String)
+    }
+    var panel = snapshot().first { string($0, kAXIdentifierAttribute) == "save-panel" }
+    if let existing = panel {
+        // Resume only a panel for this exact, observed current-task artifact.
+        // A changed filename or any unrelated user save draft is untouched.
+        guard let field = nodes(existing).first(where: { string($0, kAXIdentifierAttribute) == "saveAsNameTextField" }),
+              !expectedFilename.isEmpty, matchingAttempt(string(field, kAXValueAttribute)) else { return downloadFailed("native_download_existing_save_panel") }
+    } else {
+        let receipt: [String: Any] = ["request_id": input["request_id"] ?? "", "thread_url": expected,
+                                     "filename": expectedFilename, "created_at": Date().timeIntervalSince1970]
+        guard let raw = try? JSONSerialization.data(withJSONObject: receipt),
+              (try? raw.write(to: receiptURL, options: [.atomic])) != nil else { return downloadFailed("native_download_receipt_unavailable") }
+        // Electron can report an AXPress error after opening the native panel.
+        // Observe that panel instead of treating an action return as delivery.
+        _ = press(button)
+        for _ in 0..<60 {
+            panel = snapshot().first { string($0, kAXIdentifierAttribute) == "save-panel" }
+            if panel != nil { break }; settle(0.1)
+        }
+    }
+    if panel == nil, threadURL(snapshot()) == expected, let buttonRect = rect(button) {
+        // Some Electron attachment buttons expose AXPress without performing
+        // the download. One click on this exact observed button is permitted
+        // only after confirming no save panel appeared from AXPress.
+        _ = click(CGPoint(x: buttonRect.midX, y: buttonRect.midY))
+        for _ in 0..<20 {
+            panel = snapshot().first { string($0, kAXIdentifierAttribute) == "save-panel" }
+            if panel != nil { break }; settle(0.1)
+        }
+    }
+    guard let save = panel else { return downloadFailed("native_download_save_panel_unavailable") }
+    settle(0.3)
+    func cancelSave() {
+        if snapshot().contains(where: { string($0, kAXIdentifierAttribute) == "GoToWindow" }) { _ = panelKey(53) }
+        if let active = snapshot().first(where: { string($0, kAXIdentifierAttribute) == "save-panel" }),
+           let cancel = nodes(active).first(where: { string($0, kAXIdentifierAttribute) == "CancelButton" }) { _ = press(cancel) }
+    }
+    guard let originalName = nodes(save).first(where: { string($0, kAXIdentifierAttribute) == "saveAsNameTextField" }) else { cancelSave(); return downloadFailed("native_download_name_unavailable") }
+    let suffix = URL(fileURLWithPath: string(originalName, kAXValueAttribute)).pathExtension.lowercased()
+    guard ["mp4", "webm", "png", "jpg", "jpeg", "webp"].contains(suffix),
+          panelKey(5, flags: [.maskCommand, .maskShift]) else { cancelSave(); return downloadFailed("native_download_type_unsupported") }
+    var pathField: AXUIElement?
+    for _ in 0..<12 {
+        pathField = snapshot().first { string($0, kAXIdentifierAttribute) == "PathTextField" }
+        if pathField != nil { break }; settle(0.1)
+    }
+    guard let path = pathField else { cancelSave(); return downloadFailed("native_download_goto_panel_unavailable") }
+    _ = AXUIElementSetAttributeValue(path, kAXValueAttribute as CFString, directory.path as CFString)
+    guard string(path, kAXValueAttribute) == directory.path else { cancelSave(); return downloadFailed("native_download_path_value_unconfirmed") }
+    guard panelKey(36) else { cancelSave(); return downloadFailed("native_download_path_commit_unconfirmed") }
+    settle(0.3)
+    let current = snapshot()
+    guard let activeSave = current.first(where: { string($0, kAXIdentifierAttribute) == "save-panel" }),
+          !current.contains(where: { string($0, kAXIdentifierAttribute) == "PathTextField" }),
+          let name = nodes(activeSave).first(where: { string($0, kAXIdentifierAttribute) == "saveAsNameTextField" }),
+          let location = nodes(activeSave).first(where: { string($0, kAXIdentifierAttribute) == "where popup" }),
+          string(location, kAXValueAttribute) == directory.lastPathComponent else { cancelSave(); return downloadFailed("native_download_destination_unconfirmed") }
+    let filename = UUID().uuidString.lowercased() + "." + suffix
+    let destination = directory.appendingPathComponent(filename)
+    guard !FileManager.default.fileExists(atPath: destination.path) else { cancelSave(); return downloadFailed("native_download_destination_exists") }
+    let savingReceipt: [String: Any] = ["request_id": input["request_id"] ?? "", "thread_url": expected,
+                                      "filename": expectedFilename, "staging_filename": filename, "created_at": Date().timeIntervalSince1970]
+    guard let receiptBytes = try? JSONSerialization.data(withJSONObject: savingReceipt),
+          (try? receiptBytes.write(to: receiptURL, options: [.atomic])) != nil else { cancelSave(); return downloadFailed("native_download_receipt_unavailable") }
+    // AXSetValue updates the visible filename without notifying AppKit's save
+    // validation, leaving Save disabled. Edit the verified field normally.
+    _ = AXUIElementSetAttributeValue(name, kAXFocusedAttribute as CFString, kCFBooleanTrue)
+    let clipboard = TemporaryClipboard()
+    clipboard.put(filename)
+    let entered = panelKey(0, flags: .maskCommand) && panelKey(9, flags: .maskCommand)
+    clipboard.restore()
+    guard entered, string(name, kAXValueAttribute) == filename,
+          let saveButton = nodes(activeSave).first(where: { string($0, kAXIdentifierAttribute) == "OKButton" }),
+          attr(saveButton, kAXEnabledAttribute) as? Bool == true else { cancelSave(); return downloadFailed("native_download_save_unconfirmed") }
+    _ = press(saveButton)
+    settle(0.3)
+    if let stillOpen = snapshot().first(where: { string($0, kAXIdentifierAttribute) == "save-panel" }),
+       let stillName = nodes(stillOpen).first(where: { string($0, kAXIdentifierAttribute) == "saveAsNameTextField" }),
+       string(stillName, kAXValueAttribute) == filename { _ = panelKey(36) }
+    var previous: UInt64 = 0; var stable = 0
+    for _ in 0..<60 {
+        guard threadURL(snapshot()) == expected else { return downloadFailed("native_download_thread_changed") }
+        if let details = try? FileManager.default.attributesOfItem(atPath: destination.path),
+           details[.type] as? FileAttributeType == .typeRegular,
+           let size = (details[.size] as? NSNumber)?.uint64Value, size > 0, size <= 150_000_000 {
+            stable = size == previous ? stable + 1 : 0; previous = size
+            if stable >= 3 {
+                try? FileManager.default.removeItem(at: receiptURL)
+                return ["name": filename, "label": String(label(button).prefix(200))]
+            }
+        }
+        settle(0.1)
+    }
+    cancelSave(); return downloadFailed("native_download_file_unconfirmed")
 }
 
 let initial = snapshot()
@@ -196,11 +359,23 @@ if command == "observe" {
     guard let expected = input["thread_url"] as? String, validThread(expected), threadURL(initial) == expected else { fail("thread_changed") }
     guard let chat = chatRoot(initial), textIn(chat).contains(requestTag) else { fail("request_not_visible") }
     var messages: [[String: String]] = []
+    var resources: [[String: String]] = []
+    var replyRoots: [AXUIElement] = []
+    var replyParts: [String] = []
+    var attachments: [(button: AXUIElement, filename: String)] = []
     var sawRequest = false
+    var sawAssistantText = false
+    var completedReply = false
     for item in children(chat) {
         let text = textIn(item)
-        if text.contains(requestTag) { sawRequest = true; continue }
-        guard sawRequest, !text.isEmpty, !text.hasPrefix("You:"), !text.hasPrefix("User message:"), !text.hasPrefix("你：") else { continue }
+        if text.contains(requestTag) {
+            if sawRequest { break }
+            sawRequest = true; continue
+        }
+        guard sawRequest else { continue }
+        // A new user turn ends this task's reply scope. Do not attach later
+        // assistants' media, even if the original request is still on screen.
+        if isUserMessage(item, text) || text.contains("[MODELDESK_REQUEST:") { break }
         // Assistant containers expose their own Copy response control; dates,
         // user messages, suggested prompts and tool approval cards do not.
         let controls = nodes(item)
@@ -208,17 +383,52 @@ if command == "observe" {
         // New Muse versions expose reply actions via a popup rather than a
         // permanent Copy response button. Accept this shape only with the
         // unique current-task closing marker, never for an arbitrary popup.
-        let framedReply = text.trimmingCharacters(in: .whitespacesAndNewlines).hasSuffix(closingTag)
-            && controls.contains { string($0, kAXRoleAttribute) == kAXPopUpButtonRole && label($0) == "More options" }
-        if legacyAssistant || framedReply {
+        let assistantActions = controls.contains { string($0, kAXRoleAttribute) == kAXPopUpButtonRole && label($0) == "More options" }
+        let downloadButtons = controls.filter { string($0, kAXRoleAttribute) == kAXButtonRole && ["Download video", "Download image", "Download picture"].contains(label($0)) }
+        let mediaOpen = controls.first { label($0).hasPrefix("Open animated video ") || label($0).hasPrefix("Open image ") || label($0).hasPrefix("Open picture ") }
+        let mediaAttachment = !downloadButtons.isEmpty && mediaOpen != nil
+        let framedReply = text.trimmingCharacters(in: .whitespacesAndNewlines).hasSuffix(closingTag) && assistantActions
+        if legacyAssistant || assistantActions || (mediaAttachment && sawAssistantText) {
             // Restore only the marker boundary lost by rendered soft breaks;
             // do not alter the observed response body or invent any content.
             let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
             let reply = framedReply ? String(trimmed.dropLast(closingTag.count)).trimmingCharacters(in: .whitespacesAndNewlines) + "\n" + closingTag : text
-            messages.append(["role": "assistant", "text": String(reply.prefix(100000))])
+            if !trimmed.isEmpty && trimmed != closingTag { sawAssistantText = true }
+            if !reply.isEmpty { replyParts.append(reply) }
+            if sawAssistantText { replyRoots.append(item) }
+            if mediaAttachment && sawAssistantText, let opened = mediaOpen {
+                let openedLabel = label(opened)
+                let prefix = ["Open animated video ", "Open image ", "Open picture "].first { openedLabel.hasPrefix($0) } ?? ""
+                attachments.append(contentsOf: downloadButtons.map { (button: $0, filename: String(openedLabel.dropFirst(prefix.count))) })
+            }
+            if trimmed.hasSuffix(closingTag) {
+                completedReply = true
+                break
+            }
         }
     }
+    if !replyParts.isEmpty { messages.append(["role": "assistant", "text": String(replyParts.joined(separator: "\n\n").prefix(120000))]) }
     guard threadURL(snapshot()) == expected else { fail("thread_changed") }
-    emit(["ok": true, "request_id": requestID, "thread_url": expected, "messages": messages, "busy": isBusy(initial), "waiting_user": hasApproval(initial)])
+    let finished = completedReply && !isBusy(initial) && !hasApproval(initial)
+    var downloaded: [[String: String]] = []; var downloadErrors: [String] = []
+    if finished {
+        var seen = Set<String>()
+        for root in replyRoots {
+            for resource in resourcesIn(root) where resources.count < 12 && !seen.contains(resource["url"] ?? "") {
+                seen.insert(resource["url"] ?? ""); resources.append(resource)
+            }
+        }
+        if let directory = stagingDirectory() {
+            for attachment in attachments.prefix(4) {
+                if let file = downloadAttachment(attachment.button, filename: attachment.filename, directory: directory, expected: expected) { downloaded.append(file) }
+                else { downloadErrors.append(downloadDiagnostic) }
+            }
+        } else if !attachments.isEmpty { downloadErrors.append("native_private_staging_unavailable") }
+    }
+    guard threadURL(snapshot()) == expected else { fail("thread_changed") }
+    emit(["ok": true, "request_id": requestID, "thread_url": expected, "messages": messages,
+          "busy": isBusy(initial), "waiting_user": hasApproval(initial),
+          "resource_request_id": finished ? requestID : NSNull(), "resources": finished ? resources : [],
+          "file_request_id": finished ? requestID : NSNull(), "downloaded_files": downloaded, "download_errors": downloadErrors])
 }
 fail("unsupported_command")

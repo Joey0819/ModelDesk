@@ -54,6 +54,9 @@ class MessageRequest(BaseModel):
     mcp_server_ids: list[uuid.UUID] = Field(default_factory=list, max_length=20)
     system_prompt: str = Field(default="", max_length=4000)
     delivery_mode: Literal["auto", "discussion"] = "discussion"
+    output_format: Literal["auto", "text", "illustrated", "video"] = "auto"
+    image_count: int = Field(default=2, ge=1, le=4)
+    media_provider: Literal["auto", "openai", "gemini", "muse"] = "auto"
 
     @field_validator("prompt")
     @classmethod
@@ -178,8 +181,8 @@ def freeze_agent_sources(room):
 def freeze_muse_source(room, identifier):
     if not identifier:
         return None
-    from .muse_bridge import manager as muse
-    task = muse.get(str(identifier), room["project_id"])
+    from .muse_bridge import manager as muse, public_task
+    task = public_task(muse.get(str(identifier), room["project_id"]))
     if task.get("room_id") != room["id"]:
         raise HTTPException(403, "所选 Muse 回复不属于当前项目群")
     if (task.get("status") != "complete" or task.get("sent") is not True
@@ -331,7 +334,7 @@ async def send_message(identifier: str, request: MessageRequest, transport: Requ
     missing = list(dict.fromkeys(model for model in requested_models if model not in catalog))
     if missing:
         raise HTTPException(422, "这些接收成员的模型尚未连接：" + "、".join(missing))
-    body = request.model_dump(mode="json", exclude={"recipient_member_ids", "muse_task_id", "delivery_mode"})
+    body = request.model_dump(mode="json", exclude={"recipient_member_ids", "muse_task_id", "delivery_mode", "output_format", "image_count", "media_provider"})
     try:
         job_request = workbench.JobRequest(**body, mode="group", project_id=room["project_id"], conversation_id=room["id"],
                                            models=room_models(room), roles=room_roles(room))
@@ -345,6 +348,7 @@ async def send_message(identifier: str, request: MessageRequest, transport: Requ
                 "group_team_snapshot": room["team_snapshot"], "group_recipient_member_ids": selected,
                 "group_broadcast": broadcast, "group_coordinator_model": room["team_snapshot"].get("coordinator_model"),
                 "group_agent_sources": freeze_agent_sources(room), "group_delivery_mode": request.delivery_mode,
+                "group_output_format": request.output_format, "group_image_count": request.image_count, "group_media_provider": request.media_provider,
                 "group_runtime_allowed": request.delivery_mode == "auto",
                 "group_native_allowed": request.delivery_mode == "auto" and not transport.headers.get("x-modeldesk-remote")}
     if muse_source:

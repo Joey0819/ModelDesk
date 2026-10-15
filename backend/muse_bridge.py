@@ -9,12 +9,13 @@ import ipaddress
 import json
 import os
 import re
+import stat
 import time
 import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Literal
-from urllib.parse import urlsplit
+from urllib.parse import parse_qsl, urlsplit
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import Response
@@ -24,6 +25,7 @@ from .harness.store import RunStore, checked_id
 from .workbench import now, public_error
 
 ROOT = Path(__file__).resolve().parents[1]
+NATIVE_STAGING = ROOT / "data/muse-native-staging"
 ORIGINS = {"http://localhost:5173", "http://127.0.0.1:5173", "http://localhost:3000"}
 ACTIVE = {"queued", "dispatching", "running", "waiting_user"}
 STATES = ACTIVE | {"complete", "error", "uncertain", "interrupted", "stopped_monitoring"}
@@ -108,7 +110,8 @@ def marker(identifier):
 
 def framed_prompt(task):
     return (task["prompt"] + "\n\nModelDesk 回复格式要求：完成本次回复后，请在最后单独一行输出：\n" + marker(task["request_id"]) +
-            "\n此标记只表示这条回复已经结束，不表示外部动作已成功。若需要我确认权限或补充资料，请明确说明并等待；不要虚构完成。")
+            "\n如有媒体附件，请先用简短文字说明本次实际产物，再附上媒体，最后输出上述结束标记。"
+            "此标记只表示这条回复已经结束，不表示外部动作已成功。若需要我确认权限或补充资料，请明确说明并等待；不要虚构完成。")
 
 
 def safe_messages(value):
@@ -126,6 +129,168 @@ def safe_messages(value):
     return messages
 
 
+def safe_native_resources(value):
+    """Keep actual HTTPS AX resources private until their bytes are imported.
+
+    The native adapter establishes reply ownership. DNS and byte validation
+    happen again in delivery_media.import_url; a URL alone proves no artifact.
+    """
+    if not isinstance(value, list):
+        return []
+    resources, seen = [], set()
+    for item in value[:12]:
+        if not isinstance(item, dict):
+            continue
+        url, label = item.get("url"), item.get("label", "")
+        if (not isinstance(url, str) or not 0 < len(url) <= 8192
+                or any(character.isspace() or ord(character) < 32 for character in url)
+                or "\\" in url or not isinstance(label, str)):
+            continue
+        try:
+            parsed = urlsplit(url)
+            host = (parsed.hostname or "").lower()
+            if (parsed.scheme != "https" or not host or parsed.username or parsed.password
+                    or parsed.fragment or parsed.port not in {None, 443}
+                    or host == "localhost" or host.endswith((".localhost", ".local", ".internal"))):
+                continue
+            try:
+                address = ipaddress.ip_address(host)
+            except ValueError:
+                if not re.fullmatch(r"[a-z0-9.-]+", host) or "." not in host:
+                    continue
+            else:
+                if not address.is_global:
+                    continue
+        except ValueError:
+            continue
+        if url in seen:
+            continue
+        seen.add(url)
+        # AX labels sometimes repeat the signed URL; a caption must not carry
+        # that grant into a public media manifest after the download.
+        label = re.sub(r"https://\S+", "[Muse 媒体资源]", label.replace("\x00", ""))[:200]
+        resources.append({"url": url, "label": label})
+    return resources
+
+
+def public_task(task):
+    """Strip native download grants from every HTTP response and export.
+
+    Signed asset links may also occur in observed prose. Only the server-side
+    manager.get record is available to the media importer; public task text
+    replaces those links rather than exposing reusable download credentials.
+    """
+    private_urls = {item["url"] for item in safe_native_resources(task.get("_native_resources"))}
+
+    def clean(value):
+        if isinstance(value, dict):
+            return {key: clean(item) for key, item in value.items() if not str(key).startswith("_")}
+        if isinstance(value, list):
+            return [clean(item) for item in value]
+        if isinstance(value, str):
+            for url in private_urls:
+                value = value.replace(url, "[Muse 媒体资源已转交成果收集]")
+
+            def redact(match):
+                url = match.group(0)
+                try:
+                    keys = {key.lower() for key, _ in parse_qsl(urlsplit(url).query)}
+                except ValueError:
+                    return "[Muse 私有资源链接]"
+                if any(key.startswith(("x-amz-", "x-goog-")) or key in {
+                    "token", "access_token", "refresh_token", "signature", "sig", "policy", "key-pair-id",
+                    "googleaccessid", "authorization", "jwt", "credential", "api_key", "apikey",
+                } for key in keys):
+                    return "[Muse 私有资源链接]"
+                return url
+
+            return re.sub(r"https://[^\s<>\[\]{}\"']+", redact, value)
+        return value
+
+    return clean(task)
+
+
+def native_stage(identifier, *, create=False):
+    """Open only this task's private directory, rejecting every symlink."""
+    identifier = checked_id(identifier)
+    path = NATIVE_STAGING.absolute() / identifier
+    descriptor = os.open(path.anchor, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        for component in path.parts[1:]:
+            if create:
+                try:
+                    os.mkdir(component, 0o700, dir_fd=descriptor)
+                except FileExistsError:
+                    pass
+            following = os.open(component, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=descriptor)
+            os.close(descriptor)
+            descriptor = following
+        details = os.fstat(descriptor)
+        if details.st_uid != os.getuid():
+            raise ValueError("private staging owner mismatch")
+        if create:
+            os.fchmod(descriptor, 0o700)
+        return path, descriptor
+    except Exception:
+        os.close(descriptor)
+        raise
+
+
+def import_native_files(task, result):
+    """Read exact helper-selected basenames; never inspect the user's Downloads."""
+    from .delivery_media import store as media_store
+    assets, errors = [], []
+    if result.get("file_request_id") != task["request_id"]:
+        return assets, errors
+    files = result.get("downloaded_files")
+    if not isinstance(files, list):
+        files = []
+    if result.get("download_errors"):
+        errors.append("Muse 附件下载未全部确认；未取得的文件不能作为已完成媒体。")
+    if not files:
+        return assets, errors
+    try:
+        _, directory = native_stage(task["id"])
+    except (OSError, ValueError):
+        return [], ["Muse 私有附件目录无法安全读取，未导入媒体。"]
+    try:
+        for item in files[:4]:
+            filename = item.get("name") if isinstance(item, dict) else None
+            if not isinstance(filename, str) or not re.fullmatch(r"[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}\.(?:mp4|webm|png|jpe?g|webp)", filename):
+                errors.append("Muse 附件标识无效，未读取该文件。")
+                continue
+            descriptor = None
+            try:
+                descriptor = os.open(filename, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+                details = os.fstat(descriptor)
+                if (not stat.S_ISREG(details.st_mode) or details.st_nlink != 1 or details.st_uid != os.getuid()
+                        or not 0 < details.st_size <= 150_000_000):
+                    raise ValueError("invalid private attachment")
+                with os.fdopen(descriptor, "rb", closefd=False) as source:
+                    raw = source.read(150_000_001)
+                if len(raw) != details.st_size or os.fstat(descriptor).st_size != details.st_size:
+                    raise ValueError("attachment changed while reading")
+                caption = re.sub(r"https://\S+", "[Muse 媒体资源]", str(item.get("label") or "Muse 本轮实际媒体"))[:200]
+                caption = {"Download video": "Muse 生成的视频", "Download image": "Muse 生成的图片",
+                           "Download picture": "Muse 生成的图片"}.get(caption, caption)
+                media_job = {"id": task.get("parent_job_id") or task["id"], "project_id": task.get("project_id")}
+                asset = media_store.save_bytes(media_job, raw, kind="auto", provider="muse", model="Muse native",
+                                              slot_id=f"muse-native-{len(assets) + 1}", caption=caption, source_task_id=task["id"])
+                assets.append(asset)
+                # Only remove the exact regular file just imported, never a
+                # path returned by the native app or a directory listing.
+                if os.stat(filename, dir_fd=directory, follow_symlinks=False).st_ino == details.st_ino:
+                    os.unlink(filename, dir_fd=directory)
+            except Exception:
+                errors.append("Muse 附件未通过真实图片或视频校验，未计入已完成媒体。")
+            finally:
+                if descriptor is not None:
+                    os.close(descriptor)
+    finally:
+        os.close(directory)
+    return assets, list(dict.fromkeys(errors))
+
+
 def unverified_generation(task):
     return (task.get("harness_generated") is True or task.get("source_unverified") is True
             or task.get("verification") == HARNESS_VERIFICATION
@@ -137,6 +302,9 @@ def preserve_source_boundary(task):
     """Keep historical generated text while withdrawing unsupported receipts."""
     if not unverified_generation(task):
         return task
+    task.pop("_native_resources", None)
+    task.pop("_native_media", None)
+    task.pop("_native_media_errors", None)
     task.update(source_unverified=True, source_kind="unverified_local_generation", harness_generated=True,
                 verification=UNVERIFIED_GENERATION, completion_evidence="source_unverified")
     for field in ["thread_url", "video_url"]:
@@ -179,7 +347,7 @@ class MuseManager:
     def list(self, project_id=None, room_id=None):
         project = checked_id(project_id) if project_id else None
         room = checked_id(room_id) if room_id else None
-        result = [preserve_source_boundary(copy.deepcopy(task)) for task in self.records.values()
+        result = [public_task(preserve_source_boundary(copy.deepcopy(task))) for task in self.records.values()
                   if task["project_id"] == project and (not room or task["room_id"] == room)]
         result.sort(key=lambda task: task["updated_at"], reverse=True)
         return result[:100]
@@ -202,6 +370,11 @@ class MuseManager:
                         raise ValueError("invalid time")
                 if task.get("thread_url") is not None and not valid_thread(task["thread_url"]):
                     continue
+                if (task["status"] == "complete" and task.get("sent") is True
+                        and task.get("completion_evidence") == "framed_assistant_reply"):
+                    task["_native_resources"] = safe_native_resources(task.get("_native_resources"))
+                else:
+                    task.pop("_native_resources", None)
                 if task["status"] in ACTIVE:
                     task.update(status="interrupted", uncertain=task.get("sent") is not False, remote_state="unknown" if task.get("sent") is not False else "not_sent",
                                 error="服务已重启，未自动重新发送。请先在 Muse 核对已有任务。", monitoring=False)
@@ -220,7 +393,8 @@ class MuseManager:
                 str(self.helper), command, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
                 env={key: os.environ[key] for key in ["HOME", "PATH", "LANG", "TMPDIR"] if key in os.environ})
             try:
-                output, _ = await asyncio.wait_for(process.communicate(json.dumps(payload or {}, ensure_ascii=False).encode()), timeout=30 if command == "submit" else 20)
+                timeout = 30 if command == "submit" else 60 if (payload or {}).get("download_directory") else 20
+                output, _ = await asyncio.wait_for(process.communicate(json.dumps(payload or {}, ensure_ascii=False).encode()), timeout=timeout)
                 if process.returncode != 0 or len(output) > 1500000:
                     raise RuntimeError("Muse 原生桥接未返回有效结果，请查看 Muse 窗口。")
                 result = json.loads(output)
@@ -364,7 +538,14 @@ class MuseManager:
     async def observe(self, task):
         deadline, idle_since = time.monotonic() + task["timeout_seconds"], None
         while time.monotonic() < deadline:
-            result = await self.task_helper_call(task, "observe", {"thread_url": task["thread_url"], "request_id": task["request_id"]})
+            payload = {"thread_url": task["thread_url"], "request_id": task["request_id"]}
+            try:
+                path, descriptor = native_stage(task["id"], create=True)
+                os.close(descriptor)
+                payload["download_directory"] = str(path)
+            except (OSError, ValueError):
+                pass
+            result = await self.task_helper_call(task, "observe", payload)
             if not result.get("ok") or result.get("thread_url") != task["thread_url"] or result.get("request_id") != task["request_id"]:
                 raise RuntimeError("Muse conversation no longer matches")
             messages = safe_messages(result.get("messages"))
@@ -382,6 +563,13 @@ class MuseManager:
             if observed_reply:
                 task["response"] = observed_reply
             if completed and observed_reply and not busy and not waiting:
+                task["_native_resources"] = (safe_native_resources(result.get("resources"))
+                                             if result.get("resource_request_id") == task["request_id"] else [])
+                self.validate_member(task)
+                media, errors = await asyncio.to_thread(import_native_files, task, result)
+                self.validate_member(task)
+                task["_native_media"] = media
+                task["_native_media_errors"] = errors
                 task.update(status="complete", uncertain=False, remote_state="reply_observed", completion_evidence="framed_assistant_reply", error=None)
                 self.save(task, "reply_observed")
                 return
@@ -457,7 +645,7 @@ async def status():
 
 @router.post("/tasks", status_code=202, dependencies=[Depends(local_mutation)])
 async def create_task(body: MuseTaskRequest):
-    return await manager.create(body)
+    return public_task(await manager.create(body))
 
 
 @router.get("/tasks")
@@ -467,22 +655,22 @@ async def list_tasks(project_id: str | None = None, room_id: str | None = None):
 
 @router.get("/tasks/{identifier}")
 async def get_task(identifier: str, project_id: str | None = None):
-    return copy.deepcopy(manager.get(identifier, project_id))
+    return public_task(manager.get(identifier, project_id))
 
 
 @router.post("/tasks/{identifier}/cancel", dependencies=[Depends(local_mutation)])
 async def cancel_task(identifier: str, project_id: str | None = None):
-    return await manager.cancel(identifier, project_id)
+    return public_task(await manager.cancel(identifier, project_id))
 
 
 @router.post("/tasks/{identifier}/observe", status_code=202, dependencies=[Depends(local_mutation)])
 async def resume_observing(identifier: str, project_id: str | None = None):
-    return await manager.resume_observing(identifier, project_id)
+    return public_task(await manager.resume_observing(identifier, project_id))
 
 
 @router.get("/tasks/{identifier}/export")
 async def export_task(identifier: str, project_id: str | None = None, format: Literal["md", "json"] = "md"):
-    task = copy.deepcopy(manager.get(identifier, project_id))
+    task = public_task(manager.get(identifier, project_id))
     if format == "json":
         content = json.dumps(task, ensure_ascii=False, indent=2)
     else:

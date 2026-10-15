@@ -6,6 +6,18 @@ export const groupScopeKey = (projectId) => `modeldesk.groups.v1:${projectId || 
 export const groupDraftKey = (projectId, roomId) => `${groupScopeKey(projectId)}:${roomId}:draft`;
 export const groupActive = (job) => ['running', 'queued'].includes(job?.status);
 export const groupDeliveryMode = (job) => job?.group_delivery_mode === 'auto' || job?.result?.delivery ? 'auto' : 'discussion';
+export const GROUP_OUTPUT_FORMATS = ['auto', 'text', 'illustrated', 'video'];
+export const GROUP_MEDIA_PROVIDERS = ['auto', 'openai', 'gemini', 'muse'];
+export function groupOutputOptions(value = {}, change = {}) {
+  const options = { ...value, ...change };
+  const outputFormat = GROUP_OUTPUT_FORMATS.includes(options.outputFormat) ? options.outputFormat : 'auto';
+  const mediaProvider = GROUP_MEDIA_PROVIDERS.includes(options.mediaProvider) ? options.mediaProvider : 'auto';
+  return {
+    outputFormat,
+    imageCount: [1, 2, 3, 4].includes(Number(options.imageCount)) ? Number(options.imageCount) : 2,
+    mediaProvider: outputFormat === 'video' && !['auto', 'muse'].includes(mediaProvider) ? 'auto' : mediaProvider,
+  };
+}
 
 export const GROUP_DELIVERY_STATUS = {
   planning: '正在安排任务', working: '成员正在执行', assembling: '正在整理完整成果',
@@ -33,6 +45,7 @@ export function readGroupDraft(storage, projectId, roomId) {
     recipientIds: Array.isArray(value.recipientIds) ? value.recipientIds.filter((id) => typeof id === 'string') : [],
     includeMuse: Boolean(value.includeMuse),
     deliveryMode: value.deliveryMode === 'discussion' ? 'discussion' : 'auto',
+    ...groupOutputOptions(value),
     harnessMode: GROUP_HARNESS_MODES.some((item) => item.id === value.harnessMode) ? value.harnessMode : 'relay',
     context: { ...EMPTY_CONTEXT, ...(value.context || {}), project_id: projectId || null },
     contextTurns: [1, 4, 6, 8, 12].includes(value.contextTurns) ? value.contextTurns : 6,
@@ -50,10 +63,11 @@ export function mergeRoomJobs(current, incoming, projectId, roomId) {
   }
   return [...values.values()].sort((a, b) => String(a.created_at || '').localeCompare(String(b.created_at || '')) || a.id.localeCompare(b.id));
 }
-export function groupMessageRequest({ prompt, recipientIds, context, contextTurns = 6, rounds = 1, deliveryMode = 'auto' }) {
+export function groupMessageRequest({ prompt, recipientIds, context, contextTurns = 6, rounds = 1, deliveryMode = 'auto', outputFormat, imageCount, mediaProvider }) {
   const allowed = ['snapshot_id', 'attachment_ids', 'include_project_assets', 'knowledge_ids', 'memory_ids', 'memory_scope', 'remember', 'tools', 'mcp_server_ids', 'muse_task_id'];
   const boundedRounds = [1, 2, 3, 4, 5, 6].includes(Number(rounds)) ? Number(rounds) : 1;
-  return { ...Object.fromEntries(allowed.filter((key) => context[key] !== undefined).map((key) => [key, structuredClone(context[key])])), prompt: prompt.trim(), recipient_member_ids: [...recipientIds], context_turns: contextTurns, rounds: boundedRounds, delivery_mode: deliveryMode === 'discussion' ? 'discussion' : 'auto' };
+  const output = groupOutputOptions({ outputFormat, imageCount, mediaProvider });
+  return { ...Object.fromEntries(allowed.filter((key) => context[key] !== undefined).map((key) => [key, structuredClone(context[key])])), prompt: prompt.trim(), recipient_member_ids: [...recipientIds], context_turns: contextTurns, rounds: boundedRounds, delivery_mode: deliveryMode === 'discussion' ? 'discussion' : 'auto', output_format: output.outputFormat, image_count: output.imageCount, media_provider: output.mediaProvider };
 }
 export function groupMessages(job, room) {
   const members = job.group_team_snapshot?.members || room.team_snapshot?.members || [];

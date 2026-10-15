@@ -2,9 +2,9 @@
 
 **A local workspace where LLMs and executable Agents collaborate in project groups.**
 
-把模型、执行 Agent、项目资料、代码审查和最终成果放在同一个工作区。你可以指定一个 LLM 担任 **统筹模型（Ruler）**，让它组织讨论、按需调用群内 Codex、Claude Code 或 Muse，再把实际返回内容整理成完整成果。
+把模型、执行 Agent、项目资料、代码审查和最终成果放在同一个工作区。你可以指定一个 LLM 担任 **统筹模型（Ruler）**，让它组织讨论、按需调用群内 Codex、Claude Code 或 Muse，以及可用的生图模型，再把真实正文、图片与视频整理成完整成果。
 
-**当前桌面版本：2.8.0** · macOS / Apple Silicon · 中文界面 · 本机服务与私有手机入口
+**当前桌面版本：2.9.0** · macOS / Apple Silicon · 中文界面 · 本机服务与私有手机入口
 
 ModelDesk 基于 [Karpathy 的 LLM Council](https://github.com/karpathy/llm-council) 扩展，保留独立回答 → 匿名互评 → 主席综合的三阶段流程，并复用 CAMEL、CrewAI 和 LangGraph 的执行能力。原项目说明见 [上游 README](docs/UPSTREAM_COUNCIL.md)。
 
@@ -12,9 +12,9 @@ ModelDesk 基于 [Karpathy 的 LLM Council](https://github.com/karpathy/llm-coun
 
 1. **创建项目**：添加图片、文件，或关联本地文件夹。代码执行需要关联一个已有提交且工作区干净的 Git 仓库。
 2. **设置团队**：打开「Agent 与连接 → 项目 Agent → 成员与分工」，选择统筹模型，为成员设置名称、类型与职责。需要 Grok 或其他模型时，先到「模型连接 / API Key」添加连接。
-3. **描述成果**：保存协作组并新建项目群；修改已有群时，保存后点击「应用到当前群聊」。默认选择「自动完成」，发送你需要的完整文章、代码或其他交付要求。
-4. **自动协作**：群内模型讨论后，统筹模型为必要的执行 Agent 分配任务；平台收集真实输出，再生成完整成果。时间线显示任务、失败与缺失项；右侧直接呈现最终正文。只想交流时切换「仅讨论」；也保留 @ 单个 Agent 的手动派发入口。
-5. **审阅与交付**：在右侧成果栏预览、复制或下载实际内容。代码补丁仍需选择独立审查并通过人工审批卡合入本地项目。
+3. **描述成果**：保存协作组并新建项目群；修改已有群时，保存后点击「应用到当前群聊」。选择「自动完成」，在「成果形式」选择「按要求自动」「仅文字」「图文并茂」或「视频成果」；「生成设置」可选配图数量、生成工具并查看实际生图能力。
+4. **自动协作**：发送完整的交付要求。统筹模型组织讨论、为必要的执行 Agent 分配任务；Harness 按需求调用可用生图模型或 Muse，收集并校验实际文件，再组装成果。时间线显示任务、失败与缺失项；右侧呈现正文、实际配图和视频播放器。只想交流时切换「仅讨论」；也保留 @ 单个 Agent 的手动派发入口。
+5. **审阅与交付**：在右侧预览、复制正文、下载单份媒体，或导出包含正文和真实媒体的 ZIP 成果包。代码补丁仍需选择独立审查并通过人工审批卡合入本地项目。
 
 每个协作组可保存 **2–4 名成员**，统筹模型单独选择；LLM 成员与统筹合计最多使用四个不同模型。群聊历史、草稿、成员职责和资料按项目保存，同一个模型也可以担任不同角色。
 
@@ -34,6 +34,17 @@ ModelDesk 基于 [Karpathy 的 LLM Council](https://github.com/karpathy/llm-coun
 操作细节见 [统筹模型与执行 Agent](docs/COORDINATOR_AND_AGENTS.md)。
 
 「自动完成」的执行范围、失败处理和成果来源见 [自动交付说明](docs/AUTOMATIC_DELIVERY.md)。它按成员 ID 与类型派发，不把模型发言中的“已完成”当作执行回执。缺少必要图片、文件或运行记录时，仍保存可用正文，并明确标为部分交付。
+
+## 图文与视频成果 / Multimodal delivery
+
+2.9 增加 ModelDesk 自己的媒体交付 Harness：**识别成果要求 → 能力路由 → 实际生成 → 文件校验与保存 → 正文排版 → 完整性检查**。例如发送「写一篇给初学者的 AI 编程公众号文章，图文并茂，配两张原创说明图」，平台会生成正文与配图任务，再把真正生成的图片放入文章，而不是只返回配图建议或占位链接。
+
+- **OpenAI 与 Gemini 生图**：复用已有登录网关实际提供的图像模型，或已添加的支持生图的 API 连接。2026-10-15 的本机调用已从 **`gemini-3.1-flash-image`** 与 **`gpt-image-1.5`** 取得真实图片，并通过本地图片校验与保存。「待验证」模型只有在实际生成后才会标为「已实测生图」。这不代表普通聊天模型、任意订阅或兼容 API 都具备生图能力。
+- **Muse 图片与视频**：使用当前群内已配置的 Muse 执行成员，在 Mac 上真正派发任务；从本轮确认回复下载真实附件并校验。已实测「正文 + Gemini 图片 + Muse 原生视频」的完整混合交付链，自动保存媒体、组合成果并导出 ZIP。Muse 的文字承诺、网页预览或不相关旧视频不算视频交付。
+- **有界恢复与明确选择**：未固定提供方或模型的自动生图，失败后最多再尝试一个不同提供方，总计最多两个；明确选择的提供方不切换。旧失败任务保留部分状态，不会因后来的成功被改写。自动模式支持「Gemini 生成图片、Muse 制作视频」的分别绑定。
+- **真实媒体与携带导出**：PNG / JPEG / WebP 使用 Pillow 解码，MP4 / WebM 校验容器并在可用时使用 `ffprobe` 检查视频流。媒体按任务私有保存，读取核对项目范围、大小与 SHA-256。ZIP 包含 `index.html`、`article.md`、实际 `media/` 文件和来源清单，可离线查看；不依赖临时供应商链接。
+
+操作与后端契约见 [图文、视频与媒体 Harness](docs/MULTIMODAL_DELIVERY.md)。供应商官方能力参考：[OpenAI Image generation](https://developers.openai.com/api/docs/guides/tools-image-generation)、[Gemini Image generation](https://ai.google.dev/gemini-api/docs/image-generation)。官方接口能力与本机已验证的适配路径分别记录，ModelDesk 当前不声称完整实现这些接口的全部参数或工具。
 
 ## 模型连接 / Model connections
 
@@ -58,7 +69,7 @@ ModelDesk 基于 [Karpathy 的 LLM Council](https://github.com/karpathy/llm-coun
 | 单项协作 | 并排聊天、LLM Council、接力群聊、CAMEL、Workforce、CrewAI 与 Flow |
 | 项目资源 | 提示词、角色模板、知识、记忆、工具和 MCP 连接 |
 | 原生 SDK 工作室 | 在明确审查源码后运行 CAMEL / CrewAI Python 脚本 |
-| 成果侧栏 | 预览实际返回内容、复制、Markdown / JSON 导出、来源和部分失败记录 |
+| 成果侧栏 | 完整正文、真实配图、视频播放器、单媒体下载、离线 ZIP / Markdown / JSON 导出、来源和部分失败记录 |
 | 手机控制 | Tailscale 私有 HTTPS、一次性配对、上传、群消息、任务状态与设备撤销 |
 | macOS 桌面 | Electron 窗口、原生资料选择与保存、复用本机服务 |
 
@@ -92,7 +103,7 @@ Mac 与手机连接同一 Tailscale 网络后，在 Mac 的「手机连接」启
 
 此桌面包是当前本机工作区的启动入口，依赖相邻的 **`llm-tools`**、本机网关配置，以及单独安装的 CAMEL / CrewAI 运行环境。**克隆本仓库不会自动安装这些外部环境、取得模型登录或得到可独立分发的完整应用。**
 
-基础开发需要 Python 3.12+、Node.js 20.19+（20.x）或 22.12+、npm 和 [uv](https://docs.astral.sh/uv/)。桌面打包需要 Apple Silicon Mac 与可用的 Xcode Command Line Tools（包括 Swift 编译器）。Codex / Claude Code 执行需要相应官方 CLI；Muse 需要原生 Mac 应用。具体已验证范围见 [功能与验收记录](docs/CAPABILITIES.md)。
+基础开发需要 Python 3.12+、Node.js 20.19+（20.x）或 22.12+、npm 和 [uv](https://docs.astral.sh/uv/)。桌面打包需要 Apple Silicon Mac、Node.js 22.12+ 与可用的 Xcode Command Line Tools（包括 Swift 编译器）；视频流检查使用当前机器可用的 `ffprobe`。Codex / Claude Code 执行需要相应官方 CLI；Muse 需要原生 Mac 应用。具体已验证范围见 [功能与验收记录](docs/CAPABILITIES.md)。
 
 ```bash
 uv sync --locked
@@ -125,7 +136,7 @@ npm --prefix frontend run dev -- --host 127.0.0.1 --port 5173
 
 应用包输出到相邻目录 `llm-tools/releases/ModelDesk.app`，使用本机 ad-hoc 签名，未经 Apple 公证。凭据、用户项目资料、运行记录、缓存和生成的应用包不进入 Git；自动检查使用隔离测试数据。
 
-2.8 的现场验收已验证 GPT / Gemini 讨论后的完整文章与实际下载、统筹模型自动派发 Codex 写文件与 Bash 测试，以及 Muse 新会话的实际送达、回复读取和最终整理。当前限制包括：
+2.8 的现场验收已验证 GPT / Gemini 讨论后的完整文章与实际下载、统筹模型自动派发 Codex 写文件与 Bash 测试，以及 Muse 新会话的实际送达、回复读取和最终整理。2.9 实测完成了 Gemini 两张配图文章、OpenAI 单张配图文章，以及正文、真实 Gemini 图片和 Muse 原生视频的混合成果；混合任务的 Muse 执行、媒体下载校验、最终组合与 ZIP 链路通过，最终无缺失项。文件校验与完整状态不等于图片创意细节、视频内容或文章事实已经审核。当前限制包括：
 
 - 系统 Python 在隔离环境中未能取得开发者工具，Python 测试未运行；这与已通过的 Bash 用例分别记录。
 - Claude Code 的受限执行环境尚未发现可用登录。
@@ -137,6 +148,7 @@ npm --prefix frontend run dev -- --host 127.0.0.1 --port 5173
 - [完整操作说明](MODEL_DESK.md)
 - [统筹模型与执行 Agent](docs/COORDINATOR_AND_AGENTS.md)
 - [模型连接与动态协作组](docs/MODEL_CONNECTIONS.md)
+- [图文、视频与媒体 Harness](docs/MULTIMODAL_DELIVERY.md)
 - [项目群聊与 Muse](docs/PROJECT_GROUPS_AND_MUSE.md)
 - [手机访问、独立执行与审批](docs/AGENT_GROUPS_AND_PHONE.md)
 - [Harness 架构](docs/HARNESS_ARCHITECTURE.md)

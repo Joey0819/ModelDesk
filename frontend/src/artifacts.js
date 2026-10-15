@@ -99,6 +99,9 @@ export function deriveArtifacts(job) {
     const delivery = result.delivery || {};
     return [makeArtifact(job, 'group:delivery', delivery.title || '完整交付结果', text(delivery.content), {
       model: delivery.model, source: '项目群自动交付', partial: delivery.status !== 'complete',
+      media: Array.isArray(delivery.media) ? delivery.media : [],
+      media_requirements: delivery.media_requirements || {},
+      media_tasks: Array.isArray(delivery.media_tasks) ? delivery.media_tasks : [],
       note: Array.isArray(delivery.limitations) ? delivery.limitations.filter((item) => typeof item === 'string').join('\n') : '',
     })].filter(Boolean);
   }

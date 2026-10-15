@@ -48,6 +48,8 @@ import AttachmentComposer from './AttachmentComposer';
 import ContextAttachments from './ContextAttachments';
 import JobAttachments from './JobAttachments';
 import GroupAgentTasks from './GroupAgentTasks';
+import DeliveryOutputOptions from './DeliveryOutputOptions';
+import { DeliveryMediaProgress } from './MediaDelivery';
 import './GroupWorkspace.css';
 
 const statuses = { queued: '等待发言', running: '正在讨论', complete: '本轮已完成', error: '本轮失败', cancelled: '已停止', interrupted: '已中断' };
@@ -123,6 +125,7 @@ export function GroupDeliveryProgress({ job, onOpenArtifacts }) {
     <header>{active ? <span className="small-spinner" /> : <Icon name="file" size={16} />}<strong>{label || '正在同步交付进度'}</strong>{content && <button className="subtle-button" type="button" onClick={() => onOpenArtifacts(job, true)}><Icon name="panel" size={14} />{state === 'complete' ? '查看完整成果' : '查看部分成果'}</button>}</header>
     {delivery.title && <p className="group-delivery-title">{delivery.title}</p>}
     {steps.length > 0 && <ol>{steps.map((step, index) => <li key={step.id || index} className={`group-delivery-step-${step.status}`}><div><strong>{step.member_name || step.member_id || '协作成员'}</strong><span>{GROUP_DELIVERY_STEP_STATUS[step.status] || '状态待同步'}</span></div>{step.instruction && <p>{step.instruction}</p>}{step.error && <p className="output-error">{step.error}</p>}</li>)}</ol>}
+    <DeliveryMediaProgress job={job} />
     {limitations.length > 0 && <ul className="group-delivery-limitations">{limitations.map((limit, index) => <li key={index}>{limit}</li>)}</ul>}
     {!active && !content && <p>尚未生成完整成果。请查看执行步骤与失败原因；讨论发言保留在下方记录中。</p>}
     {active && !steps.length && <p>正在分析你的要求，安排群内模型与可用 Agent。</p>}
@@ -182,6 +185,7 @@ function GroupRoom({ roomId, projectId, status, models, context, onContextChange
   const [recipientIds, setRecipientIds] = useState(saved.recipientIds);
   const [harnessMode, setHarnessMode] = useState(saved.harnessMode || 'relay');
   const [deliveryMode, setDeliveryMode] = useState(saved.deliveryMode);
+  const [outputOptions, setOutputOptions] = useState({ outputFormat: saved.outputFormat, imageCount: saved.imageCount, mediaProvider: saved.mediaProvider });
   const [contextTurns, setContextTurns] = useState(saved.contextTurns);
   const [attachmentPending, setAttachmentPending] = useState(false);
   const [settings, setSettings] = useState(false);
@@ -253,9 +257,9 @@ function GroupRoom({ roomId, projectId, status, models, context, onContextChange
   useEffect(() => { onContextChange(saved.context); onClearArtifacts(); }, [saved, onContextChange, onClearArtifacts]);
   useEffect(() => {
     if ((context.project_id || null) === (projectId || null)) {
-      localStorage.setItem(groupDraftKey(projectId, roomId), JSON.stringify({ prompt, recipientIds, harnessMode, deliveryMode, contextTurns, context }));
+      localStorage.setItem(groupDraftKey(projectId, roomId), JSON.stringify({ prompt, recipientIds, harnessMode, deliveryMode, ...outputOptions, contextTurns, context }));
     }
-  }, [prompt, recipientIds, harnessMode, deliveryMode, contextTurns, context, projectId, roomId]);
+  }, [prompt, recipientIds, harnessMode, deliveryMode, outputOptions, contextTurns, context, projectId, roomId]);
   useEffect(() => {
     if (workMode !== 'discussion') return;
     if (!selectedArtifactId && groupDeliveryMode(artifactJob) !== 'auto' && latestMuseWithVideo && (!artifactJob || String(latestMuseWithVideo.created_at || '') >= String(artifactJob.created_at || ''))) {
@@ -374,6 +378,7 @@ function GroupRoom({ roomId, projectId, status, models, context, onContextChange
       contextTurns,
       rounds: deliveryMode === 'discussion' ? activeHarness.rounds || 1 : 1,
       deliveryMode,
+      ...outputOptions,
     }));
     if (job) {
       if (deliveryMode === 'auto') {
@@ -533,6 +538,7 @@ function GroupRoom({ roomId, projectId, status, models, context, onContextChange
             </label>
           )}
         </div>
+        {!runtimeMember && deliveryMode === 'auto' && <DeliveryOutputOptions value={outputOptions} onChange={setOutputOptions} disabled={busy || Boolean(activeJob)} />}
         <form className="composer group-composer" onSubmit={send} onDragOver={(event) => { if (event.dataTransfer.types.includes('Files')) event.preventDefault(); }} onDrop={(event) => attachmentRef.current?.handleDrop(event)}>
           {!runtimeMember && <AttachmentComposer ref={attachmentRef} attachmentIds={context.attachment_ids} onChange={(ids) => onContextChange({ ...context, attachment_ids: ids })} includeShared={context.include_project_assets} onIncludeShared={(include) => onContextChange({ ...context, include_project_assets: include })} disabled={busy || Boolean(activeJob)} onPendingChange={setAttachmentPending} />}
           <textarea

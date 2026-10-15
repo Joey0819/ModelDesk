@@ -1,7 +1,9 @@
 """Native bridge state and HTTP boundaries without touching a user's window."""
 import asyncio
 import copy
+import io
 import json
+import os
 import tempfile
 import unittest
 import uuid
@@ -15,16 +17,20 @@ from fastapi import FastAPI, HTTPException
 from backend import muse_bridge as muse
 from backend.muse_bridge import MuseManager, MuseTaskRequest, marker, valid_thread
 from backend.projects import ProjectStore
+from backend.delivery_media import DeliveryMediaStore
 
 
 class MuseTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.temp = tempfile.TemporaryDirectory()
-        self.root = Path(self.temp.name)
+        self.root = Path(self.temp.name).resolve()
         self.manager = MuseManager(self.root / "muse", poll_seconds=0.001, idle_seconds=0)
+        self.stage_patch = patch.object(muse, "NATIVE_STAGING", self.root / "muse-native-staging")
+        self.stage_patch.start()
 
     async def asyncTearDown(self):
         await self.manager.shutdown()
+        self.stage_patch.stop()
         self.temp.cleanup()
 
     async def settle(self, task):
@@ -80,6 +86,86 @@ class MuseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["completion_evidence"], "framed_assistant_reply")
         self.assertIn("不证明", result["verification"])
         self.assertFalse(result["monitoring"])
+
+    async def test_current_completed_reply_keeps_only_valid_private_native_resources(self):
+        url = "https://media.example/actual-video.mp4?X-Amz-Signature=private-download-grant"
+        original = self.driver()
+
+        async def resource_driver(command, payload=None):
+            result = await original(command, payload)
+            if command == "observe":
+                result.update(resources=[{"url": url, "label": "真实视频" * 100}, {"url": url, "label": "duplicate"},
+                                         {"url": "http://media.example/not-secure.mp4"},
+                                         {"url": "https://127.0.0.1/private.png"}],
+                              resource_request_id=payload["request_id"])
+            return result
+
+        with patch.object(self.manager, "helper_call", side_effect=resource_driver):
+            result = await self.settle(await self.manager.create(self.request()))
+        self.assertEqual(result["status"], "complete")
+        self.assertEqual(result["_native_resources"], [{"url": url, "label": ("真实视频" * 100)[:200]}])
+        stored = json.loads((self.manager.store.directory / (result["id"] + ".json")).read_text())
+        self.assertEqual(stored["_native_resources"], result["_native_resources"])
+        self.assertNotIn("_native_resources", self.manager.list()[0])
+        self.assertNotIn("private-download-grant", json.dumps(self.manager.list()))
+        self.assertIn(url, json.dumps(self.manager.get(result["id"])))
+
+    async def test_resources_need_current_request_receipt_and_completed_frame(self):
+        url = "https://media.example/old.png?token=not-for-this-task"
+        for variant in ["resource_id", "wrong_thread", "busy", "no_marker"]:
+            original = self.driver()
+            observations = 0
+
+            async def stale_resources(command, payload=None):
+                nonlocal observations
+                result = await original(command, payload)
+                if command == "observe":
+                    observations += 1
+                    if variant == "busy" and observations > 1:
+                        return result
+                    result.update(resources=[{"url": url}], resource_request_id=payload["request_id"])
+                    if variant == "resource_id":
+                        result["resource_request_id"] = str(uuid.uuid4())
+                    elif variant == "wrong_thread":
+                        result["thread_url"] = "https://muse.ai/thread/" + str(uuid.uuid4())
+                    elif variant == "busy":
+                        result["busy"] = True
+                    elif variant == "no_marker":
+                        result["messages"] = [{"role": "assistant", "text": "No current ending marker"}]
+                return result
+
+            with patch.object(self.manager, "helper_call", side_effect=stale_resources):
+                result = await self.settle(await self.manager.create(self.request()))
+            self.assertFalse(result.get("_native_resources"), variant)
+            self.assertNotIn("not-for-this-task", json.dumps(result), variant)
+
+    def test_native_resources_reject_untrusted_targets_and_bound_capture(self):
+        invalid = ["https://localhost/a", "https://host.local/a", "https://169.254.169.254/a", "https://10.0.0.1/a",
+                   "https://[::1]/a", "https://user:password@media.example/a", "file:///tmp/image.png",
+                   "data:image/png;base64,aaaa", "https://media.example:8443/a", "https://media.example/a#other",
+                   "https://media.example/a\nheader", "https://media.example/" + "a" * 8192]
+        self.assertEqual(muse.safe_native_resources([{"url": url} for url in invalid]), [])
+        self.assertEqual(muse.safe_native_resources("https://media.example/a"), [])
+        self.assertEqual(muse.safe_native_resources([{"url": "https://media.example/a", "label": {}}]), [])
+        self.assertEqual(len(muse.safe_native_resources([{"url": f"https://media.example/{index}.png"}
+                                                        for index in range(30)])), 12)
+
+    def test_public_tasks_remove_private_nested_fields_and_signed_prose_urls(self):
+        first = "https://media.example/image.png?X-Amz-Signature=secret-one"
+        second = "https://other.example/video.mp4?token=secret-two"
+        task = {"_native_resources": [{"url": first, "label": "native"}],
+                "response": first + " " + second + " https://docs.example/guide",
+                "messages": [{"role": "assistant", "text": second, "_internal": "private"}],
+                "events": [{"_transport": {"secret": "value"}, "type": "reply_observed"}]}
+        public = muse.public_task(task)
+        encoded = json.dumps(public)
+        self.assertNotIn("secret-one", encoded)
+        self.assertNotIn("secret-two", encoded)
+        self.assertNotIn("_native_resources", encoded)
+        self.assertNotIn("_internal", encoded)
+        self.assertNotIn("_transport", encoded)
+        self.assertIn("https://docs.example/guide", public["response"])
+        self.assertIn("secret-one", json.dumps(task))
 
     async def test_missing_marker_preserves_output_and_explicit_observe_never_resends(self):
         driver = self.driver([{ "messages": [{"role": "assistant", "text": "未确认回复"}], "busy": False, "waiting_user": False}] * 2)
@@ -311,7 +397,7 @@ class MuseTests(unittest.IsolatedAsyncioTestCase):
         persisted = copy.deepcopy(original)
         persisted.pop("member_id")  # Pre-migration request records remain readable.
         persisted.update(response="Old local draft", verification=muse.HARNESS_VERIFICATION,
-                         video_url="/muse-media/unrelated.mp4")
+                         video_url="/muse-media/unrelated.mp4", _native_resources=[{"url": "https://media.example/unsupported.mp4"}])
         self.manager.store.save(persisted)
         recovered = MuseManager(self.manager.store.directory)
         recovered.recover()
@@ -323,6 +409,7 @@ class MuseTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(result["thread_url"])
         self.assertIsNone(result["video_url"])
         self.assertEqual(result["unverified_video_url"], "/muse-media/unrelated.mp4")
+        self.assertNotIn("_native_resources", result)
         with self.assertRaises(HTTPException):
             await recovered.resume_observing(result["id"])
 
@@ -404,6 +491,31 @@ class MuseTests(unittest.IsolatedAsyncioTestCase):
                 response = await remote.post("/api/muse/tasks", json=body, headers=origin)
                 self.assertEqual(response.status_code, 403)
 
+    async def test_http_tasks_and_exports_never_return_native_download_grants(self):
+        app = FastAPI()
+        app.include_router(muse.router)
+        origin = {"Origin": "http://localhost:5173"}
+        with patch.object(self.manager, "helper_call", self.driver()):
+            task = await self.settle(await self.manager.create(self.request()))
+        private_url = "https://media.example/file.mp4?X-Goog-Signature=private-signed-resource"
+        task.update(_native_resources=[{"url": private_url, "label": "Actual output"}], response="真实回复 " + private_url)
+        self.manager.save(task)
+        with patch.object(muse, "manager", self.manager):
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app, client=("127.0.0.1", 3000)), base_url="http://localhost") as client:
+                responses = [await client.get("/api/muse/tasks"), await client.get(f"/api/muse/tasks/{task['id']}"),
+                             await client.get(f"/api/muse/tasks/{task['id']}/export?format=md"),
+                             await client.get(f"/api/muse/tasks/{task['id']}/export?format=json"),
+                             await client.post(f"/api/muse/tasks/{task['id']}/cancel", headers=origin)]
+                with patch.object(self.manager, "create", new=AsyncMock(return_value=task)):
+                    responses.append(await client.post("/api/muse/tasks", json=self.request().model_dump(mode="json"), headers=origin))
+                with patch.object(self.manager, "resume_observing", new=AsyncMock(return_value=task)):
+                    responses.append(await client.post(f"/api/muse/tasks/{task['id']}/observe", headers=origin))
+        for response in responses:
+            self.assertIn(response.status_code, {200, 202})
+            self.assertNotIn("_native_resources", response.text)
+            self.assertNotIn("private-signed-resource", response.text)
+        self.assertIn(private_url, self.manager.get(task["id"])["response"])
+
     async def test_room_scope_checked_before_enqueue(self):
         from backend import groups
         project = str(uuid.uuid4())
@@ -426,6 +538,89 @@ class MuseTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(valid_thread("https://muse.ai/thread/" + str(uuid.uuid4())))
         for value in ["https://muse.ai", "https://muse.ai/thread/new", "https://muse.ai/api/auth/check", "https://muse.ai/thread/abc?token=value", "https://muse.ai/thread/abc#hash", "https://user@muse.ai/thread/abc", "https://muse.ai.evil.com/thread/abc", "hatch://thread/abc", "https://muse.ai:999/thread/abc"]:
             self.assertFalse(valid_thread(value), value)
+
+    def native_file_fixture(self):
+        from PIL import Image
+        content = io.BytesIO()
+        Image.new("RGB", (2, 2), "blue").save(content, format="PNG")
+        task = {"id": str(uuid.uuid4()), "request_id": str(uuid.uuid4()),
+                "project_id": str(uuid.uuid4()), "parent_job_id": str(uuid.uuid4())}
+        path, descriptor = muse.native_stage(task["id"], create=True)
+        os.close(descriptor)
+        filename = str(uuid.uuid4()) + ".png"
+        (path / filename).write_bytes(content.getvalue())
+        return task, path, filename, content.getvalue()
+
+    def test_native_files_import_exact_private_file_into_parent_owned_media(self):
+        task, directory, filename, raw = self.native_file_fixture()
+        media_store = DeliveryMediaStore(self.root / "verified-media")
+        result = {"file_request_id": task["request_id"], "downloaded_files": [{"name": filename, "label": "本轮实际图片"}]}
+        with patch("backend.delivery_media.store", media_store):
+            assets, errors = muse.import_native_files(task, result)
+        self.assertEqual(errors, [])
+        self.assertEqual(len(assets), 1)
+        asset = assets[0]
+        self.assertEqual(asset["job_id"], task["parent_job_id"])
+        self.assertEqual(asset["project_id"], task["project_id"])
+        self.assertEqual(asset["source_task_id"], task["id"])
+        self.assertEqual(asset["kind"], "image")
+        self.assertEqual(media_store.read({"id": task["parent_job_id"], "project_id": task["project_id"]}, asset["id"])[1], raw)
+        self.assertFalse((directory / filename).exists())
+
+    def test_native_files_reject_wrong_receipt_escape_symlink_and_hardlink(self):
+        task, directory, filename, _ = self.native_file_fixture()
+        assets, errors = muse.import_native_files(task, {"file_request_id": "other", "downloaded_files": [{"name": filename}]})
+        self.assertEqual((assets, errors), ([], []))
+        outside = self.root / "private.png"
+        outside.write_bytes(b"Do not read unrelated user files")
+        symlink = str(uuid.uuid4()) + ".png"
+        (directory / symlink).symlink_to(outside)
+        hardlink = str(uuid.uuid4()) + ".png"
+        os.link(outside, directory / hardlink)
+        result = {"file_request_id": task["request_id"], "downloaded_files": [
+            {"name": "../private.png"}, {"name": str(outside)}, {"name": symlink}, {"name": hardlink}]}
+        with patch("backend.delivery_media.store.save_bytes") as save:
+            assets, errors = muse.import_native_files(task, result)
+        self.assertEqual(assets, [])
+        self.assertTrue(errors)
+        save.assert_not_called()
+        self.assertEqual(outside.read_bytes(), b"Do not read unrelated user files")
+
+    def test_native_file_staging_cannot_traverse_a_symlinked_directory(self):
+        outside = self.root / "unrelated"
+        outside.mkdir()
+        (self.root / "muse-native-staging").symlink_to(outside, target_is_directory=True)
+        with self.assertRaises(OSError):
+            muse.native_stage(str(uuid.uuid4()), create=True)
+        self.assertEqual(list(outside.iterdir()), [])
+
+    async def test_observed_native_downloads_are_private_and_never_paths_in_public_tasks(self):
+        media_store = DeliveryMediaStore(self.root / "verified-media")
+        original = self.driver()
+        from PIL import Image
+
+        async def downloaded(command, payload=None):
+            result = await original(command, payload)
+            if command == "observe":
+                path = Path(payload["download_directory"])
+                self.assertEqual(path.name, payload["request_id"])
+                self.assertEqual(path.parent.name, "muse-native-staging")
+                filename = str(uuid.uuid4()) + ".png"
+                Image.new("RGB", (2, 2), "orange").save(path / filename)
+                result.update(file_request_id=payload["request_id"], downloaded_files=[{"name": filename, "label": "真实原生附件"}])
+            return result
+
+        request = self.request(project_id=str(uuid.uuid4()))
+        parent = str(uuid.uuid4())
+        with patch("backend.projects.store.get"), patch.object(self.manager, "helper_call", side_effect=downloaded), \
+                patch("backend.delivery_media.store", media_store):
+            result = await self.settle(await self.manager.create(request, parent_job_id=parent))
+        self.assertEqual(result["status"], "complete")
+        self.assertEqual(len(result["_native_media"]), 1)
+        self.assertEqual(result["_native_media"][0]["job_id"], parent)
+        public = json.dumps(self.manager.list(str(request.project_id)))
+        self.assertNotIn("_native_media", public)
+        self.assertNotIn(str(self.root), public)
 
 
 if __name__ == "__main__":

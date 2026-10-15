@@ -173,7 +173,7 @@ function createWindow() {
     item.setSaveDialogOptions({
       title: format === 'attachment' ? '保存已选附件' : '保存 ModelDesk 导出',
       buttonLabel: '保存',
-      ...(['md', 'json'].includes(format) ? { filters: [{ name: format === 'md' ? 'Markdown 文档' : 'JSON 数据', extensions: [format] }] } : {}),
+      ...(['md', 'json', 'zip'].includes(format) ? { filters: [{ name: { md: 'Markdown 文档', json: 'JSON 数据', zip: '完整图文成果包' }[format], extensions: [format] }] } : {}),
     });
     // Do not call setSavePath: the native save dialog keeps file choice/overwrite with the user.
   };

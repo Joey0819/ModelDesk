@@ -129,3 +129,11 @@
   .group-members-dialog > header, .group-members-dialog > footer, .group-members-dialog-body { padding: 14px; }
   .group-members-dialog input, .group-members-dialog textarea, .group-members-dialog select { font-size: 16px; }
 }
+
+/* Keep executable identities distinct while retaining the user's unified group layout. */
+.group-recipient-picker button small { font-size: 10px; opacity: .7; margin-left: 4px; }
+.group-member-kind, .group-phase-badge { font-size: 11px; letter-spacing: .01em; }
+.group-coordinator-badge { max-width: 200px; white-space: nowrap; text-overflow: ellipsis; overflow: hidden; font-size: 11px; color: var(--muted, #7d8594); }
+.group-runtime-boundary, .group-coordinator-note { margin: 6px 3px 0; font-size: 11px; line-height: 1.5; color: var(--muted, #7d8594); }
+.group-runtime-boundary .subtle-button { font-size: 11px; padding: 2px 7px; min-height: 28px; }
+@media (max-width: 600px) { .group-coordinator-badge { max-width: 140px; } .group-recipient-picker button small { display: none; } }

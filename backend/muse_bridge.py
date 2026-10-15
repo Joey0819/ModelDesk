@@ -1,6 +1,7 @@
-"""Durable, serialized access to the user's signed-in native Muse window,
-with automatic ModelDesk Muse Harness fallback when the native window or
-macOS TCC permission is unavailable.
+"""Durable, serialized access to the user's signed-in native Muse window.
+
+Only matching native receipts and observed replies establish delivery. Model
+responses and local video renderers never stand in for the Muse application.
 """
 import asyncio
 import copy
@@ -15,10 +16,9 @@ from pathlib import Path
 from typing import Literal
 from urllib.parse import urlsplit
 
-import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import Response
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from .harness.store import RunStore, checked_id
 from .workbench import now, public_error
@@ -29,13 +29,14 @@ ACTIVE = {"queued", "dispatching", "running", "waiting_user"}
 STATES = ACTIVE | {"complete", "error", "uncertain", "interrupted", "stopped_monitoring"}
 VERIFICATION = "回复来源为 Muse 原生窗口；结束标记仅标识回复边界，不证明回复事实或外部操作已验证。"
 HARNESS_VERIFICATION = "回复由 ModelDesk 内置 Muse Harness 引擎生成（本机窗口未就绪时自动接管）；可直接引用到群聊继续讨论。"
-GATEWAY = "http://127.0.0.1:8317/v1/chat/completions"
+UNVERIFIED_GENERATION = "历史 ModelDesk 本地生成内容；没有 Muse 原生送达或回复证据，不能作为 Muse 已完成交付。"
 
 
 class MuseTaskRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     project_id: uuid.UUID | None = None
     room_id: uuid.UUID | None = None
+    member_id: str | None = Field(default=None, pattern=r"^[A-Za-z][A-Za-z0-9_-]{0,39}$")
     prompt: str = Field(min_length=1, max_length=12000)
     timeout_seconds: int = Field(default=600, ge=30, le=1800)
 
@@ -45,6 +46,12 @@ class MuseTaskRequest(BaseModel):
         if not value.strip():
             raise ValueError("请填写交给 Muse 的任务")
         return value.strip()
+
+    @model_validator(mode="after")
+    def member_has_room(self):
+        if self.member_id and not self.room_id:
+            raise ValueError("指定 Muse 群成员必须选择所属项目群")
+        return self
 
 
 def local_mutation(request: Request):
@@ -97,6 +104,28 @@ def safe_messages(value):
     return messages
 
 
+def unverified_generation(task):
+    return (task.get("harness_generated") is True or task.get("source_unverified") is True
+            or task.get("verification") == HARNESS_VERIFICATION
+            or any(event.get("type") in {"harness_fallback_started", "harness_retry_requested"}
+                   for event in task.get("events", []) if isinstance(event, dict)))
+
+
+def preserve_source_boundary(task):
+    """Keep historical generated text while withdrawing unsupported receipts."""
+    if not unverified_generation(task):
+        return task
+    task.update(source_unverified=True, source_kind="unverified_local_generation", harness_generated=True,
+                verification=UNVERIFIED_GENERATION, completion_evidence="source_unverified")
+    for field in ["thread_url", "video_url"]:
+        if task.get(field):
+            task.setdefault("unverified_" + field, task[field])
+        task[field] = None
+    if task.get("status") == "complete":
+        task.update(status="uncertain", uncertain=True, sent=None, remote_state="unknown")
+    return task
+
+
 class MuseManager:
     def __init__(self, directory=None, helper=None, *, poll_seconds=2, idle_seconds=12, allow_harness_fallback=False):
         self.store = RunStore(directory or ROOT / "data/muse")
@@ -105,11 +134,10 @@ class MuseManager:
         self.account_lock = asyncio.Lock()
         self.helper_lock = asyncio.Lock()
         self.poll_seconds, self.idle_seconds = poll_seconds, idle_seconds
-        self.allow_harness_fallback = allow_harness_fallback
+        # Kept as a constructor compatibility argument for older callers only.
+        # Native failure must remain a failure, including when this was enabled.
+        self.allow_harness_fallback = False
         self.last_probe = None
-
-    def _use_harness_fallback(self):
-        return self.allow_harness_fallback and not hasattr(self.helper_call, "_mock_name")
 
     def save(self, task, event=None, **fields):
         task["updated_at"] = now()
@@ -124,12 +152,12 @@ class MuseManager:
         project = checked_id(project_id) if project_id else None
         if task["project_id"] != project:
             raise HTTPException(403, "Muse 任务不属于当前项目")
-        return task
+        return preserve_source_boundary(task)
 
     def list(self, project_id=None, room_id=None):
         project = checked_id(project_id) if project_id else None
         room = checked_id(room_id) if room_id else None
-        result = [copy.deepcopy(task) for task in self.records.values()
+        result = [preserve_source_boundary(copy.deepcopy(task)) for task in self.records.values()
                   if task["project_id"] == project and (not room or task["room_id"] == room)]
         result.sort(key=lambda task: task["updated_at"], reverse=True)
         return result[:100]
@@ -144,7 +172,7 @@ class MuseManager:
                 task = json.loads(path.read_text())
                 if checked_id(task["id"]) != path.stem or task["id"] != task["request_id"] or task.get("schema_version") != 1:
                     continue
-                MuseTaskRequest.model_validate({key: task[key] for key in MuseTaskRequest.model_fields})
+                MuseTaskRequest.model_validate({key: task[key] for key in MuseTaskRequest.model_fields if key in task})
                 if task["status"] not in STATES or not isinstance(task["events"], list) or not isinstance(task["response"], str):
                     continue
                 for field in ["created_at", "updated_at"]:
@@ -156,7 +184,7 @@ class MuseManager:
                     task.update(status="interrupted", uncertain=task.get("sent") is not False, remote_state="unknown" if task.get("sent") is not False else "not_sent",
                                 error="服务已重启，未自动重新发送。请先在 Muse 核对已有任务。", monitoring=False)
                     self.save(task, "recovered_without_replay")
-                self.records[task["id"]] = task
+                self.records[task["id"]] = preserve_source_boundary(task)
             except (ValueError, TypeError, KeyError, OSError, HTTPException):
                 continue
 
@@ -198,148 +226,52 @@ class MuseManager:
         except (RuntimeError, OSError) as error:
             allowed = {"ok": False, "installed": Path("/Applications/Muse.app").is_dir(), "permission": None, "composer_ready": False,
                        "error": str(error) if isinstance(error, RuntimeError) else "Muse 原生桥接无法启动，请重新构建或安装 ModelDesk。"}
-        if self._use_harness_fallback() and (not allowed.get("ok") or not allowed.get("permission") or not allowed.get("composer_ready")):
-            allowed = {
-                **allowed,
-                "ok": True,
-                "installed": True,
-                "permission": True,
-                "composer_ready": True,
-                "native_ready": False,
-                "error": None,
-            }
-        return {**allowed, "kind": "external_agent", "transport": "native_ui", "name": "Muse", "verification": VERIFICATION,
+        native_ready = all(allowed.get(field) is True for field in ["ok", "installed", "permission", "composer_ready"])
+        return {**allowed, "native_ready": native_ready, "kind": "external_agent", "transport": "native_ui", "name": "Muse", "verification": VERIFICATION,
                 "active_tasks": [task["id"] for task in self.records.values() if task.get("monitoring")],
                 "remote_cancel_supported": False}
 
-    async def run_harness_muse(self, task):
-        """Execute the Muse creative/research task via ModelDesk's own Harness when native UI is unavailable."""
-        from . import workbench
-        from .model_connections import request_options
-        task.update(status="running", error=None)
-        self.save(task, "harness_fallback_started")
-        try:
-            catalog = await workbench.model_catalog()
-        except Exception:
-            catalog = []
-        preferred = ["gemini-3.8-flash-high", "gemini-3-flash", "claude-opus-4-6-thinking", "gpt-6.1-sol"]
-        candidates = [m for m in preferred if m in catalog] + [m for m in catalog if m not in preferred]
-        if not candidates:
-            candidates = ["gemini-3-flash", "claude-opus-4-6-thinking", "gpt-6.1-sol"]
+    def member_scope(self, body):
+        if not body.get("room_id"):
+            return None, None
+        from .groups import store as rooms
+        room = rooms.get(body["room_id"], body["project_id"])
+        if not body.get("member_id"):
+            return None, None
+        member = next((item for item in room["team_snapshot"]["members"] if item["id"] == body["member_id"]), None)
+        if not member or member.get("kind", "model") != "muse":
+            raise HTTPException(422, "请选择当前项目群中已保存的 Muse Agent")
+        return copy.deepcopy(member), room["team_revision"]
 
-        system_prompt = (
-            "你是 Muse（ModelDesk 多智能体协作群的创意导演、多模态视频/视觉生成专家与深度调研智能体）。"
-            "请直接针对用户的任务给出高水准、可直接交付执行的专业成果。\n"
-            "如果任务涉及视频创作、画面、分镜或视觉生成，请包含：\n"
-            "1. 【导演创意与视觉基调】：光影氛围、色彩美学、人物神态与镜头情绪；\n"
-            "2. 【电影级分镜头脚本】：按时间轴列出景别、运镜方式（如推轨、慢门跟拍、景深切换）、画面细节与转场；\n"
-            "3. 【可直接复制的专业生成提示词（Prompt）】：提供中文精修版与英文高画质电影感提示词（含镜头参数、光效、材质细节与负面提示词 Negative Prompt）；\n"
-            "4. 【群组协作衔接建议】：供项目群其他成员（产品、调研、审阅）下一步核对的要点。"
-        )
-        messages = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": task["prompt"]},
-        ]
-        reply_text = ""
-        for model in candidates[:3]:
-            try:
-                payload = {"model": model, "messages": messages, "max_tokens": 2048}
-                async with httpx.AsyncClient(timeout=httpx.Timeout(120, connect=5), trust_env=False) as client:
-                    response = await client.post(**request_options(payload, GATEWAY))
-                    response.raise_for_status()
-                    data = response.json()
-                choices = data.get("choices") or []
-                content = (choices[0].get("message", {}).get("content") or "").strip() if choices else ""
-                if content:
-                    reply_text = content
-                    break
-            except Exception:
-                continue
-
-        if not reply_text:
-            reply_text = (
-                f"### Muse 电影级视频创作方案与生成提示词\n\n"
-                f"**原始创意主题**：{task['prompt']}\n\n"
-                f"#### 1. 导演视觉基调与光影设计\n"
-                f"- **光影与色调**：采用黄金时刻（Golden Hour）的爱琴海逆光与漫反射柔光，室内微暗、阳台外明媚通透，形成冷暖交织的电影级高动态范围（HDR）对比。\n"
-                f"- **核心材质与焦点**：突出丝滑睡裙的垂坠流光质感、繁花阳台的景深层次，以及回眸一笑时的眼神高光与微风拂发细节。\n\n"
-                f"#### 2. 分镜头运镜脚本（总时长 6–8 秒，24fps）\n"
-                f"- **镜头 1（0–2.5s · 慢推跟拍）**：中近景背影跟拍，少女轻盈走向布满鲜花藤蔓的法式玻璃门，双手缓缓推开门扉，阳光顺着门缝洒入室内。\n"
-                f"- **镜头 2（2.5–5.0s · 景深延展）**：镜头越过肩部向外推进，前景是盛开的神秘花园繁花，中景是湛蓝璀璨的爱琴海波光，远景可见古希腊白色大理石廊柱遗迹。\n"
-                f"- **镜头 3（5.0–8.0s · 特写升格慢镜）**：海风轻拂发丝与丝质裙摆，少女缓缓回眸微笑，浅景深虚化背景，定格在悸动瞬间。\n\n"
-                f"#### 3. 专业视频生成提示词（Cinematic Video Prompt）\n"
-                f"- **英文主提示词（可直接用于视频生成引擎）**：\n"
-                f"  `Cinematic slow-motion tracking shot, an elegant young woman in a flowing silk slip dress gently pushing open glass balcony doors covered in blooming Mediterranean flowers like a secret garden. Beyond the balcony lies the sparkling turquoise Aegean Sea and distant ancient Greek marble architecture bathed in golden hour sunlight. A gentle sea breeze moves her hair as she turns back over her shoulder with a breathtaking, heartwarming smile. Shallow depth of field, anamorphic lens flare, 35mm film grain, Kodak Vision3 500T aesthetic, photorealistic, 8k resolution, smooth motion, 24fps.`\n"
-                f"- **负面提示词（Negative Prompt）**：\n"
-                f"  `morphing, distorted architecture, extra limbs, jerky camera, overexposed, low resolution, watermark, unnatural facial expression.`"
-            )
-
-        thread_url = task.get("thread_url") if valid_thread(task.get("thread_url")) else f"https://muse.ai/thread/{task['request_id']}"
-        await self.ensure_video_asset(task)
-        task.update(
-            status="complete",
-            sent=True,
-            uncertain=False,
-            thread_url=thread_url,
-            submitted_at=task.get("submitted_at") or now(),
-            remote_state="reply_observed",
-            completion_evidence="framed_assistant_reply",
-            response=reply_text[:60000],
-            messages=[{"role": "assistant", "text": reply_text[:60000] + "\n" + marker(task["request_id"])}],
-            error=None,
-            verification=HARNESS_VERIFICATION,
-        )
-        self.save(task, "reply_observed", thread_url=thread_url)
-
-    async def ensure_video_asset(self, task):
-        if not self._use_harness_fallback():
+    def validate_member(self, task):
+        if not task.get("member_id"):
             return
-        if not re.search(r"(?:视频|短片|电影|动画|镜头|运镜|分镜|拍摄|画面|video|cinematic|film|clip|animation)", task.get("prompt", ""), re.I):
-            return
-        media_dir = ROOT / "frontend/public/muse-media"
-        media_dir.mkdir(parents=True, exist_ok=True)
-        target = media_dir / f"{task['id']}.mp4"
-        renderer = ROOT / "desktop/bin/muse-video-renderer"
-        if not target.is_file() and renderer.is_file():
-            try:
-                proc = await asyncio.create_subprocess_exec(
-                    str(renderer), str(target), task.get("prompt", "")[:200],
-                    stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
-                )
-                await asyncio.wait_for(proc.wait(), timeout=20)
-            except Exception:
-                pass
-        default_mp4 = media_dir / "83e3bb6d-c691-4182-834c-cf7db7a680f6.mp4"
-        if not target.is_file() and default_mp4.is_file():
-            try:
-                target.write_bytes(default_mp4.read_bytes())
-            except OSError:
-                pass
-        if target.is_file():
-            dist_dir = ROOT / "frontend/dist/muse-media"
-            if (ROOT / "frontend/dist").is_dir():
-                try:
-                    dist_dir.mkdir(parents=True, exist_ok=True)
-                    (dist_dir / target.name).write_bytes(target.read_bytes())
-                except OSError:
-                    pass
-            task["video_url"] = f"/muse-media/{target.name}"
+        member, revision = self.member_scope(task)
+        if member != task.get("member") or revision != task.get("team_revision"):
+            raise HTTPException(409, "群成员已变化，请确认 Muse 成员后重新派发；不会自动重发")
+
+    async def task_helper_call(self, task, command, payload=None):
+        # Native calls can wait on TCC or a busy account. Never execute or
+        # attribute a reply to a member that changed during the wait.
+        self.validate_member(task)
+        result = await self.helper_call(command, payload)
+        self.validate_member(task)
+        return result
 
     async def create(self, request):
         body = request.model_dump(mode="json")
         if body["project_id"]:
             from .projects import store as projects
             projects.get(body["project_id"])
-        if body["room_id"]:
-            from .groups import store as rooms
-            rooms.get(body["room_id"], body["project_id"])
+        member, revision = self.member_scope(body)
         if sum(task.get("monitoring", False) for task in self.records.values()) >= 8:
             raise HTTPException(429, "Muse 最多排队八个任务，请等待当前任务完成")
         identifier, timestamp = str(uuid.uuid4()), now()
         task = {**body, "schema_version": 1, "id": identifier, "request_id": identifier, "status": "queued", "thread_url": None,
                 "response": "", "messages": [], "sent": False, "uncertain": False, "remote_state": "not_sent", "error": None,
                 "created_at": timestamp, "updated_at": timestamp, "submitted_at": None, "finished_at": None, "events": [],
-                "monitoring": True, "verification": VERIFICATION, "completion_evidence": None}
+                "monitoring": True, "verification": VERIFICATION, "completion_evidence": None,
+                "source_kind": "native_muse", "member": member, "team_revision": revision}
         self.records[identifier] = task
         self.save(task, "queued")
         self.tasks[identifier] = asyncio.create_task(self.execute(task))
@@ -352,43 +284,26 @@ class MuseManager:
                     return
                 if not observe_only:
                     try:
-                        probe = await self.helper_call("probe")
+                        probe = await self.task_helper_call(task, "probe")
+                    except HTTPException:
+                        raise
                     except Exception:
                         probe = {"ok": False, "installed": False, "permission": False}
-                    if self._use_harness_fallback() and probe.get("installed") and probe.get("permission") is True and not probe.get("ok"):
-                        try:
-                            proc = await asyncio.create_subprocess_exec("/usr/bin/open", "-g", "-b", "com.meta.endo")
-                            await asyncio.wait_for(proc.wait(), timeout=5)
-                            await asyncio.sleep(1.5)
-                            probe = await self.helper_call("probe")
-                        except Exception:
-                            pass
-                    if not probe.get("ok") or not probe.get("installed") or probe.get("permission") is not True:
-                        if self._use_harness_fallback():
-                            await self.run_harness_muse(task)
-                            return
-                        task.update(status="error", error="Muse 未安装或尚未授权辅助功能。请在 Muse 连接页面完成设置。")
+                    if (not probe.get("ok") or not probe.get("installed") or probe.get("permission") is not True
+                            or probe.get("composer_ready") is False):
+                        task.update(status="error", error="Muse 原生窗口尚未就绪。请打开 Muse、授权辅助功能并确认输入窗口可用。")
                         self.save(task, "unavailable_before_send")
                         return
                     # Persist uncertainty BEFORE dispatch: a crash cannot safely
                     # distinguish 'not delivered' from 'delivered but no receipt'.
                     task.update(status="dispatching", sent=None, uncertain=True, remote_state="unknown")
                     self.save(task, "dispatch_started")
-                    try:
-                        receipt = await self.helper_call("submit", {"prompt": framed_prompt(task), "request_id": task["request_id"], "thread_url": None})
-                    except Exception:
-                        if self._use_harness_fallback():
-                            await self.run_harness_muse(task)
-                            return
-                        raise
+                    receipt = await self.task_helper_call(task, "submit", {"prompt": framed_prompt(task), "request_id": task["request_id"], "thread_url": None})
                     if receipt.get("request_id") != task["request_id"]:
                         raise RuntimeError("Muse 发送回执与当前任务不匹配；请在 Muse 核对，不能自动重发。")
                     if receipt.get("sent") is True and valid_thread(receipt.get("thread_url")):
                         task.update(sent=True, thread_url=receipt["thread_url"], submitted_at=now(), remote_state="submitted")
                     if not receipt.get("ok") or task["sent"] is not True:
-                        if self._use_harness_fallback():
-                            await self.run_harness_muse(task)
-                            return
                         confirmed_unsent = receipt.get("sent") is False and receipt.get("uncertain") is False
                         task.update(status="error" if confirmed_unsent else "uncertain", sent=False if confirmed_unsent else task["sent"],
                                     uncertain=not confirmed_unsent, remote_state="not_sent" if confirmed_unsent else "unknown",
@@ -406,6 +321,10 @@ class MuseManager:
                 task.update(status="interrupted", uncertain=task["sent"] is not False, remote_state="unknown" if task["sent"] is not False else "not_sent",
                             error="本地观察已中断；请在 Muse 核对，未重新发送任务。")
                 self.save(task, "interrupted_without_replay")
+        except HTTPException as error:
+            task.update(status="uncertain" if task["sent"] is not False else "error", uncertain=task["sent"] is not False,
+                        remote_state="unknown" if task["sent"] is not False else "not_sent", error=str(error.detail))
+            self.save(task, "member_scope_changed_without_replay")
         except Exception:
             task.update(status="uncertain" if task["sent"] is not False else "error", uncertain=task["sent"] is not False,
                         remote_state="unknown" if task["sent"] is not False else "not_sent", error="无法继续核对 Muse 原生窗口；已保留任务记录，不会自动重发。")
@@ -419,7 +338,7 @@ class MuseManager:
     async def observe(self, task):
         deadline, idle_since = time.monotonic() + task["timeout_seconds"], None
         while time.monotonic() < deadline:
-            result = await self.helper_call("observe", {"thread_url": task["thread_url"], "request_id": task["request_id"]})
+            result = await self.task_helper_call(task, "observe", {"thread_url": task["thread_url"], "request_id": task["request_id"]})
             if not result.get("ok") or result.get("thread_url") != task["thread_url"] or result.get("request_id") != task["request_id"]:
                 raise RuntimeError("Muse conversation no longer matches")
             messages = safe_messages(result.get("messages"))
@@ -435,7 +354,6 @@ class MuseManager:
             if observed_reply:
                 task["response"] = observed_reply
             if completed and observed_reply and not busy and not waiting:
-                await self.ensure_video_asset(task)
                 task.update(status="complete", uncertain=False, remote_state="reply_observed", completion_evidence="framed_assistant_reply", error=None)
                 self.save(task, "reply_observed")
                 return
@@ -462,15 +380,11 @@ class MuseManager:
 
     async def resume_observing(self, identifier, project_id=None):
         task = self.get(identifier, project_id)
+        self.validate_member(task)
         if task["id"] in self.tasks or task.get("monitoring"):
             raise HTTPException(409, "此任务仍在观察中")
         if task["status"] == "complete":
             raise HTTPException(409, "此任务已完成")
-        if self._use_harness_fallback() and (task.get("sent") is not True or not valid_thread(task.get("thread_url"))):
-            task.update(monitoring=True, status="queued", error=None, finished_at=None)
-            self.save(task, "harness_retry_requested")
-            self.tasks[task["id"]] = asyncio.create_task(self.execute(task, observe_only=False))
-            return copy.deepcopy(task)
         if task.get("sent") is not True or not valid_thread(task.get("thread_url")):
             raise HTTPException(409, "没有可继续观察的已确认 Muse 会话；请在 Muse 窗口核对")
         if sum(item.get("monitoring", False) for item in self.records.values()) >= 8:
@@ -504,7 +418,7 @@ class MuseManager:
         self.tasks.clear()
 
 
-manager = MuseManager(allow_harness_fallback=True)
+manager = MuseManager()
 router = APIRouter(prefix="/api/muse", tags=["native-muse"])
 
 
@@ -544,7 +458,7 @@ async def export_task(identifier: str, project_id: str | None = None, format: Li
     if format == "json":
         content = json.dumps(task, ensure_ascii=False, indent=2)
     else:
-        content = "\n\n".join(["# Muse 实际回复", "任务：" + task["prompt"], "状态：" + task["status"], "来源：" + (task["thread_url"] or "尚未确认会话"),
-                                "请求记录：" + task["request_id"], task["response"] or "尚无已读取回复。", "> " + VERIFICATION, task.get("error") or ""])
+        content = "\n\n".join(["# Muse 任务记录", "任务：" + task["prompt"], "状态：" + task["status"], "来源：" + (task["thread_url"] or "尚未确认会话"),
+                                "请求记录：" + task["request_id"], task["response"] or "尚无已读取回复。", "> " + task.get("verification", VERIFICATION), task.get("error") or ""])
     return Response(content, media_type="application/json" if format == "json" else "text/markdown",
                     headers={"Content-Disposition": f'attachment; filename="ModelDesk-muse-{task["id"]}.{format}"', "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"})

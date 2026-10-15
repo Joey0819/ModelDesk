@@ -200,6 +200,135 @@ class MuseTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(result["sent"])
         self.assertEqual(driver.await_count, 1)
 
+    async def test_production_style_native_failure_never_becomes_synthetic_success(self):
+        # Use a plain coroutine, not AsyncMock: the previous implementation
+        # bypassed its production fallback whenever helper_call was mocked.
+        self.manager.allow_harness_fallback = True
+        calls = []
+
+        async def unavailable(command, payload=None):
+            calls.append(command)
+            return {"ok": False, "installed": True, "permission": False, "composer_ready": False}
+
+        self.manager.helper_call = unavailable
+        status = await self.manager.status()
+        self.assertFalse(status["ok"])
+        self.assertFalse(status["permission"])
+        self.assertFalse(status["composer_ready"])
+        result = await self.settle(await self.manager.create(self.request()))
+        self.assertEqual(result["status"], "error")
+        self.assertFalse(result["sent"])
+        self.assertFalse(result["response"])
+        self.assertIsNone(result["thread_url"])
+        self.assertIsNone(result["completion_evidence"])
+        self.assertNotIn("video_url", result)
+        self.assertEqual(calls, ["probe", "probe"])
+
+    async def test_unconfirmed_native_dispatch_retains_uncertainty_without_fallback(self):
+        calls = []
+
+        async def unconfirmed(command, payload=None):
+            calls.append(command)
+            if command == "probe":
+                return {"ok": True, "installed": True, "permission": True}
+            return {"ok": False, "sent": None, "uncertain": True, "request_id": payload["request_id"]}
+
+        self.manager.helper_call = unconfirmed
+        result = await self.settle(await self.manager.create(self.request()))
+        self.assertEqual(calls, ["probe", "submit"])
+        self.assertEqual(result["status"], "uncertain")
+        self.assertTrue(result["uncertain"])
+        self.assertIsNone(result["sent"])
+        self.assertIsNone(result["thread_url"])
+        self.assertIsNone(result["completion_evidence"])
+        self.assertFalse(result["response"])
+
+    async def test_native_account_without_composer_never_submits(self):
+        async def no_composer(command, payload=None):
+            self.assertEqual(command, "probe")
+            return {"ok": True, "installed": True, "permission": True, "composer_ready": False}
+
+        self.manager.helper_call = no_composer
+        status = await self.manager.status()
+        self.assertFalse(status["native_ready"])
+        result = await self.settle(await self.manager.create(self.request()))
+        self.assertEqual(result["status"], "error")
+        self.assertFalse(result["sent"])
+        self.assertIsNone(result["completion_evidence"])
+
+    async def test_historical_generated_text_survives_without_native_receipt_or_asset_claim(self):
+        with patch.object(self.manager, "helper_call", self.driver()):
+            original = await self.settle(await self.manager.create(self.request()))
+        persisted = copy.deepcopy(original)
+        persisted.pop("member_id")  # Pre-migration request records remain readable.
+        persisted.update(response="Old local draft", verification=muse.HARNESS_VERIFICATION,
+                         video_url="/muse-media/unrelated.mp4")
+        self.manager.store.save(persisted)
+        recovered = MuseManager(self.manager.store.directory)
+        recovered.recover()
+        result = recovered.get(original["id"])
+        self.assertEqual(result["response"], "Old local draft")
+        self.assertEqual(result["status"], "uncertain")
+        self.assertTrue(result["source_unverified"])
+        self.assertEqual(result["completion_evidence"], "source_unverified")
+        self.assertIsNone(result["thread_url"])
+        self.assertIsNone(result["video_url"])
+        self.assertEqual(result["unverified_video_url"], "/muse-media/unrelated.mp4")
+        with self.assertRaises(HTTPException):
+            await recovered.resume_observing(result["id"])
+
+    def typed_room(self):
+        return {"id": str(uuid.uuid4()), "project_id": str(uuid.uuid4()), "team_revision": "a" * 64,
+                "team_snapshot": {"members": [{"id": "creative", "name": "创意 Agent", "kind": "muse", "model": None, "role": "创作"}]}}
+
+    async def test_typed_muse_member_is_frozen_from_its_own_room(self):
+        from backend import groups
+        room = self.typed_room()
+        with patch("backend.projects.store.get"), patch.object(groups.store, "get", return_value=room), patch.object(self.manager, "helper_call", self.driver()):
+            result = await self.settle(await self.manager.create(self.request(project_id=room["project_id"], room_id=room["id"], member_id="creative")))
+        self.assertEqual(result["status"], "complete")
+        self.assertEqual(result["member"], room["team_snapshot"]["members"][0])
+        self.assertEqual(result["team_revision"], room["team_revision"])
+        self.assertEqual(result["source_kind"], "native_muse")
+
+    async def test_typed_muse_rejects_model_or_foreign_member_before_enqueue(self):
+        from backend import groups
+        room = self.typed_room()
+        room["team_snapshot"]["members"][0]["kind"] = "model"
+        with patch("backend.projects.store.get"), patch.object(groups.store, "get", return_value=room), patch.object(self.manager, "helper_call", self.driver()) as helper:
+            for member in ["creative", "foreign"]:
+                with self.assertRaises(HTTPException) as error:
+                    await self.manager.create(self.request(project_id=room["project_id"], room_id=room["id"], member_id=member))
+                self.assertEqual(error.exception.status_code, 422)
+        self.assertFalse(helper.called)
+        self.assertFalse(self.manager.records)
+
+    async def test_member_revision_changes_during_probe_or_submit_cannot_claim_completion(self):
+        from backend import groups
+        for changed_at in ["probe", "submit", "observe"]:
+            room = self.typed_room()
+            original = self.driver()
+            calls = []
+
+            async def changing_driver(command, payload=None):
+                calls.append(command)
+                result = await original(command, payload)
+                if command == changed_at:
+                    room["team_revision"] = "b" * 64
+                return result
+
+            with patch("backend.projects.store.get"), patch.object(groups.store, "get", return_value=room), patch.object(self.manager, "helper_call", side_effect=changing_driver):
+                result = await self.settle(await self.manager.create(self.request(project_id=room["project_id"], room_id=room["id"], member_id="creative")))
+            self.assertEqual(calls, {"probe": ["probe"], "submit": ["probe", "submit"], "observe": ["probe", "submit", "observe"]}[changed_at])
+            self.assertEqual(result["status"], "error" if changed_at == "probe" else "uncertain")
+            self.assertIsNone(result["completion_evidence"])
+            if changed_at == "observe":
+                self.assertTrue(result["sent"])
+                self.assertIsNotNone(result["thread_url"])
+            else:
+                self.assertIsNone(result["thread_url"])
+            self.assertFalse(result["response"])
+
     async def test_http_loopback_origin_scope_and_export(self):
         projects = ProjectStore(self.root / "projects")
         app = FastAPI()

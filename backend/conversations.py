@@ -45,7 +45,7 @@ def deliverables(job):
             caveats.append("上轮部分成员或评审失败；引用的是实际主席结论，不代表所有模型均成功。")
     elif mode in {"camel", "group"}:
         for message in records("messages"):
-            if not isinstance(message, dict) or message.get("error") or message.get("incomplete"):
+            if not isinstance(message, dict) or message.get("error") or message.get("incomplete") or message.get("phase") == "plan":
                 continue
             model = message.get("model")
             if not model and mode == "camel":

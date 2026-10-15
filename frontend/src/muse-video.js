@@ -1,4 +1,5 @@
 const VIDEO_KEYWORDS = /(?:视频|短片|电影|动画|镜头|运镜|分镜|拍摄|画面|vlog|reel|video|cinematic|film|clip|footage|animation|trailer|scene)/i;
+// This existing sample remains available as a sample asset only.
 export const DEFAULT_MUSE_VIDEO_URL = '/muse-media/83e3bb6d-c691-4182-834c-cf7db7a680f6.mp4';
 
 const runtimeVideoUrls = new Map();
@@ -8,31 +9,37 @@ export function isMuseVideoPrompt(prompt = '') {
 }
 
 export function resolveMuseVideoUrl(task) {
-  if (!task) return null;
-  if (typeof task.video_url === 'string' && task.video_url.trim()) return task.video_url.trim();
-  if (runtimeVideoUrls.has(task.id)) return runtimeVideoUrls.get(task.id);
-  if (task.id === '83e3bb6d-c691-4182-834c-cf7db7a680f6') return DEFAULT_MUSE_VIDEO_URL;
-  const urlMatch = String(task.response || '').match(/https?:\/\/[^\s"'<>)]+\.(?:mp4|webm|mov)\b/i);
-  if (urlMatch) return urlMatch[0];
-  if (task.status === 'complete' && isMuseVideoPrompt(task.prompt)) return DEFAULT_MUSE_VIDEO_URL;
-  return null;
+  if (!task || task.status !== 'complete' || task.sent !== true
+      || task.completion_evidence !== 'framed_assistant_reply'
+      || task.harness_generated || task.source_unverified || task.source_kind === 'unverified_local_generation'
+      || task.events?.some((event) => ['harness_fallback_started', 'harness_retry_requested'].includes(event.type))
+      || String(task.verification || '').includes('Harness')) return null;
+  if (typeof task.video_url === 'string' && task.video_url.trim()) {
+    const value = task.video_url.trim();
+    // Old /muse-media files came from a generic local renderer. A local file
+    // needs a task-bound native artifact receipt before it can be attributed.
+    if (value.startsWith('/muse-media/')) {
+      return task.video_source === 'native_muse' && task.video_task_id === task.id ? value : null;
+    }
+    try {
+      const parsed = new URL(value);
+      if (parsed.protocol === 'https:' && !parsed.username && !parsed.password) return parsed.href;
+    } catch { /* Unsupported or non-public URL. */ }
+  }
+  const urlMatch = String(task.response || '').match(/https:\/\/[^\s"'<>)]+\.(?:mp4|webm|mov)\b/i);
+  return urlMatch?.[0] || null;
 }
 
 /**
- * Synthesizes a customized playable cinematic video in the browser using Canvas + MediaRecorder
- * when a new video task completes on the client, and caches the resulting Blob URL.
+ * Explicit local storyboard preview renderer. Its result is not a Muse artifact
+ * or delivery receipt. No native task path invokes this helper automatically.
  */
 export async function synthesizeBrowserMuseVideo(task) {
-  if (!task?.id) return DEFAULT_MUSE_VIDEO_URL;
+  if (!task?.id) return null;
   if (task.video_url) return task.video_url;
   if (runtimeVideoUrls.has(task.id)) return runtimeVideoUrls.get(task.id);
-  if (task.id === '83e3bb6d-c691-4182-834c-cf7db7a680f6') {
-    runtimeVideoUrls.set(task.id, DEFAULT_MUSE_VIDEO_URL);
-    return DEFAULT_MUSE_VIDEO_URL;
-  }
   if (typeof document === 'undefined' || typeof MediaRecorder === 'undefined') {
-    runtimeVideoUrls.set(task.id, DEFAULT_MUSE_VIDEO_URL);
-    return DEFAULT_MUSE_VIDEO_URL;
+    return null;
   }
   try {
     const canvas = document.createElement('canvas');
@@ -40,8 +47,7 @@ export async function synthesizeBrowserMuseVideo(task) {
     canvas.height = 540;
     const ctx = canvas.getContext('2d');
     if (!ctx || typeof canvas.captureStream !== 'function') {
-      runtimeVideoUrls.set(task.id, DEFAULT_MUSE_VIDEO_URL);
-      return DEFAULT_MUSE_VIDEO_URL;
+      return null;
     }
     const mimeType = ['video/mp4', 'video/webm;codecs=vp9', 'video/webm'].find((type) => MediaRecorder.isTypeSupported?.(type)) || '';
     const stream = canvas.captureStream(24);
@@ -118,7 +124,7 @@ export async function synthesizeBrowserMuseVideo(task) {
       ctx.fillStyle = '#e8eef7';
       ctx.font = '600 11px -apple-system, BlinkMacSystemFont, sans-serif';
       const shot = progress < 0.34 ? 'SHOT 01/03 · DOLLY-IN' : progress < 0.67 ? 'SHOT 02/03 · PANORAMA' : 'SHOT 03/03 · CLOSE-UP';
-      ctx.fillText(`MUSE VIDEO ENGINE · 24FPS · ${shot}`, 20, 26);
+      ctx.fillText(`MODELDESK LOCAL PREVIEW · 24FPS · ${shot}`, 20, 26);
 
       ctx.fillStyle = '#ffffff';
       ctx.font = '500 13px -apple-system, BlinkMacSystemFont, sans-serif';
@@ -137,7 +143,6 @@ export async function synthesizeBrowserMuseVideo(task) {
       runtimeVideoUrls.set(task.id, blobUrl);
       return blobUrl;
     }
-  } catch { /* Fallback to pre-rendered HD MP4 below. */ }
-  runtimeVideoUrls.set(task.id, DEFAULT_MUSE_VIDEO_URL);
-  return DEFAULT_MUSE_VIDEO_URL;
+  } catch { /* A failed local preview has no video artifact. */ }
+  return null;
 }

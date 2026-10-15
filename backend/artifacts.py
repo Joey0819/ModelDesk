@@ -36,12 +36,13 @@ def selected_artifact(job, identifier):
         def identity(message):
             return (message.get("member_id") or message.get("model")) if mode == "group" else message.get("role") or message.get("model")
         for index, message in enumerate(messages):
-            if text(message.get("content")).strip() and not re.search(r"任务规划|任务细化|模型传输重试|原生任务结果|原生结果整理", message.get("role") or ""):
+            if message.get("phase") != "plan" and text(message.get("content")).strip() and not re.search(r"任务规划|任务细化|模型传输重试|原生任务结果|原生结果整理", message.get("role") or ""):
                 latest[identity(message)] = (index, message)
         for index, message in latest.values():
             later_failed = any(identity(item) == identity(message) and (item.get("error") or item.get("incomplete")) for item in messages[index + 1:])
-            add(f"{mode}:{index}", f"最后发言 · {message.get('role') or message.get('model') or '参与角色'}", message["content"],
-                partial=bool(message.get("error") or message.get("incomplete") or later_failed), source="角色实际发言，未另行生成综合结论")
+            synthesis = message.get("phase") == "synthesis"
+            add(f"{mode}:{index}", "统筹模型综合结论" if synthesis else f"最后发言 · {message.get('member_name') or message.get('role') or message.get('model') or '参与角色'}", message["content"],
+                partial=bool(message.get("error") or message.get("incomplete") or later_failed), source="统筹模型实际汇总" if synthesis else "角色实际发言，未另行生成综合结论")
     elif mode == "sdk_script":
         add("sdk:answer", "SDK 返回内容", result.get("answer"), source="原生 SDK 实际返回")
         if not candidates and job.get("result") is not None:

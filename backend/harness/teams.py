@@ -25,7 +25,7 @@ class TeamStore:
             if path.is_symlink():
                 raise ValueError("Invalid team file")
             value = json.loads(path.read_text())
-            body = TeamRequest.model_validate({key: value[key] for key in TeamRequest.model_fields}).model_dump(mode="json")
+            body = TeamRequest.model_validate({key: value[key] for key in TeamRequest.model_fields if key in value}).model_dump(mode="json")
             if value["id"] != identifier or value.get("schema_version") != 1 or not isinstance(value.get("archived"), bool):
                 raise ValueError("Invalid team identity")
             for field in ["created_at", "updated_at"]:
@@ -75,6 +75,8 @@ class TeamStore:
         body = request.model_dump(mode="json")
         if request.team_id:
             snapshot = self.get(str(request.team_id), body["project_id"])
+            if any(member.get("kind", "model") != "model" for member in snapshot["members"]):
+                raise HTTPException(422, "此协作流程仅支持模型成员；包含可执行 Agent 的团队请使用项目群")
             body["models"] = [member["model"] for member in snapshot["members"]]
             if len(body["models"]) != len(set(body["models"])):
                 raise HTTPException(422, "此协作组有多位成员使用同一模型，请在项目群聊中使用；协作流程目前需要不同模型")

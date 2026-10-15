@@ -1,24 +1,26 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { workbenchApi } from '../api';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { REMOTE_CLIENT } from '../api-base';
 import { groupApi } from '../group-api';
 import { groupTaskApi } from '../group-task-api';
 import { TASK_LABELS, taskActive, taskDraftKey, taskEngineLabel, readTaskDraft } from '../group-task-state';
 import {
   MUSE_STATUS,
-  applyMuseHarnessOverrides,
-  buildMuseHarnessPrompt,
   canUseMuseReply,
-  fallbackMuseCreativeResponse,
   mergeMuseTasks,
-  readMuseHarnessCache,
+  museReadiness,
+  normalizeMuseSource,
   safeMuseThreadUrl,
-  writeMuseHarnessEntry,
 } from '../muse-state';
-import { isMuseVideoPrompt, resolveMuseVideoUrl, synthesizeBrowserMuseVideo } from '../muse-video';
+import { resolveMuseVideoUrl } from '../muse-video';
 import { museApi } from '../muse-api';
 import {
   GROUP_HARNESS_MODES,
   buildMuseHandoffPrompt,
+  buildGroupRuntimePrompt,
+  groupMemberKind,
+  groupMemberKindLabel,
+  groupSelection,
+  groupRuntimeRequest,
   extractGroupDeliverable,
   groupActive,
   groupDraftKey,
@@ -48,35 +50,36 @@ import './GroupWorkspace.css';
 const statuses = { queued: '等待发言', running: '正在讨论', complete: '本轮已完成', error: '本轮失败', cancelled: '已停止', interrupted: '已中断' };
 const dateLabel = (date) => date ? new Date(date).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : '';
 
-export function GroupMuseTurn({ task, projectId, roomId, onUseReply, onOpenMuse, onRetryMuse, onOpenArtifacts }) {
+export function GroupMuseTurn({ task: rawTask, projectId, roomId, onUseReply, onOpenMuse, onRetryMuse, onOpenArtifacts }) {
+  const task = normalizeMuseSource(rawTask);
   const usable = canUseMuseReply(task, projectId, roomId);
   const videoUrl = resolveMuseVideoUrl(task);
   return <article className="group-room-turn group-muse-turn" aria-label={`Muse 群聊记录 ${dateLabel(task.created_at)}`}>
     <div className="group-user-message"><header><strong>你</strong><time>{dateLabel(task.created_at)}</time><CopyTextButton text={task.prompt || ''} label="复制交给 Muse 的任务" /></header><div className="group-turn-recipients"><span>@Muse</span></div><Markdown>{task.prompt || ''}</Markdown></div>
-    <section className="group-member-message" style={{ '--member-color': '#946028' }}><span className="group-member-avatar" aria-hidden="true">M</span><div><header><strong>Muse</strong><small>{task.harness_generated ? 'ModelDesk Muse 视频与创意引擎' : 'Mac 本机桥接'}</small><small>{MUSE_STATUS[task.status] || task.status}</small></header>
+    <section className="group-member-message" style={{ '--member-color': '#946028' }}><span className="group-member-avatar" aria-hidden="true">M</span><div><header><strong>{task.member?.name || 'Muse'}</strong><small>{task.harness_generated ? '旧版未验证内容' : 'Mac 本机桥接'}</small><small>{MUSE_STATUS[task.status] || task.status}</small></header>
       {videoUrl && (
         <div className="muse-video-card" aria-label="Muse 已回传视频成片">
           <div className="muse-video-header">
-            <span><strong>Muse 已完成视频创作并回传至工作台</strong> · 720p HD 24fps</span>
+            <span><strong>Muse 返回的视频链接</strong></span>
             <div className="muse-video-header-actions">
               {onOpenArtifacts && <button type="button" className="subtle-button" onClick={() => onOpenArtifacts({ ...task, video_url: videoUrl, mode: 'muse_task' }, true)}><Icon name="panel" size={13} />在成果栏预览</button>}
-              <a className="primary-button muse-video-download" href={videoUrl} download={`ModelDesk-Muse-${(task.id || 'video').slice(0, 8)}.mp4`}>下载视频 MP4</a>
+              <a className="primary-button muse-video-download" href={videoUrl} download>下载原始视频</a>
             </div>
           </div>
           <video className="muse-inline-video" src={videoUrl} controls playsInline preload="metadata" loop />
         </div>
       )}
-      {task.response ? <Markdown>{task.response}</Markdown> : <p className="result-note">{task.monitoring ? '正在等待 Muse 生成并回传视频与回复…' : '尚未读取到实际回复。'}</p>}
+      {task.response ? <Markdown>{task.response}</Markdown> : <p className="result-note">{task.monitoring ? '正在等待 Muse 窗口中的实际回复…' : '尚未读取到实际回复。'}</p>}
       {task.error && <p className="output-error">{task.error}</p>}
       {task.response && !usable && <p className="result-note">回复尚未确认完整，保留原始状态。</p>}
       <div className="group-message-actions">
         <CopyTextButton text={task.response || ''} label="复制 Muse 的发言" />
-        {videoUrl && <a className="subtle-button" href={videoUrl} download={`ModelDesk-Muse-${(task.id || 'video').slice(0, 8)}.mp4`}>下载视频 MP4</a>}
+        {videoUrl && <a className="subtle-button" href={videoUrl} download>下载原始视频</a>}
         {usable && <button className="subtle-button" type="button" onClick={() => onUseReply(task)}>引用回复继续讨论</button>}
-        {!usable && !task.monitoring && onRetryMuse && <button className="subtle-button group-inline-muse-btn" type="button" onClick={() => onRetryMuse(task)}>重新执行 Muse</button>}
+        {!usable && !task.monitoring && onRetryMuse && <button className="subtle-button group-inline-muse-btn" type="button" onClick={() => onRetryMuse(task)}>准备重试草稿</button>}
         <button className="subtle-button" type="button" onClick={onOpenMuse}>查看 Muse 任务</button>
       </div>
-      <details className="group-turn-record"><summary>来源与交接记录</summary><p>此任务单独发送给 Muse，完成后视频与文本成果自动回传至本工作台。</p><p>{task.verification || '来自原生窗口实际读取；外部动作是否成功仍需核查。'}</p>{safeMuseThreadUrl(task.thread_url) && <a href={safeMuseThreadUrl(task.thread_url)} target="_blank" rel="noopener noreferrer">打开原始 Muse 会话 ↗</a>}</details>
+      <details className="group-turn-record"><summary>来源与交接记录</summary><p>此任务单独交给 Muse 原生应用，时间线保留桥接读取的实际状态与内容。</p><p>{task.verification || '来自原生窗口实际读取；外部动作是否成功仍需核查。'}</p>{safeMuseThreadUrl(task.thread_url) && <a href={safeMuseThreadUrl(task.thread_url)} target="_blank" rel="noopener noreferrer">打开原始 Muse 会话 ↗</a>}</details>
     </div></section>
   </article>;
 }
@@ -94,7 +97,7 @@ export function GroupTurn({ job, room, onOpenArtifacts, onSendToMuse, onHandOffT
   const recipients = groupRecipients(job, room);
   return <article className="group-room-turn" aria-label={`群聊记录 ${dateLabel(job.created_at)}`}>
     <div className="group-user-message"><header><strong>你</strong><time>{dateLabel(job.created_at)}</time><CopyTextButton text={job.prompt} label="复制这条提问" /></header><div className="group-turn-recipients">{recipients.map((member) => <span key={member.id}>@{member.name}</span>)}{job.rounds > 1 && <span>共 {job.rounds} 轮深研</span>}</div><Markdown>{job.prompt}</Markdown><JobAttachments job={job} />{job.group_muse_source && <details className="group-muse-provenance"><summary>引用了 Muse 实际回复</summary><p>{job.group_muse_source.prompt}</p>{safeMuseThreadUrl(job.group_muse_source.thread_url) && <a href={safeMuseThreadUrl(job.group_muse_source.thread_url)} target="_blank" rel="noopener noreferrer">打开原始 Muse 会话 ↗</a>}<Markdown>{job.group_muse_source.response}</Markdown>{job.group_muse_source.truncated && <p>引用超过保存预算，完整回复保留在原始 Muse 任务中。</p>}<p>{job.group_muse_source.verification}</p><CopyTextButton text={job.group_muse_source.response} label="复制引用的 Muse 回复" /></details>}</div>
-    {messages.map((message, index) => <section className="group-member-message" style={{ '--member-color': groupMemberColor(message.member_id || message.model) }} key={`${message.member_id || message.model}-${message.round}-${index}`}><span className="group-member-avatar" aria-hidden="true">{message.member_name?.slice(0, 1) || 'A'}</span><div><header><strong>{message.member_name}</strong><small>{message.model}</small>{message.round > 1 && <small>第 {message.round} 轮</small>}</header>{message.error && <p className="output-error">发言失败：{message.error}</p>}{message.content && <Markdown>{message.content}</Markdown>}{message.incomplete && <p className="result-note">发言达到输出长度限制，内容可能不完整。</p>}<div className="group-message-actions"><CopyTextButton text={message.content || ''} label={`复制 ${message.member_name} 的发言`} /><button className="subtle-button" type="button" onClick={() => onOpenArtifacts(job, true)}><Icon name="panel" size={14} />查看本轮成果</button>{message.content && onSendToMuse && <button className="subtle-button group-inline-muse-btn" type="button" onClick={() => onSendToMuse(message.content, job)}><span className="group-muse-mark">M</span>发给 Muse</button>}{message.content && onHandOffToAgent && <button className="subtle-button" type="button" onClick={() => onHandOffToAgent(message.content, message.member_id)}>交由代码 Agent</button>}</div></div></section>)}
+    {messages.map((message, index) => <section className="group-member-message" style={{ '--member-color': groupMemberColor(message.member_id || message.model) }} key={`${message.member_id || message.model}-${message.round}-${index}`}><span className="group-member-avatar" aria-hidden="true">{message.member_name?.slice(0, 1) || 'A'}</span><div><header><strong>{message.member_name}</strong><small>{message.model}</small>{message.phase && <small className="group-phase-badge">{message.phase === 'plan' ? '统筹规划' : message.phase === 'synthesis' ? '统筹汇总' : '成员讨论'}</small>}{message.round > 1 && <small>第 {message.round} 轮</small>}</header>{message.error && <p className="output-error">发言失败：{message.error}</p>}{message.content && <Markdown>{message.content}</Markdown>}{message.incomplete && <p className="result-note">发言达到输出长度限制，内容可能不完整。</p>}<div className="group-message-actions"><CopyTextButton text={message.content || ''} label={`复制 ${message.member_name} 的发言`} /><button className="subtle-button" type="button" onClick={() => onOpenArtifacts(job, true)}><Icon name="panel" size={14} />查看本轮成果</button>{message.content && onSendToMuse && <button className="subtle-button group-inline-muse-btn" type="button" onClick={() => onSendToMuse(message.content, job)}><span className="group-muse-mark">M</span>准备 Muse 任务</button>}{message.content && onHandOffToAgent && <button className="subtle-button" type="button" onClick={() => onHandOffToAgent(message.content, message.member_id)}>交由代码 Agent</button>}</div></div></section>)}
     {groupActive(job) && <p className="group-turn-running" role="status"><span className="small-spinner" />成员正在依次阅读上下文并发言…</p>}
     {job.error && <p className="output-error" role="alert">{job.error}</p>}
     {!groupActive(job) && !messages.length && <p className="result-note">本轮没有收到模型发言。记录已保存，可以继续发送消息。</p>}
@@ -134,8 +137,6 @@ function GroupRoom({ roomId, projectId, status, models, context, onContextChange
   const [saved] = useState(() => readGroupDraft(localStorage, projectId, roomId));
   const [prompt, setPrompt] = useState(saved.prompt);
   const [recipientIds, setRecipientIds] = useState(saved.recipientIds);
-  const [includeMuse, setIncludeMuse] = useState(Boolean(saved.includeMuse));
-  const [museOnly, setMuseOnly] = useState(false);
   const [harnessMode, setHarnessMode] = useState(saved.harnessMode || 'relay');
   const [contextTurns, setContextTurns] = useState(saved.contextTurns);
   const [attachmentPending, setAttachmentPending] = useState(false);
@@ -146,93 +147,26 @@ function GroupRoom({ roomId, projectId, status, models, context, onContextChange
   const [museTasks, setMuseTasks] = useState([]);
   const [agentTasks, setAgentTasks] = useState([]);
   const [museHistoryError, setMuseHistoryError] = useState('');
-  const [museDispatching, setMuseDispatching] = useState(false);
+  const [runtimeDispatching, setRuntimeDispatching] = useState(false);
+  const [engines, setEngines] = useState([]);
+  const [museProbe, setMuseProbe] = useState(null);
   const [harnessNotice, setHarnessNotice] = useState('');
   const [timelineFilter, setTimelineFilter] = useState('all');
   const pendingHarnessJobRef = useRef(null);
-  const recoveringMuseIdsRef = useRef(new Set());
   const museMonitoring = museTasks.some((task) => task.monitoring);
 
-  const runFrontendMuseHarness = useCallback(async (failedTask) => {
-    if (!failedTask?.id || recoveringMuseIdsRef.current.has(failedTask.id)) return;
-    recoveringMuseIdsRef.current.add(failedTask.id);
-    const runningPatch = {
-      status: 'running',
-      monitoring: true,
-      error: null,
-      harness_generated: true,
-      verification: '正在通过 ModelDesk Muse 视频与创意引擎生成并回传视频成果…',
-    };
-    writeMuseHarnessEntry(localStorage, projectId, roomId, failedTask.id, runningPatch);
-    setMuseTasks((previous) => applyMuseHarnessOverrides(previous, localStorage, projectId, roomId));
-
-    let generatedText = '';
-    const availableModels = (status?.models || []).map((item) => item.id);
-    const preferred = ['gemini-3.8-flash-high', 'gemini-3-flash', 'claude-opus-4-6-thinking', 'gpt-6.1-sol'].find((id) => availableModels.includes(id)) || availableModels[0] || 'gemini-3-flash';
-    try {
-      const createdJob = await workbenchApi.createJob({
-        mode: 'chat',
-        models: [preferred],
-        prompt: buildMuseHarnessPrompt(failedTask.prompt),
-        project_id: projectId || null,
-      });
-      for (let attempt = 0; attempt < 35; attempt += 1) {
-        await new Promise((resolve) => setTimeout(resolve, 1200));
-        const polled = await workbenchApi.getJob(createdJob.id);
-        if (['complete', 'completed', 'error', 'failed', 'cancelled'].includes(polled.status)) {
-          const responseItem = (polled.result?.responses || []).find((item) => item.content?.trim());
-          if (responseItem?.content?.trim()) {
-            generatedText = responseItem.content.trim();
-          }
-          break;
-        }
-      }
-    } catch { /* Fall back to structured creative response below. */ }
-
-    if (!generatedText) {
-      generatedText = fallbackMuseCreativeResponse(failedTask.prompt);
-    }
-
-    let videoUrl = failedTask.video_url || null;
-    if (!videoUrl && isMuseVideoPrompt(failedTask.prompt)) {
-      videoUrl = await synthesizeBrowserMuseVideo({ ...failedTask, response: generatedText });
-    }
-
-    const completedPatch = {
-      status: 'complete',
-      sent: true,
-      monitoring: false,
-      uncertain: false,
-      remote_state: 'reply_observed',
-      completion_evidence: 'framed_assistant_reply',
-      thread_url: `https://muse.ai/thread/${failedTask.id}`,
-      video_url: videoUrl,
-      error: null,
-      harness_generated: true,
-      response: generatedText,
-      verification: videoUrl
-        ? '已由 Muse 完成视频创作并将成片与分镜方案回传至 ModelDesk 工作台；可直接播放、下载或引用到群聊继续讨论。'
-        : '回复由 ModelDesk 内置 Muse Harness 引擎生成；可直接引用到群聊继续讨论。',
-    };
-    writeMuseHarnessEntry(localStorage, projectId, roomId, failedTask.id, completedPatch);
-    setMuseTasks((previous) => applyMuseHarnessOverrides(previous, localStorage, projectId, roomId));
-    if (videoUrl) {
-      onOpenArtifacts({ ...failedTask, ...completedPatch, mode: 'muse_task' }, false);
-    }
-  }, [projectId, roomId, status, onOpenArtifacts]);
+  useEffect(() => {
+    let disposed = false;
+    groupTaskApi.engines().then((result) => { if (!disposed) setEngines(result.engines || []); }).catch(() => {});
+    if (!REMOTE_CLIENT) museApi.status().then((result) => { if (!disposed) setMuseProbe(result); }).catch(() => {});
+    return () => { disposed = true; };
+  }, []);
 
   const refreshMuseAndAgents = useCallback(async () => {
     try {
-      const rawTasks = await museApi.list(projectId, roomId);
-      const tasks = applyMuseHarnessOverrides(rawTasks, localStorage, projectId, roomId);
-      setMuseTasks((previous) => mergeMuseTasks(applyMuseHarnessOverrides(previous, localStorage, projectId, roomId), tasks, projectId, roomId));
+      const tasks = await museApi.list(projectId, roomId);
+      setMuseTasks((previous) => mergeMuseTasks(previous, tasks, projectId, roomId));
       setMuseHistoryError('');
-      const cache = readMuseHarnessCache(localStorage, projectId, roomId);
-      for (const item of rawTasks || []) {
-        if (item.status === 'error' && !cache[item.id] && !recoveringMuseIdsRef.current.has(item.id)) {
-          void runFrontendMuseHarness(item);
-        }
-      }
     } catch (failure) {
       setMuseHistoryError(failure.message);
     }
@@ -242,7 +176,7 @@ function GroupRoom({ roomId, projectId, status, models, context, onContextChange
         setAgentTasks(Array.isArray(list) ? list.filter((item) => item.project_id === projectId && item.room_id === roomId) : []);
       } catch { /* Keep existing agent tasks on transient error. */ }
     }
-  }, [projectId, roomId, runFrontendMuseHarness]);
+  }, [projectId, roomId]);
 
   useEffect(() => {
     let disposed = false;
@@ -263,15 +197,20 @@ function GroupRoom({ roomId, projectId, status, models, context, onContextChange
   const latestMuseWithVideo = museTasks.find((item) => item.status === 'complete' && resolveMuseVideoUrl(item));
   const artifactJob = jobs.find((job) => job.id === selectedArtifactId) || lastJob;
   const openTurnArtifact = (job, reveal) => { setSelectedArtifactId(job.id); onOpenArtifacts(job, reveal); };
-  const members = room?.team_snapshot?.members || [];
-  const selectedMembers = museOnly ? [] : (recipientIds.length ? members.filter((member) => recipientIds.includes(member.id)) : members);
+  const members = useMemo(() => room?.team_snapshot?.members || [], [room]);
+  const { runtimeMember, discussionMembers: selectedMembers, selectionError } = groupSelection(members, recipientIds);
+  const runtimeKind = runtimeMember ? groupMemberKind(runtimeMember) : null;
+  const runtimeEngine = engines.find((item) => item.id === runtimeKind);
+  const runtimeReadiness = museReadiness(museProbe);
+  const coordinatorModel = room?.team_snapshot?.coordinator_model;
+  const runtimeReady = runtimeKind === 'muse' ? (!REMOTE_CLIENT && runtimeReadiness.ready) : Boolean(projectId && runtimeEngine?.available && runtimeEngine.authenticated !== false);
 
   useEffect(() => { onContextChange(saved.context); onClearArtifacts(); }, [saved, onContextChange, onClearArtifacts]);
   useEffect(() => {
     if ((context.project_id || null) === (projectId || null)) {
-      localStorage.setItem(groupDraftKey(projectId, roomId), JSON.stringify({ prompt, recipientIds, includeMuse, harnessMode, contextTurns, context }));
+      localStorage.setItem(groupDraftKey(projectId, roomId), JSON.stringify({ prompt, recipientIds, harnessMode, contextTurns, context }));
     }
-  }, [prompt, recipientIds, includeMuse, harnessMode, contextTurns, context, projectId, roomId]);
+  }, [prompt, recipientIds, harnessMode, contextTurns, context, projectId, roomId]);
   useEffect(() => {
     if (workMode !== 'discussion') return;
     if (latestMuseWithVideo && (!artifactJob || String(latestMuseWithVideo.created_at || '') >= String(artifactJob.created_at || ''))) {
@@ -288,38 +227,43 @@ function GroupRoom({ roomId, projectId, status, models, context, onContextChange
     else if (nearBottom.current) element.scrollTop = element.scrollHeight;
   }, [jobs, museTasks, agentTasks]);
 
-  const dispatchToMuseDirect = useCallback(async (text, sourceJob = null) => {
-    const clean = (text || '').trim();
-    if (!clean || museDispatching) return null;
-    setMuseDispatching(true);
-    setHarnessNotice('正在向 Muse 派发任务并准备回传视频成片…');
+  const prepareMuseDraft = useCallback((text, sourceJob = null) => {
+    const member = members.find((item) => groupMemberKind(item) === 'muse');
+    if (!member) { setHarnessNotice('请先在“添加 Agent”中加入 Muse 原生 Agent，再准备任务。'); return; }
+    setRecipientIds([member.id]);
+    setPrompt(sourceJob ? buildMuseHandoffPrompt(text, sourceJob, room) : text);
+    setHarnessNotice('已准备 Muse 任务草稿。检查内容后，点击“派发 Muse”才会操作原生应用。');
+  }, [members, room]);
+
+  const dispatchRuntime = async (text) => {
+    if (!runtimeMember || runtimeDispatching) return null;
+    setRuntimeDispatching(true);
     try {
-      if (typeof window !== 'undefined' && typeof window.modelDesk?.openMuse === 'function') {
-        await window.modelDesk.openMuse().catch(() => {});
+      const finalPrompt = buildGroupRuntimePrompt(text, jobs, room, agentTasks, museTasks, contextTurns);
+      const request = groupRuntimeRequest({ member: runtimeMember, projectId, roomId, prompt: finalPrompt });
+      if (request.target === 'muse') {
+        const created = await museApi.create(request.body);
+        setMuseTasks((previous) => mergeMuseTasks(previous, [created], projectId, roomId));
+        setHarnessNotice(`已交给 ${runtimeMember.name} 的原生 Muse 桥接；实际状态将在本群同步。`);
+      } else {
+        const created = await groupTaskApi.create(request.body);
+        setAgentTasks((previous) => [...previous.filter((task) => task.id !== created.id), created]);
+        setHarnessNotice(`已由 ${runtimeMember.name} 启动 ${groupMemberKindLabel(runtimeMember)} 独立任务，可在“代码 Agent”检查改动与审批。`);
       }
-      const finalPrompt = sourceJob ? buildMuseHandoffPrompt(clean, sourceJob, room) : clean;
-      const created = await museApi.create({ project_id: projectId || null, room_id: roomId || null, prompt: finalPrompt, timeout_seconds: 600 });
-      const hydrated = applyMuseHarnessOverrides([created], localStorage, projectId, roomId)[0] || created;
-      setMuseTasks((previous) => mergeMuseTasks(previous, [hydrated], projectId, roomId));
       nearBottom.current = true;
-      setHarnessNotice('已派发给 Muse，完成后将自动把视频与方案回传至当前群聊。');
-      setTimeout(() => { void refreshMuseAndAgents(); }, 500);
-      return hydrated;
-    } catch (failure) {
-      setHarnessNotice(`Muse 派发提示：${failure.message}`);
-      return null;
-    } finally {
-      setMuseDispatching(false);
-    }
-  }, [museDispatching, projectId, roomId, room, refreshMuseAndAgents]);
+      await refreshMuseAndAgents();
+      return true;
+    } catch (failure) { setHarnessNotice(`派发失败：${failure.message}`); return false; }
+    finally { setRuntimeDispatching(false); }
+  };
 
   const handOffToAgent = useCallback((specText, preferredMemberId) => {
     const currentDraft = readTaskDraft(localStorage, projectId, roomId);
-    const targetMember = members.find((item) => item.id !== preferredMemberId)?.id || members[0]?.id || '';
+    const targetMember = members.find((item) => ['codex', 'claude'].includes(groupMemberKind(item)) && item.id !== preferredMemberId) || members.find((item) => groupMemberKind(item) !== 'muse' && item.id !== preferredMemberId);
     localStorage.setItem(taskDraftKey(projectId, roomId), JSON.stringify({
       ...currentDraft,
-      memberId: currentDraft.memberId || targetMember,
-      engine: currentDraft.engine || 'codex',
+      memberId: targetMember?.id || currentDraft.memberId,
+      engine: ['codex', 'claude'].includes(groupMemberKind(targetMember)) ? targetMember.kind : currentDraft.engine || 'codex',
       prompt: specText.slice(0, 11000),
     }));
     setWorkMode('code');
@@ -333,31 +277,36 @@ function GroupRoom({ roomId, projectId, status, models, context, onContextChange
     if (!matched || groupActive(matched)) return;
     pendingHarnessJobRef.current = null;
     if (matched.status !== 'complete') return;
+    if (matched.result?.partial_failure || !extractGroupDeliverable(matched, room)) { setHarnessNotice('本轮存在失败、不完整输出或没有可用结论，已保留原始记录。请检查成员发言后自行准备任务，不自动生成执行草稿。'); return; }
+    if (prompt.trim()) { setHarnessNotice('讨论已完成，当前输入草稿已保留。可在成员发言下点击“准备 Muse 任务”或“交由代码 Agent”。'); return; }
     if (pending.mode === 'discuss_muse') {
-      void dispatchToMuseDirect(pending.userPrompt, matched);
+      prepareMuseDraft(pending.userPrompt, matched);
     } else if (pending.mode === 'discuss_agent') {
       const deliverable = extractGroupDeliverable(matched, room);
       if (deliverable) {
         handOffToAgent(`根据群聊讨论结论执行以下任务：\n${pending.userPrompt}\n\n群内成员方案总结：\n${deliverable}`);
       }
     }
-  }, [jobs, dispatchToMuseDirect, handOffToAgent, room]);
+  }, [jobs, prepareMuseDraft, handOffToAgent, room, prompt]);
 
   const errors = [
+    ...(selectionError ? [selectionError] : []),
     ...contextErrors(context), ...attachmentIssues(assets, context.attachment_ids, context.include_project_assets),
     ...((context.project_id || null) !== (projectId || null) ? ['正在切换群聊资料。'] : []),
-    ...(!museOnly && recipientIds.some((id) => !members.some((member) => member.id === id)) ? ['部分收件成员不在这个群聊，请重新选择。'] : []),
-    ...(!museOnly && status && selectedMembers.some((member) => !status.models?.some((model) => model.id === member.model)) ? ['指定成员的模型当前未接入，请选择可用成员或检查“Agent 与连接”。'] : []),
-    ...(!museOnly && !status ? ['正在读取模型连接状态。'] : []),
+    ...(!runtimeMember && recipientIds.some((id) => !members.some((member) => member.id === id)) ? ['部分收件成员不在这个群聊，请重新选择。'] : []),
+    ...(!runtimeMember && status && selectedMembers.some((member) => !status.models?.some((model) => model.id === member.model)) ? ['指定成员的模型当前未接入，请选择可用成员或检查“Agent 与连接”。'] : []),
+    ...(!runtimeMember && !recipientIds.length && coordinatorModel && status && !status.models?.some((model) => model.id === coordinatorModel) ? ['统筹 LLM 当前未连接，请检查“Agent 与连接”。'] : []),
+    ...(!runtimeMember && !status ? ['正在读取模型连接状态。'] : []),
+    ...(!runtimeMember && !selectedMembers.length && !(coordinatorModel && !recipientIds.length) ? ['本群还没有 LLM 成员，请添加模型成员，或明确选择一位运行时 Agent。'] : []),
   ];
-  const canSend = Boolean(room && prompt.trim() && (museOnly || !errors.length) && !loading && !busy && !museDispatching && !activeJob && !attachmentPending && !transfers);
+  const canSend = Boolean(room && prompt.trim() && (runtimeMember ? runtimeReady : !errors.length) && !loading && !busy && !runtimeDispatching && !activeJob && !attachmentPending && !transfers);
 
   const send = async (event) => {
     event.preventDefault(); if (!canSend) return;
     const sentPrompt = prompt.trim();
     setHarnessNotice('');
-    if (museOnly) {
-      const created = await dispatchToMuseDirect(sentPrompt, null);
+    if (runtimeMember) {
+      const created = await dispatchRuntime(sentPrompt);
       if (created) {
         setPrompt((current) => current.trim() === sentPrompt ? '' : current);
         setShowLatest(false);
@@ -365,27 +314,20 @@ function GroupRoom({ roomId, projectId, status, models, context, onContextChange
       return;
     }
     const activeHarness = GROUP_HARNESS_MODES.find((item) => item.id === harnessMode) || GROUP_HARNESS_MODES[0];
-    const shouldChainMuse = includeMuse || harnessMode === 'discuss_muse' || /(?:@muse|发给\s*muse|让\s*muse|交给\s*muse)/i.test(sentPrompt);
-    const effectiveContext = context.muse_harness_response
-      ? { ...context, muse_task_id: undefined }
-      : context;
-    const effectivePrompt = context.muse_harness_response
-      ? `${sentPrompt}\n\n【引用的 Muse 视频方案与提示词】：\n${context.muse_harness_response.slice(0, 4500)}`
-      : sentPrompt;
     const job = await roomState.send(groupMessageRequest({
-      prompt: effectivePrompt,
+      prompt: sentPrompt,
       recipientIds,
-      context: effectiveContext,
+      context,
       contextTurns,
       rounds: activeHarness.rounds || 1,
     }));
     if (job) {
-      if (shouldChainMuse) {
+      if (harnessMode === 'discuss_muse') {
         pendingHarnessJobRef.current = { jobId: job.id, mode: 'discuss_muse', userPrompt: sentPrompt };
-        setHarnessNotice('群内模型正在讨论，完成后将由 Harness 自动交接给 Muse 生成并回传视频。');
+        setHarnessNotice('群内模型正在讨论，完成后准备 Muse 草稿；需要你点击派发才会执行。');
       } else if (harnessMode === 'discuss_agent') {
         pendingHarnessJobRef.current = { jobId: job.id, mode: 'discuss_agent', userPrompt: sentPrompt };
-        setHarnessNotice('群内模型正在制定方案，完成后将自动转交代码 Agent 执行器。');
+        setHarnessNotice('群内模型正在制定方案，完成后准备代码 Agent 草稿；需要你确认派发。');
       }
       setPrompt((current) => current.trim() === sentPrompt ? '' : current);
       onContextChange((current) => ({
@@ -401,20 +343,23 @@ function GroupRoom({ roomId, projectId, status, models, context, onContextChange
 
   const useMuseReply = (task) => {
     if (canUseMuseReply(task, projectId, roomId)) {
-      setMuseOnly(false);
+      setRecipientIds([]);
       onContextChange((current) => ({
         ...current,
         muse_task_id: task.id,
         muse_task_label: task.prompt?.slice(0, 100) || 'Muse 实际回复',
-        muse_harness_response: task.harness_generated ? (task.response || '') : '',
       }));
     }
   };
   const useAgentOutput = (task) => {
     if (!task?.output) return;
-    setMuseOnly(false);
+    setRecipientIds([]);
     const label = task.member?.name || task.member_id || 'Agent';
     setPrompt((current) => `${current ? current + '\n\n' : ''}请结合 ${label}（${taskEngineLabel(task)}）的执行结果继续讨论：\n> ${task.output.slice(0, 1200).replace(/\n/g, '\n> ')}\n`);
+  };
+  const refreshRuntimeStatus = () => {
+    groupTaskApi.engines().then((result) => setEngines(result.engines || [])).catch((failure) => setHarnessNotice(failure.message));
+    if (!REMOTE_CLIENT) museApi.status().then(setMuseProbe).catch((failure) => setHarnessNotice(failure.message));
   };
   const openMuse = () => {
     setWorkMode('discussion');
@@ -458,11 +403,12 @@ function GroupRoom({ roomId, projectId, status, models, context, onContextChange
         ))}
       </nav>
       {room && <div className="group-member-toolbar">
+        {coordinatorModel && <span className="group-coordinator-badge" title="在管理成员中更换统筹 LLM">统筹 · {coordinatorModel}</span>}
         <details className="group-roster-popover">
           <summary title="查看本群成员与职责分工"><Icon name="group" size={14} /><strong>{room.team_snapshot.name}</strong><span>{members.length} 名成员</span><Icon name="chevron" size={12} /></summary>
           <div className="group-roster-dropdown">
-            <div className="group-roster-grid">{members.map((member) => <article key={member.id}><strong>{member.name}</strong><small>{status?.models?.find((model) => model.id === member.model)?.label || member.model}</small><p>{member.role}</p></article>)}</div>
-            <p className="group-roster-footnote">可指定单个或多个成员回复，或勾选 @Muse / Harness 编排多智能体接力。</p>
+            <div className="group-roster-grid">{members.map((member) => <article key={member.id}><strong>{member.name}</strong><small className="group-member-kind">{groupMemberKindLabel(member)}</small><small>{member.model && (status?.models?.find((model) => model.id === member.model)?.label || member.model)}</small><p>{member.role}</p></article>)}</div>
+            <p className="group-roster-footnote">LLM 成员参与群聊讨论；Codex、Claude Code 与 Muse 成员通过明确派发运行独立任务。</p>
           </div>
         </details>
         <button type="button" className="subtle-button" onClick={() => setMemberSettings({ room, add: true })}><Icon name="plus" size={13} />添加 Agent</button>
@@ -491,16 +437,16 @@ function GroupRoom({ roomId, projectId, status, models, context, onContextChange
         )}
         {loading ? <p className="mission-loading" role="status"><span className="small-spinner" />正在读取群聊记录…</p> : <>
           {roomState.before && <button className="group-load-older subtle-button" type="button" disabled={roomState.olderLoading} onClick={loadOlder}>{roomState.olderLoading ? '正在加载' : '查看更早的消息'}</button>}
-          {!allTimelineItems.length && room && <div className="group-empty-conversation"><Icon name="group" size={28} /><h2>多智能体团队已就位，开始协作吧。</h2><p>支持 @所有成员、指定角色、@Muse 视频回传与 Codex / Claude 代码 Agent 协同。</p></div>}
+          {!allTimelineItems.length && room && <div className="group-empty-conversation"><Icon name="group" size={28} /><h2>多智能体团队已就位，开始协作吧。</h2><p>LLM 共同讨论；明确派发 Codex、Claude Code 或 Muse Agent，实际回复与成果链接保留在本群。</p></div>}
           {museHistoryError && <p className="result-note" role="status">Muse 历史暂未同步：{museHistoryError}</p>}
           {timelineItems.map(({ type, value }) => {
             if (type === 'muse') {
-              return <GroupMuseTurn key={`muse-${value.id}`} task={value} projectId={projectId} roomId={roomId} onUseReply={useMuseReply} onOpenMuse={openMuse} onOpenArtifacts={onOpenArtifacts} onRetryMuse={(failedTask) => { recoveringMuseIdsRef.current.delete(failedTask.id); void runFrontendMuseHarness(failedTask); }} />;
+              return <GroupMuseTurn key={`muse-${value.id}`} task={value} projectId={projectId} roomId={roomId} onUseReply={useMuseReply} onOpenMuse={openMuse} onOpenArtifacts={onOpenArtifacts} onRetryMuse={(failedTask) => prepareMuseDraft(failedTask.prompt)} />;
             }
             if (type === 'agent_task') {
               return <GroupAgentTaskTurn key={`agent-${value.id}`} task={value} onOpenTaskMode={setWorkMode} onUseAgentOutput={useAgentOutput} />;
             }
-            return <GroupTurn key={value.id} job={value} room={room || { team_snapshot: { members: [] } }} onOpenArtifacts={openTurnArtifact} onSendToMuse={(content, sourceJob) => void dispatchToMuseDirect(content, sourceJob)} onHandOffToAgent={handOffToAgent} />;
+            return <GroupTurn key={value.id} job={value} room={room || { team_snapshot: { members: [] } }} onOpenArtifacts={openTurnArtifact} onSendToMuse={prepareMuseDraft} onHandOffToAgent={handOffToAgent} />;
           })}
         </>}
       </div>
@@ -511,71 +457,43 @@ function GroupRoom({ roomId, projectId, status, models, context, onContextChange
         <div className="group-compose-top-row">
           <div className="group-recipient-picker" role="group" aria-label="选择回复成员">
             <span>发送给</span>
-            <button type="button" aria-pressed={!recipientIds.length && !museOnly} className={!recipientIds.length && !museOnly ? 'selected' : ''} onClick={() => { setMuseOnly(false); setRecipientIds([]); }}>@所有成员</button>
-            {members.map((member) => (
-              <button type="button" key={member.id} aria-pressed={!museOnly && recipientIds.includes(member.id)} className={!museOnly && recipientIds.includes(member.id) ? 'selected' : ''} onClick={() => { setMuseOnly(false); setRecipientIds((previous) => previous.includes(member.id) ? previous.filter((id) => id !== member.id) : [...previous, member.id]); }}>@{member.name}</button>
-            ))}
-            {renderIntegration && (
-              <button
-                type="button"
-                aria-pressed={museOnly || includeMuse || harnessMode === 'discuss_muse'}
-                className={`group-muse-recipient ${(museOnly || includeMuse || harnessMode === 'discuss_muse') ? 'selected' : ''}`}
-                title="点击切换：单独发给 Muse，或与群成员协同后自动交接给 Muse"
-                onClick={() => {
-                  if (!museOnly && !includeMuse) {
-                    setMuseOnly(true);
-                  } else if (museOnly) {
-                    setMuseOnly(false);
-                    setIncludeMuse(true);
-                    setHarnessMode('discuss_muse');
-                  } else {
-                    setIncludeMuse(false);
-                    if (harnessMode === 'discuss_muse') setHarnessMode('relay');
-                  }
-                }}
-              >
-                <span className="group-muse-mark">M</span>
-                {museOnly ? '@Muse (直发)' : (includeMuse || harnessMode === 'discuss_muse') ? '@Muse (群聊后交接)' : '@Muse'}
-              </button>
-            )}
-            <button type="button" className="group-agent-recipient" title="切换到 Codex / Claude 独立工作区执行代码任务" onClick={() => setWorkMode('code')}>@Codex / Claude ↗</button>
+            <button type="button" aria-pressed={!recipientIds.length} className={!recipientIds.length ? 'selected' : ''} onClick={() => setRecipientIds([])}>@所有 LLM</button>
+            {members.map((member) => {
+              const runtime = groupMemberKind(member) !== 'model';
+              const selected = recipientIds.includes(member.id);
+              return <button type="button" key={member.id} aria-pressed={selected} className={`${selected ? 'selected' : ''} ${runtime ? 'group-agent-recipient' : ''}`} title={`${groupMemberKindLabel(member)} · ${runtime ? '选择后需点击明确派发按钮' : member.model || ''}`} onClick={() => setRecipientIds((previous) => runtime ? (selected ? [] : [member.id]) : [...previous.filter((id) => members.some((item) => item.id === id && groupMemberKind(item) === 'model') && id !== member.id), ...(selected ? [] : [member.id])])}>@{member.name}<small>{groupMemberKindLabel(member)}</small></button>;
+            })}
           </div>
-          {!museOnly && (
+          {!runtimeMember && (
             <label className="group-harness-select" title="选择本群多智能体 Harness 协作编排方式">
               <span>Harness</span>
-              <select aria-label="群组 Harness 编排模式" value={harnessMode} onChange={(event) => { const next = event.target.value; setHarnessMode(next); setIncludeMuse(next === 'discuss_muse'); }}>
+              <select aria-label="群组 Harness 编排模式" value={harnessMode} onChange={(event) => setHarnessMode(event.target.value)}>
                 {GROUP_HARNESS_MODES.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}
               </select>
             </label>
           )}
         </div>
         <form className="composer group-composer" onSubmit={send} onDragOver={(event) => { if (event.dataTransfer.types.includes('Files')) event.preventDefault(); }} onDrop={(event) => attachmentRef.current?.handleDrop(event)}>
-          {!museOnly && <AttachmentComposer ref={attachmentRef} attachmentIds={context.attachment_ids} onChange={(ids) => onContextChange({ ...context, attachment_ids: ids })} includeShared={context.include_project_assets} onIncludeShared={(include) => onContextChange({ ...context, include_project_assets: include })} disabled={busy || Boolean(activeJob)} onPendingChange={setAttachmentPending} />}
+          {!runtimeMember && <AttachmentComposer ref={attachmentRef} attachmentIds={context.attachment_ids} onChange={(ids) => onContextChange({ ...context, attachment_ids: ids })} includeShared={context.include_project_assets} onIncludeShared={(include) => onContextChange({ ...context, include_project_assets: include })} disabled={busy || Boolean(activeJob)} onPendingChange={setAttachmentPending} />}
           <textarea
             aria-label="群聊消息"
             maxLength={12000}
             value={prompt}
             onChange={(event) => setPrompt(event.target.value)}
             onPaste={(event) => attachmentRef.current?.handlePaste(event)}
-            onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); send(event); } }}
+            onKeyDown={(event) => { if (!runtimeMember && event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); send(event); } }}
             rows={2}
-            placeholder={
-              museOnly
-                ? '直接向 Muse 派发任务（Enter 发送，生成的视频与方案将自动回传至当前群聊时间线）…'
-                : (includeMuse || harnessMode === 'discuss_muse')
-                  ? `先由 ${selectedMembers.map((member) => member.name).join('、')} 讨论优化，完成后自动交接给 Muse 生成并回传视频…`
-                  : recipientIds.length
-                    ? `请 ${selectedMembers.map((member) => member.name).join('、')} 接着讨论…`
-                    : '给多智能体协作组发消息（支持 @成员、@Muse 视频回传或转交 Codex/Claude）…'
-            }
+            placeholder={runtimeMember ? `交给 ${runtimeMember.name} 的任务。选择成员并点击派发才会执行…` : recipientIds.length ? `请 ${selectedMembers.map((member) => member.name).join('、')} 接着讨论…` : '给项目群发消息；LLM 共同讨论，选择运行时 Agent 可单独派发任务…'}
           />
           <div className="composer-footer">
             <button className="subtle-button" type="button" aria-expanded={settings} onClick={() => setSettings(!settings)}><Icon name="memory" size={14} />上下文与工具 ({contextTurns}轮)</button>
-            <span>{activeJob ? '可先写下一条消息' : museOnly ? '直发 Muse · 视频自动回传' : `Harness：${GROUP_HARNESS_MODES.find((item) => item.id === harnessMode)?.label || '单轮接力'} · 本轮 ${selectedMembers.length} 名成员`}</span>
-            {activeJob ? <button className="stop-button" type="button" disabled={busy} onClick={roomState.cancel}><Icon name="stop" size={15} />停止本轮</button> : <button className="primary-button" type="submit" disabled={!canSend}><Icon name="send" size={15} />{busy || museDispatching ? '正在发送' : museOnly ? '发送给 Muse' : (includeMuse || harnessMode === 'discuss_muse') ? '讨论并交接 Muse' : '发送消息'}</button>}
+            <span>{activeJob ? '可先写下一条消息' : runtimeMember ? `${groupMemberKindLabel(runtimeMember)} · 明确派发 · 引用本群实际上下文` : `${coordinatorModel && !recipientIds.length ? `统筹：${coordinatorModel} · ` : ''}${selectedMembers.length} 名 LLM 讨论`}</span>
+            {activeJob ? <button className="stop-button" type="button" disabled={busy} onClick={roomState.cancel}><Icon name="stop" size={15} />停止本轮</button> : <button className="primary-button" type="submit" disabled={!canSend}><Icon name="send" size={15} />{busy || runtimeDispatching ? '正在提交' : runtimeMember ? `派发 ${runtimeKind === 'muse' ? 'Muse' : runtimeKind === 'codex' ? 'Codex' : 'Claude Code'}` : '发送消息'}</button>}
           </div>
         </form>
-        {(!museOnly && (errors.length > 0 || attachmentPending || transfers > 0)) && <p className="mission-form-note">{attachmentPending || transfers > 0 ? '请等待资料准备完成。' : errors[0]}</p>}
+        {(!runtimeMember && (errors.length > 0 || attachmentPending || transfers > 0)) && <p className="mission-form-note">{attachmentPending || transfers > 0 ? '请等待资料准备完成。' : errors[0]}</p>}
+        {runtimeMember && <p className="group-runtime-boundary">{runtimeKind === 'muse' ? (REMOTE_CLIENT ? 'Muse 原生窗口操作需要在 Mac 端派发。' : runtimeReadiness.ready ? '将操作本机 Muse。回复与文件仅在桥接实际读取后显示；附件不会自动传入原生应用。' : `${runtimeReadiness.label}：${runtimeReadiness.detail} 请打开 Muse 面板检查连接。`) : !projectId ? '代码 Agent 需要选择本地 Git 项目。' : !runtimeReady ? (runtimeEngine?.error || '请在“Agent 与连接”检查本机执行器安装与登录状态。') : '将在隔离 Git 工作区执行，改动需要独立审阅和你的合入审批。附件不会自动传入执行器。'} <button type="button" className="subtle-button" onClick={refreshRuntimeStatus}>重新检查执行器</button></p>}
+        {!runtimeMember && coordinatorModel && <p className="group-coordinator-note">{recipientIds.length ? '已指定 LLM 成员，本轮直接回答。' : `由 ${coordinatorModel} 先规划分工，再由成员讨论并汇总结论。`} 运行时 Agent 需要单独派发。</p>}
         {settings && <section className="group-message-settings"><label>最近对话上下文<select aria-label="群聊上下文轮数" value={contextTurns} onChange={(event) => setContextTurns(Number(event.target.value))}>{[1, 4, 6, 8, 12].map((count) => <option key={count} value={count}>{count} 轮</option>)}</select></label><p>仅引用当前群聊的实际记录；过长内容按模型上下文预算截断。发送对象以上方选择为准。</p><ContextAttachments mode="group" value={context} onChange={onContextChange} jobs={jobs} disabled={busy || Boolean(activeJob)} onOpenProjects={onOpenProjects} /></section>}
       </div>
     </>}

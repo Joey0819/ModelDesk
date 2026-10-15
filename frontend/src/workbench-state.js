@@ -21,7 +21,7 @@ export function applyEvent(job, event) {
     if (event.stage === 'attachments') { next.attachments = event.data?.items || []; next.attachment_manifest = event.data?.manifest; next.history_attachment_manifest = event.data?.history_manifest; }
   }
   if (event.type === 'message') {
-    const message = { model: event.model, round: event.round, content: event.content, ...Object.fromEntries(['member_id', 'member_name', 'role'].filter((key) => event[key] !== undefined).map((key) => [key, event[key]])), ...(event.error !== undefined ? { error: event.error } : {}), ...(event.incomplete !== undefined ? { incomplete: event.incomplete } : {}) };
+    const message = { model: event.model, round: event.round, content: event.content, ...Object.fromEntries(['member_id', 'member_name', 'role', 'phase'].filter((key) => event[key] !== undefined).map((key) => [key, event[key]])), ...(event.error !== undefined ? { error: event.error } : {}), ...(event.incomplete !== undefined ? { incomplete: event.incomplete } : {}) };
     next.result = { ...job.result, partial_failure: Boolean(job.result?.partial_failure || event.error || event.incomplete), messages: [...(job.result?.messages || []), message] };
   }
   if (event.type === 'framework_message') {

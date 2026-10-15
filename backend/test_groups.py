@@ -104,6 +104,96 @@ class GroupRoomTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(job["group_team_snapshot"], room["team_snapshot"])
         self.assertEqual((self.root / "rooms" / (room["id"] + ".json")).stat().st_mode & 0o777, 0o600)
 
+    async def test_old_team_and_room_defaults_preserve_original_snapshot_and_hash(self):
+        team_path = self.teams.atomic.directory / (self.team["id"] + ".json")
+        legacy = json.loads(team_path.read_text())
+        legacy.pop("coordinator_model")
+        for member in legacy["members"]:
+            member.pop("kind")
+        team_path.write_text(json.dumps(legacy))
+        original_team = team_path.read_bytes()
+        loaded = self.teams.get(self.team["id"], self.project["id"])
+        self.assertIsNone(loaded["coordinator_model"])
+        self.assertEqual(loaded["members"][0]["kind"], "model")
+        self.assertEqual(team_path.read_bytes(), original_team)
+        room = await self.room()
+        room["team_snapshot"] = legacy
+        self.rooms.save(room)
+        room_path = self.rooms.atomic.directory / (room["id"] + ".json")
+        original_room = room_path.read_bytes()
+        restored = self.rooms.get(room["id"], self.project["id"])
+        self.assertEqual(restored["team_revision"], groups.team_revision(legacy))
+        self.assertEqual(restored["team_snapshot"], legacy)
+        self.assertEqual(room_path.read_bytes(), original_room)
+        await self.send(restored)
+        self.assertEqual([call["model"] for call in self.calls], ["a", "b"])
+
+    async def test_mixed_roster_uses_real_models_and_saved_coordinator_phases(self):
+        roster = [{"id": "writer", "name": "研究员", "model": "a", "role": "分析证据"},
+                  {"id": "coder", "name": "Codex 工程师", "kind": "codex", "role": "实现代码"},
+                  {"id": "claude", "name": "Claude 工程师", "kind": "claude", "model": "sonnet", "role": "审查代码"},
+                  {"id": "muse", "name": "Muse 创作者", "kind": "muse", "role": "完成素材"}]
+        self.team = self.teams.put(TeamRequest(name="混合 Agent 群", project_id=self.project["id"], members=roster, coordinator_model="b"))
+        room = await self.room()
+        result = await self.send(room)
+        self.assertEqual(result["models"], ["a", "b"])
+        self.assertEqual([call["model"] for call in self.calls], ["b", "a", "b"])
+        self.assertEqual([item["phase"] for item in result["result"]["messages"]], ["plan", "reply", "synthesis"])
+        self.assertEqual(result["result"]["recipient_member_ids"], ["writer"])
+        self.assertIn("Muse 创作者", self.calls[0]["messages"][0]["content"])
+        self.assertIn("必须由用户明确派发", self.calls[0]["messages"][0]["content"])
+        self.assertIn("OUTPUT_a_2", str(self.calls[2]))
+        self.calls.clear()
+        targeted = await self.send(room, recipient_member_ids=["writer"])
+        self.assertFalse(targeted["group_broadcast"])
+        self.assertEqual([call["model"] for call in self.calls], ["a"])
+        denied = await self.client.post(f"/api/groups/{room['id']}/messages", params=self.params(room), json={"prompt": "execute", "recipient_member_ids": ["coder"]})
+        self.assertEqual(denied.status_code, 422, denied.text)
+        self.assertIn("实际运行时", denied.text)
+
+    async def test_agent_only_roster_can_discuss_via_explicit_saved_coordinator(self):
+        self.team = self.teams.put(TeamRequest(name="执行组", project_id=self.project["id"], coordinator_model="b", members=[
+            {"id": "coder", "name": "代码 Agent", "kind": "codex"}, {"id": "muse", "name": "Muse", "kind": "muse"}]))
+        result = await self.send(await self.room())
+        self.assertEqual([call["model"] for call in self.calls], ["b", "b"])
+        self.assertEqual([item["phase"] for item in result["result"]["messages"]], ["plan", "synthesis"])
+        self.assertEqual(result["result"]["recipient_member_ids"], [])
+
+    async def test_runtime_context_only_quotes_completed_scoped_frozen_deliveries(self):
+        from backend import group_tasks
+        room = await self.room()
+        output = "ACTUAL_AGENT_OUTPUT_935 " * 200
+        record = {"id": str(uuid.uuid4()), "project_id": self.project["id"], "room_id": room["id"], "member_id": "writer",
+                  "member": {"name": "代码 Agent"}, "engine": "codex", "kind": "code", "status": "complete",
+                  "output": output, "created_at": "2026-10-15T10:00:00+00:00", "diff_sha256": "f" * 64, "exit_code": 0}
+        records = {record["id"]: record}
+        for changes in [{"project_id": self.other["id"], "output": "FOREIGN"}, {"status": "running", "output": "NOT_COMPLETE"}]:
+            other = {**record, **changes, "id": str(uuid.uuid4())}
+            records[other["id"]] = other
+        with patch.object(group_tasks.manager, "records", records):
+            job = await self.send(room, recipient_member_ids=["writer"])
+            record["output"] = "CHANGED_LATER"
+        source = job["group_agent_sources"][0]
+        self.assertEqual(len(job["group_agent_sources"]), 1)
+        self.assertEqual(source["output_sha256"], hashlib.sha256(output.encode()).hexdigest())
+        self.assertEqual(len(source["output"]), 2000)
+        self.assertTrue(source["truncated"])
+        self.assertEqual(source["patch_sha256"], "f" * 64)
+        self.assertIn("ACTUAL_AGENT_OUTPUT_935", str(self.calls[0]))
+        self.assertNotIn("FOREIGN", str(self.calls[0]))
+        self.assertNotIn("NOT_COMPLETE", str(self.calls[0]))
+
+    async def test_group_metadata_cannot_override_saved_coordinator_or_broadcast_targets(self):
+        room = await self.room()
+        request = workbench.JobRequest(mode="group", prompt="test", models=["a", "b"], project_id=self.project["id"], conversation_id=room["id"])
+        meta = {"group_room_id": room["id"], "group_team_snapshot": room["team_snapshot"], "group_recipient_member_ids": ["writer", "reviewer"],
+                "group_broadcast": True, "group_coordinator_model": None}
+        groups.validate_job_creation(request, meta, groups._ROOM_WRITE)
+        for changes in [{"group_coordinator_model": "attacker"}, {"group_recipient_member_ids": ["writer"]}]:
+            with self.assertRaises(HTTPException) as caught:
+                groups.validate_job_creation(request, {**meta, **changes}, groups._ROOM_WRITE)
+            self.assertEqual(caught.exception.status_code, 403)
+
     async def test_targeted_actual_dispatch_and_shared_history(self):
         room = await self.room()
         first = await self.send(room, prompt="记住项目代号 ROOM_ALPHA_735", recipient_member_ids=["writer"])
@@ -132,7 +222,7 @@ class GroupRoomTests(unittest.IsolatedAsyncioTestCase):
         ]
         self.team = self.teams.put(TeamRequest(name="同一模型的不同角色", project_id=self.project["id"], members=roster))
         room = await self.room()
-        self.assertEqual(self.rooms.get(room["id"], room["project_id"])["team_snapshot"]["members"], roster)
+        self.assertEqual(self.rooms.get(room["id"], room["project_id"])["team_snapshot"]["members"], [{"kind": "model", **member} for member in roster])
         first = await self.send(room, prompt="请共同规划产品", rounds=2)
         self.assertEqual(first["models"], ["a"])
         self.assertEqual([call["model"] for call in self.calls], ["a"] * 6)
@@ -249,6 +339,19 @@ class GroupRoomTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status_code, 409, response.text)
         self.assertEqual(self.calls, [])
         self.assertEqual(self.jobs.jobs, {})
+
+    async def test_room_member_updates_wait_for_actual_muse_dispatch(self):
+        from backend import muse_bridge
+        room = await self.room()
+        endpoint = f"/api/groups/{room['id']}/team"
+        body = {"team_id": self.team["id"], "expected_revision": room["team_revision"]}
+        record = {"room_id": room["id"], "project_id": room["project_id"], "status": "dispatching"}
+        with patch.object(muse_bridge.manager, "records", {"native": record}):
+            denied = await self.client.put(endpoint, params=self.params(room), json=body)
+            self.assertEqual(denied.status_code, 409)
+            record["status"] = "stopped_monitoring"
+            updated = await self.client.put(endpoint, params=self.params(room), json=body)
+            self.assertEqual(updated.status_code, 200, updated.text)
 
     async def test_followup_waits_for_prior_turn_and_restart_keeps_history(self):
         room = await self.room()

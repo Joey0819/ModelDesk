@@ -20,3 +20,10 @@ export function readTaskDraft(storage, projectId, roomId) {
 
 export function engineSupports(engine, kind) { return (engine?.capabilities || []).includes(kind); }
 export function taskEngineLabel(task) { const label = task.engine === 'member_model' ? '成员模型' : task.engine === 'claude' ? 'Claude Code' : task.engine === 'codex' ? 'Codex' : task.engine || '执行引擎'; const model = task.engine_model || (task.engine === 'member_model' ? task.member?.model : null); return model ? `${label} · ${model}` : label; }
+
+
+export function memberEngineSupports(engine, kind, member) {
+  const memberKind = member?.kind || 'model';
+  if (memberKind === 'muse') return false;
+  return engineSupports(engine, kind) && (memberKind === 'model' || engine.id === memberKind);
+}

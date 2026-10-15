@@ -53,7 +53,7 @@ class RunStore:
                     raise ValueError("Run project does not match request")
                 snapshot = value.get("team_snapshot")
                 if snapshot is not None:
-                    team = TeamRequest.model_validate({key: snapshot[key] for key in TeamRequest.model_fields}).model_dump(mode="json")
+                    team = TeamRequest.model_validate({key: snapshot[key] for key in TeamRequest.model_fields if key in snapshot}).model_dump(mode="json")
                     if team["project_id"] != value["project_id"] or [member["model"] for member in team["members"]] != value["request"]["models"]:
                         raise ValueError("Team snapshot does not match run")
                     if snapshot.get("id") != value["request"].get("team_id"):

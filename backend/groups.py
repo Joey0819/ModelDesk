@@ -97,7 +97,7 @@ class RoomStore:
             value = json.loads(path.read_text())
             request = RoomRequest.model_validate({key: value[key] for key in RoomRequest.model_fields}).model_dump(mode="json")
             snapshot = value["team_snapshot"]
-            team = TeamRequest.model_validate({key: snapshot[key] for key in TeamRequest.model_fields}).model_dump(mode="json")
+            team = TeamRequest.model_validate({key: snapshot[key] for key in TeamRequest.model_fields if key in snapshot}).model_dump(mode="json")
             if value["id"] != identifier or value.get("schema_version") != 1 or team["project_id"] != request["project_id"] or snapshot["id"] != request["team_id"]:
                 raise ValueError("Invalid room identity")
             for field in ["created_at", "updated_at"]:
@@ -147,6 +147,30 @@ def room_roles(room):
     # Group dispatch reads trusted role prompts from each frozen member by ID.
     # A model-keyed role map would overwrite two distinct roles using one model.
     return {}
+
+
+def room_models(room):
+    """Only actual model endpoints enter the gateway; agents keep their runtimes."""
+    snapshot = room["team_snapshot"]
+    models = [member["model"] for member in snapshot["members"] if member.get("kind", "model") == "model"]
+    if snapshot.get("coordinator_model"):
+        models.append(snapshot["coordinator_model"])
+    return list(dict.fromkeys(models))
+
+
+def freeze_agent_sources(room):
+    """Quote bounded, completed runtime deliveries without granting their text authority."""
+    from .group_tasks import manager as tasks
+    completed = sorted((item for item in tasks.records.values()
+                        if item.get("project_id") == room["project_id"] and item.get("room_id") == room["id"]
+                        and item.get("status") == "complete" and isinstance(item.get("output"), str) and item["output"].strip()),
+                       key=lambda item: (item["created_at"], item["id"]))[-3:]
+    return [{"task_id": item["id"], "member_id": item["member_id"], "member_name": item["member"]["name"],
+             "engine": item["engine"], "kind": item["kind"], "status": "complete", "exit_code": item.get("exit_code"),
+             "patch_sha256": item.get("diff_sha256") or item.get("review_of_patch_sha256"),
+             "output_sha256": hashlib.sha256(item["output"].encode()).hexdigest(), "output": item["output"][:2000],
+             "truncated": len(item["output"]) > 2000, "verification": item.get("verification")}
+            for item in completed]
 
 
 def freeze_muse_source(room, identifier):
@@ -204,12 +228,19 @@ def validate_job_creation(request, metadata, authorization):
     room = store.get(identifier, request.project_id)
     members = room["team_snapshot"]["members"]
     meta = metadata or {}
-    if (request.mode != "group" or request.models != list(dict.fromkeys(member["model"] for member in members)) or request.roles != room_roles(room)
-            or meta.get("group_room_id") != identifier or meta.get("group_team_snapshot") != room["team_snapshot"]):
+    if (request.mode != "group" or request.models != room_models(room) or request.roles != room_roles(room)
+            or meta.get("group_room_id") != identifier or meta.get("group_team_snapshot") != room["team_snapshot"]
+            or meta.get("group_coordinator_model") != room["team_snapshot"].get("coordinator_model")
+            or type(meta.get("group_broadcast")) is not bool):
         raise HTTPException(403, "群成员配置必须来自本群的已保存成员")
     selected = meta.get("group_recipient_member_ids")
     if not selected or len(selected) != len(set(selected)) or not set(selected) <= {member["id"] for member in members}:
         raise HTTPException(422, "请选择本群中的接收成员")
+    if meta["group_broadcast"]:
+        if selected != [member["id"] for member in members]:
+            raise HTTPException(403, "广播成员必须来自完整的已保存群组")
+    elif any(member.get("kind", "model") != "model" for member in members if member["id"] in selected):
+        raise HTTPException(422, "可执行 Agent 请通过派发任务操作，不能作为模型网关发言者")
 
 
 def room_jobs(room):
@@ -239,6 +270,7 @@ async def update_room_team(identifier: str, request: RoomTeamRequest, project_id
     """Apply a saved team to future work only; completed work keeps its identity."""
     from .harness.manager import manager as harness
     from .group_tasks import manager as tasks, ACTIVE
+    from .muse_bridge import manager as muse, ACTIVE as MUSE_ACTIVE
     # No awaits between checking active records and saving: task/job creation
     # performs a final roster check in the same event loop before persistence.
     with store.lock:
@@ -248,7 +280,8 @@ async def update_room_team(identifier: str, request: RoomTeamRequest, project_id
         if any(job["status"] in {"queued", "running"} for job in room_jobs(room)) or any(
             task["room_id"] == room["id"] and task["project_id"] == room["project_id"] and task["status"] in ACTIVE
             for task in tasks.records.values()
-        ):
+        ) or any(task.get("room_id") == room["id"] and task.get("project_id") == room["project_id"] and task.get("status") in MUSE_ACTIVE
+                 for task in muse.records.values()):
             raise HTTPException(409, "本群仍有讨论或 Agent 任务运行，请等其完成或停止后再应用成员变更")
         snapshot = harness.teams.get(str(request.team_id), room["project_id"])
         room.update(team_id=snapshot["id"], team_snapshot=copy.deepcopy(snapshot), team_revision=team_revision(snapshot), updated_at=workbench.now())
@@ -280,17 +313,23 @@ async def send_message(identifier: str, request: MessageRequest, project_id: str
         raise HTTPException(422, "接收成员不属于当前项目群")
     # Stable roster order defines the relay order, regardless of chip click order.
     selected = [member["id"] for member in members if member["id"] in selected]
+    broadcast = not request.recipient_member_ids
+    if not broadcast and any(member.get("kind", "model") != "model" for member in members if member["id"] in selected):
+        raise HTTPException(422, "已选择可执行 Agent；请使用派发任务，由其实际运行时执行")
     try:
         catalog = await workbench.model_catalog()
     except Exception as error:
         raise HTTPException(503, workbench.public_error(error)) from error
-    missing = [member["model"] for member in members if member["id"] in selected and member["model"] not in catalog]
+    requested_models = [member["model"] for member in members if member["id"] in selected and member.get("kind", "model") == "model"]
+    if broadcast and room["team_snapshot"].get("coordinator_model"):
+        requested_models.append(room["team_snapshot"]["coordinator_model"])
+    missing = list(dict.fromkeys(model for model in requested_models if model not in catalog))
     if missing:
         raise HTTPException(422, "这些接收成员的模型尚未连接：" + "、".join(missing))
     body = request.model_dump(mode="json", exclude={"recipient_member_ids", "muse_task_id"})
     try:
         job_request = workbench.JobRequest(**body, mode="group", project_id=room["project_id"], conversation_id=room["id"],
-                                           models=list(dict.fromkeys(member["model"] for member in members)), roles=room_roles(room))
+                                           models=room_models(room), roles=room_roles(room))
     except ValidationError as error:
         raise HTTPException(422, "群消息配置无效，请检查工具、附件和代码快照选择") from error
     from .super_platform import validate_context
@@ -298,7 +337,9 @@ async def send_message(identifier: str, request: MessageRequest, project_id: str
     if store.get(room["id"], room["project_id"])["team_revision"] != room["team_revision"]:
         raise HTTPException(409, "群成员在发送期间发生变化，请确认新成员后重新发送")
     metadata = {"group_room_id": room["id"], "group_title": room["title"],
-                "group_team_snapshot": room["team_snapshot"], "group_recipient_member_ids": selected}
+                "group_team_snapshot": room["team_snapshot"], "group_recipient_member_ids": selected,
+                "group_broadcast": broadcast, "group_coordinator_model": room["team_snapshot"].get("coordinator_model"),
+                "group_agent_sources": freeze_agent_sources(room)}
     if muse_source:
         metadata["group_muse_source"] = muse_source
     job = workbench.manager.create(job_request, metadata=metadata, group_authorization=_ROOM_WRITE)

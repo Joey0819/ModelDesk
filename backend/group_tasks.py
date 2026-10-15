@@ -219,7 +219,9 @@ def worker_command(engine, kind, workspace, model=None):
         command = [executable, "exec", "--ignore-user-config", "--ignore-rules", "--ephemeral", "--json", "--color", "never", "-C", str(workspace),
                    "-c", 'approval_policy="never"', "-c", 'default_permissions="modeldesk"',
                    "-c", f'permissions.modeldesk={{extends={json.dumps(profile["extends"])}, filesystem={{{filesystem}}}, network={{enabled=false}}}}',
-                   "-c", 'shell_environment_policy.inherit="none"', "-c", "project_doc_max_bytes=0", "-c", 'web_search="disabled"']
+                   "-c", 'shell_environment_policy.inherit="none"',
+                   "-c", 'shell_environment_policy.set={PATH="/usr/bin:/bin:/usr/sbin:/sbin"}',
+                   "-c", "project_doc_max_bytes=0", "-c", 'web_search="disabled"']
         for feature in ["apps", "plugins", "hooks", "multi_agent", "browser_use", "computer_use", "chronicle"]:
             command.extend(["--disable", feature])
         if model:
@@ -227,10 +229,13 @@ def worker_command(engine, kind, workspace, model=None):
         command.extend(["--enable", "skip_host_skill_discovery", "-"])
         return command
     tools = "Read,Glob,Grep" if kind == "review" else "Read,Glob,Grep,Edit,Write"
-    return [executable, "--restricted", "--safe-mode", "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}',
+    command = [executable, "--restricted", "--safe-mode", "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}',
             "--no-chrome", "--disable-slash-commands", "--no-session-persistence", "--permission-mode", "dontAsk",
             "--permission-prompts", "none", "--tools", tools, "--allowedTools", tools,
             "--output-format", "stream-json", "--verbose", "--print"]
+    if model:
+        command.extend(["--model", model])
+    return command
 
 
 async def probe_cli(arguments):
@@ -426,6 +431,11 @@ class TaskManager:
         member = next((member for member in room["team_snapshot"]["members"] if member["id"] == body["member_id"]), None)
         if not member:
             raise HTTPException(422, "请选择当前群的成员")
+        member_kind = member.get("kind", "model")
+        if member_kind == "muse":
+            raise HTTPException(422, "Muse 成员请通过 Muse 原生任务派发，不使用代码执行引擎")
+        if member_kind in {"codex", "claude"} and body["engine"] != member_kind:
+            raise HTTPException(422, "执行引擎必须与已保存 Agent 成员类型一致")
         if sum(item["status"] in ACTIVE for item in self.records.values()) >= 8:
             raise HTTPException(429, "最多可排队 8 个独立 Agent 任务")
         project = projects.store.get(body["project_id"])
@@ -456,8 +466,12 @@ class TaskManager:
                 "verification": "CLI 执行结果；测试与审阅结论需查看过程证据", "engine_model": None, "omitted": []}
         if body["engine"] == "member_model":
             item["engine_model"] = member["model"]
-        elif body["engine"] == "codex" and re.fullmatch(r"(?:gpt-|o[1-9])[A-Za-z0-9._-]+", member["model"]):
+        elif member_kind == "codex" and body["engine"] == "codex":
+            item["engine_model"] = member.get("model")
+        elif body["engine"] == "codex" and re.fullmatch(r"(?:gpt-|o[1-9])[A-Za-z0-9._-]+", member.get("model") or ""):
             item["engine_model"] = member["model"]
+        elif member_kind == "claude" and body["engine"] == "claude":
+            item["engine_model"] = member.get("model")
         item["execution_model"] = item["engine_model"]
         item["project_context"], item["project_context_sha256"] = self.freeze_context(room, project)
         self.records[item["id"]] = item

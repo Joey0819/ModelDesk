@@ -9,6 +9,18 @@ from backend.artifacts import artifact_markdown, selected_artifact
 
 
 class ArtifactTests(unittest.IsolatedAsyncioTestCase):
+    def test_coordinator_plan_is_not_a_deliverable_when_synthesis_fails(self):
+        job = {"id": "job", "mode": "group", "status": "complete", "result": {"messages": [
+            {"member_id": "__coordinator__", "model": "a", "phase": "plan", "content": "Only a proposed plan"},
+            {"member_id": "worker", "member_name": "Researcher", "model": "b", "content": "Actual member response"},
+            {"member_id": "__coordinator__", "model": "a", "phase": "synthesis", "content": "", "error": "failed"},
+        ]}}
+        with self.assertRaises(HTTPException):
+            selected_artifact(job, "group:0")
+        self.assertEqual(selected_artifact(job, "group:1")["content"], "Actual member response")
+        job["result"]["messages"][2].update(content="Actual summary", error=None)
+        self.assertEqual(selected_artifact(job, "group:2")["title"], "统筹模型综合结论")
+
     async def test_selected_native_deliverable_http_download_keeps_failure_and_unknown_ids_honest(self):
         with tempfile.TemporaryDirectory() as folder:
             manager = workbench.JobManager(Path(folder))

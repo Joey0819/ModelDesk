@@ -208,3 +208,18 @@
   .mission-team-editor-actions > span { display: none; }
   .mission-running-team summary span { flex-basis: 100%; margin-left: 23px; }
 }
+
+/* Keep executable member settings in the existing team editor. */
+.mission-coordinator-field, .mission-member-model-field { display: block; margin: 16px 0; }
+.mission-coordinator-field > small, .mission-member-model-field > small, .mission-runtime-help { display: block; font-size: 11px; line-height: 1.8; color: var(--muted); margin-top: 7px; }
+.mission-coordinator-summary { display: flex; gap: 7px; align-items: center; flex-wrap: wrap; font-size: 11px; color: var(--muted); margin: 15px 0 0; }
+.mission-coordinator-summary strong { font-weight: 500; color: var(--accent); }
+.mission-team-editor-actions > select { width: auto !important; max-width: 170px; font-size: 12px; }
+.mission-typed-member-fields { grid-template-columns: 24px minmax(100px,1fr) minmax(130px,.8fr) 26px; }
+.mission-member-model-field > span { display: block; margin-bottom: 6px; font-size: 11px; color: var(--muted); }
+@media(max-width:600px) {
+  .mission-team-editor :is(input, select, textarea) { font-size: 16px; }
+  .mission-typed-member-fields { grid-template-columns: 24px minmax(0,1fr) 26px; }
+  .mission-typed-member-fields > select { grid-column: 2; grid-row: 2; }
+  .mission-typed-member-fields > button { grid-column: 3; grid-row: 1; }
+}

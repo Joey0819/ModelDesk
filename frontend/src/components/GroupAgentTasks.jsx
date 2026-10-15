@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { groupTaskApi } from '../group-task-api';
-import { APPROVAL_LABELS, TASK_LABELS, approvalDecision, eligibleReviews, engineSupports, readTaskDraft, taskEngineLabel, taskActive, taskDraftKey, taskRequest } from '../group-task-state';
+import { groupMemberKind, groupMemberKindLabel } from '../group-state';
+import { APPROVAL_LABELS, TASK_LABELS, approvalDecision, eligibleReviews, memberEngineSupports, readTaskDraft, taskEngineLabel, taskActive, taskDraftKey, taskRequest } from '../group-task-state';
 import { Icon, Markdown } from './WorkbenchResults';
 import { CopyTextButton } from './ConversationActions';
 import './GroupAgentTasks.css';
@@ -51,7 +52,7 @@ export function TaskCard({ task, tasks, approvals, busy, onReview, onCancel, onR
 
 export default function GroupAgentTasks({ projectId, room, kind, onKindChange, onOpenProjects, onOpenArtifacts }) {
   const roomId = room.id;
-  const members = room.team_snapshot?.members || [];
+  const members = (room.team_snapshot?.members || []).filter((member) => groupMemberKind(member) !== 'muse');
   const [draft, setDraft] = useState(() => readTaskDraft(localStorage, projectId, roomId));
   const [tasks, setTasks] = useState([]);
   const [engines, setEngines] = useState([]);
@@ -88,17 +89,19 @@ export default function GroupAgentTasks({ projectId, room, kind, onKindChange, o
   useEffect(() => { if (selectedArtifact) onOpenArtifacts({ ...selectedArtifact, ...(artifactDetail?.id === selectedArtifact.id ? { diff: artifactDetail.diff } : {}), mode: 'group_agent' }, false); }, [selectedArtifact, artifactDetail, onOpenArtifacts]);
   const showArtifact = async (task) => { setArtifactId(task.id); onOpenArtifacts({ ...task, mode: 'group_agent' }, true); try { const detail = await groupTaskApi.get(task.id, projectId, roomId); if (alive.current) setArtifactDetail(detail); } catch (failure) { if (alive.current) setError(failure.message); } };
   const update = (patch) => setDraft((previous) => ({ ...previous, ...patch }));
-  const memberId = members.some((member) => member.id === draft.memberId) ? draft.memberId : members[0]?.id;
-  const compatibleEngines = engines.filter((item) => engineSupports(item, kind));
+  const defaultMember = kind === 'code' ? members.find((member) => ['codex', 'claude'].includes(groupMemberKind(member))) : members.find((member) => groupMemberKind(member) === 'model');
+  const memberId = members.some((member) => member.id === draft.memberId) ? draft.memberId : defaultMember?.id || members[0]?.id;
+  const selectedMember = members.find((member) => member.id === memberId);
+  const selectedKind = groupMemberKind(selectedMember);
+  const compatibleEngines = engines.filter((item) => memberEngineSupports(item, kind, selectedMember));
   const available = compatibleEngines.filter((item) => item.available && item.authenticated !== false);
   const engine = compatibleEngines.find((item) => item.id === draft.engine) || (kind === 'review' ? available.find((item) => item.id === 'member_model') : null) || available[0] || compatibleEngines[0];
-  const selectedMember = members.find((member) => member.id === memberId);
   const sources = tasks.filter((task) => task.kind === 'code' && task.status === 'complete' && task.diff_sha256 && task.changed_files?.length);
   const source = sources.find((task) => task.id === draft.sourceTaskId);
   const valid = projectId && draft.prompt.trim() && memberId && engine?.available && engine?.authenticated !== false && (kind !== 'review' || (source && source.member_id !== memberId));
   const mutate = async (action) => { setBusy(true); setError(''); try { await action(); await refresh(); } catch (failure) { if (alive.current) setError(failure.message); } finally { if (alive.current) setBusy(false); } };
   const send = (event) => { event.preventDefault(); if (!valid || busy) return; const sent = draft.prompt; mutate(async () => { await groupTaskApi.create(taskRequest({ projectId, roomId, memberId, engine: engine.id, kind, prompt: draft.prompt, sourceTaskId: draft.sourceTaskId })); if (alive.current) { setDraft((previous) => ({ ...previous, prompt: previous.prompt === sent ? '' : previous.prompt })); setComposerOpen(false); } }); };
-  const review = (task) => { update({ sourceTaskId: task.id, engine: 'member_model', memberId: members.find((member) => member.id !== task.member_id)?.id || '', prompt: `请独立审阅这份改动，重点检查正确性、回归风险和验证证据。列出必须修复的问题，并明确当前审阅的限制。` }); onKindChange('review'); setComposerOpen(true); promptRef.current?.focus(); };
+  const review = (task) => { update({ sourceTaskId: task.id, engine: 'member_model', memberId: (members.find((member) => member.id !== task.member_id && groupMemberKind(member) === 'model') || members.find((member) => member.id !== task.member_id))?.id || '', prompt: `请独立审阅这份改动，重点检查正确性、回归风险和验证证据。列出必须修复的问题，并明确当前审阅的限制。` }); onKindChange('review'); setComposerOpen(true); promptRef.current?.focus(); };
   return <div className={`group-agent-workspace ${composerOpen ? 'agent-composer-open' : 'agent-composer-collapsed'}`}>
     <div className="group-agent-timeline">
       {error && <div className="error-banner" role="alert">{error}<button type="button" className="subtle-button" onClick={() => { setError(''); refresh(); refreshEngines(); }}>重新连接</button></div>}
@@ -109,9 +112,11 @@ export default function GroupAgentTasks({ projectId, room, kind, onKindChange, o
     </div>
     <div className="group-agent-composer-toggle"><button type="button" aria-expanded={composerOpen} aria-controls={`group-agent-form-${roomId}`} onClick={() => setComposerOpen(!composerOpen)}><Icon name={composerOpen ? 'close' : 'plus'} size={17} /><strong>{composerOpen ? '收起，查看任务记录' : kind === 'review' ? '发起独立审阅' : '派发新任务'}</strong>{!composerOpen && draft.prompt.trim() && <small>草稿已保存</small>}</button></div>
     <form id={`group-agent-form-${roomId}`} className="group-agent-composer" onSubmit={send}>
-      <div className="group-agent-assignment"><label>交给<select aria-label="指定执行成员" value={memberId || ''} onChange={(event) => update({ memberId: event.target.value })}>{members.map((member) => <option key={member.id} value={member.id}>@{member.name}</option>)}</select></label><label>执行引擎<select aria-label="Agent 执行引擎" value={engine?.id || ''} onChange={(event) => update({ engine: event.target.value })}>{!compatibleEngines.length && <option value="">正在检测</option>}{compatibleEngines.map((item) => <option key={item.id} value={item.id} disabled={!item.available || item.authenticated === false}>{item.id === 'member_model' ? `成员模型 · ${selectedMember?.model || '已保存模型'}` : item.label || item.id}{!item.available ? ' · 不可用' : item.authenticated === false ? ' · 未登录' : ''}</option>)}</select></label></div>
+      <div className="group-agent-assignment"><label>交给<select aria-label="指定执行成员" value={memberId || ''} onChange={(event) => update({ memberId: event.target.value })}>{members.map((member) => <option key={member.id} value={member.id}>@{member.name} · {groupMemberKindLabel(member)}</option>)}</select></label><label>执行引擎<select aria-label="Agent 执行引擎" value={engine?.id || ''} onChange={(event) => update({ engine: event.target.value })}>{!compatibleEngines.length && <option value="">正在检测</option>}{compatibleEngines.map((item) => <option key={item.id} value={item.id} disabled={!item.available || item.authenticated === false}>{item.id === 'member_model' ? `成员模型 · ${selectedMember?.model || '已保存模型'}` : item.label || item.id}{!item.available ? ' · 不可用' : item.authenticated === false ? ' · 未登录' : ''}</option>)}</select></label></div>
       {kind === 'review' && <label className="group-review-source">审阅哪份改动<select aria-label="选择待审阅任务" value={source?.id || ''} onChange={(event) => update({ sourceTaskId: event.target.value })}><option value="">请选择已完成的代码任务</option>{sources.map((task) => <option key={task.id} value={task.id}>{task.member?.name || task.member_id} · {task.prompt.slice(0, 65)} · {short(task.diff_sha256)}</option>)}</select></label>}
       <div className="composer"><textarea ref={promptRef} rows={3} aria-label={kind === 'review' ? 'Agent 审阅要求' : 'Agent 执行任务'} value={draft.prompt} maxLength={12000} placeholder={kind === 'review' ? '告诉审阅成员，重点检查哪些问题…' : '例如：实现导出功能，并运行相关测试。请说明实际修改与验证结果。'} onChange={(event) => update({ prompt: event.target.value })} /><div className="composer-footer"><span>{kind === 'review' ? '审阅保存的实际补丁 · 不自动合入' : '独立 Git 工作区 · 运行记录持续保存'}</span><button className="primary-button" type="submit" disabled={!valid || busy || loading}><Icon name="send" size={14} />{busy ? '正在提交' : kind === 'review' ? '开始独立审阅' : '分配任务'}</button></div></div>
+      {selectedKind === 'model' && engine?.id !== 'member_model' && <p className="mission-form-note">此成员是 LLM 角色。本次明确使用 {engine?.label || engine?.id || 'CLI'} 独立执行器，执行器沿用自己的登录与模型；可在群成员中添加对应的 Codex 或 Claude Code Agent。</p>}
+      {!members.length && <p className="mission-form-note">本群只有 Muse 成员。请添加 LLM 审阅者或 Codex / Claude Code 执行 Agent；Muse 任务在群聊中明确选择后派发。</p>}
       {kind === 'review' && source?.member_id === memberId && <p className="mission-form-note">请选择另一位成员独立审阅，执行者不能审阅自己的改动。</p>}
       {!available.length && !enginesLoading && <p className="mission-form-note">{kind === 'review' ? '请检查成员模型的本地网关连接，或在 Mac 登录可用的 CLI 执行引擎。' : '请在 Mac 检查 Codex 或 Claude Code 的安装、支持能力与登录状态，然后重新连接。沿用各自 CLI 已有登录。'}</p>}
       {enginesLoading && <p className="group-composer-note" role="status">正在检测本机 Agent 执行引擎…</p>}

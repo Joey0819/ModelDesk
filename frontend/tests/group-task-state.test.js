@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { approvalDecision, eligibleReviews, readTaskDraft, taskDraftKey, taskRequest, taskScope } from '../src/group-task-state.js';
+import { approvalDecision, eligibleReviews, memberEngineSupports, readTaskDraft, taskDraftKey, taskRequest, taskScope } from '../src/group-task-state.js';
 import { isRemoteLocation, resolveApiBase } from '../src/api-base.js';
 
 const task = { id: 'code-1', kind: 'code', status: 'complete', diff_sha256: 'patch-exact', member_id: 'writer', project_id: 'p1', room_id: 'r1' };
@@ -66,4 +66,18 @@ test('UNIX-second pairing expiry shows the correct countdown and accepts ISO com
   assert.equal(pairingSeconds(new Date(now + 60000).toISOString(), now), 60);
   assert.equal(epochMillis(now / 1000), now);
   assert.equal(remoteDate(null), '—');
+});
+
+
+test('typed runtime members cannot silently switch execution engines while legacy model assignments stay explicit', () => {
+  const codex = { id: 'codex', capabilities: ['code', 'review'] };
+  const claude = { id: 'claude', capabilities: ['code'] };
+  const model = { id: 'member_model', capabilities: ['review'] };
+  assert.equal(memberEngineSupports(codex, 'code', { kind: 'codex' }), true);
+  assert.equal(memberEngineSupports(claude, 'code', { kind: 'codex' }), false);
+  assert.equal(memberEngineSupports(model, 'review', { kind: 'codex' }), false);
+  assert.equal(memberEngineSupports(claude, 'code', { kind: 'muse' }), false);
+  assert.equal(memberEngineSupports(model, 'review', { model: 'legacy-llm' }), true);
+  assert.equal(memberEngineSupports(codex, 'code', { model: 'legacy-llm' }), true);
+  assert.equal(memberEngineSupports(claude, 'review', { kind: 'claude' }), false);
 });

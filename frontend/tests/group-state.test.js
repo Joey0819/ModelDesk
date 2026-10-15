@@ -8,6 +8,11 @@ import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import {
   GROUP_HARNESS_MODES,
+  groupMemberKind,
+  groupMemberKindLabel,
+  groupSelection,
+  groupRuntimeRequest,
+  buildGroupRuntimePrompt,
   buildMuseHandoffPrompt,
   extractGroupDeliverable,
   groupScopeKey,
@@ -107,7 +112,7 @@ test('actual continuous timeline exposes attributed full messages and useful act
   const html = renderToStaticMarkup(React.createElement(GroupTurn, { job, room, onOpenArtifacts() {}, onSendToMuse() {}, onHandOffToAgent() {} }));
   assert.match(html, /Discuss our project/); assert.match(html, /Actual answer/); assert.match(html, /Writer/); assert.match(html, /model-a/);
   assert.match(html, /复制这条提问/); assert.match(html, /复制 Writer 的发言/); assert.match(html, /查看本轮成果/);
-  assert.match(html, /发给 Muse/); assert.match(html, /交由代码 Agent/);
+  assert.match(html, /准备 Muse 任务/); assert.match(html, /交由代码 Agent/);
   assert.equal(html.includes('展开完整发言'), false);
   const agentHtml = renderToStaticMarkup(React.createElement(GroupAgentTaskTurn, { task: { id: 't1', member: { name: 'Engineer' }, engine: 'codex', status: 'complete', prompt: 'Implement feature', output: 'All tests passed' }, onOpenTaskMode() {}, onUseAgentOutput() {} }));
   assert.match(agentHtml, /Engineer/); assert.match(agentHtml, /All tests passed/); assert.match(agentHtml, /引用结果继续讨论/);
@@ -126,4 +131,77 @@ test('native Muse transcript distinguishes complete observed replies from partia
 test('group navigation is a primary workspace while single tools and missions remain discoverable', () => {
   const html = renderToStaticMarkup(React.createElement(WorkspaceNavigation, { groupsView: true, missionView: false, mode: 'chat', navigationTab: 'tools', activeJobs: [] }));
   assert.match(html, /项目群聊/); assert.match(html, /协作任务/); assert.match(html, /单项协作/); assert.match(html, /项目资源/);
+});
+
+
+test('mixed member broadcast is LLM discussion while explicit runtime selection preserves actual identity', () => {
+  const codex = { id: 'builder', name: 'Engineer', kind: 'codex', model: null };
+  const muse = { id: 'creative', name: 'Creative', kind: 'muse', model: null };
+  const roster = [...members, codex, muse];
+  assert.equal(groupMemberKind(members[0]), 'model');
+  assert.equal(groupMemberKindLabel(codex), 'Codex Agent');
+  assert.deepEqual(groupSelection(roster, []).discussionMembers, members);
+  assert.equal(groupSelection(roster, []).runtimeMember, undefined);
+  assert.equal(groupSelection(roster, ['builder']).runtimeMember.id, 'builder');
+  assert.deepEqual(groupRecipients({ group_team_snapshot: { members: roster } }, room), members);
+  assert.deepEqual(groupRecipients({ group_team_snapshot: { members: roster }, group_recipient_member_ids: roster.map((member) => member.id) }, room), members);
+  const request = groupRuntimeRequest({ member: codex, projectId: 'project-a', roomId: 'room-a', prompt: ' Implement feature ' });
+  assert.deepEqual(request, { target: 'group_task', body: { project_id: 'project-a', room_id: 'room-a', member_id: 'builder', prompt: 'Implement feature', engine: 'codex', kind: 'code' } });
+  const museRequest = groupRuntimeRequest({ member: muse, projectId: 'project-a', roomId: 'room-a', prompt: 'Research proposal' });
+  assert.equal(museRequest.target, 'muse');
+  assert.equal(museRequest.body.member_id, 'creative');
+  assert.equal('model' in museRequest.body, false);
+  assert.throws(() => groupRuntimeRequest({ member: members[0], projectId: 'p', roomId: 'r', prompt: '@Muse run this' }), /运行时 Agent/);
+  assert.throws(() => groupRuntimeRequest({ member: codex, roomId: 'r', prompt: 'Code' }), /Git/);
+});
+
+test('runtime task context is bounded, quoted, and scoped to actual completed group outputs', () => {
+  const fixtureRoom = { ...room, team_snapshot: { ...room.team_snapshot, coordinator_model: 'lead-model' } };
+  const outputTask = { id: 'code', project_id: room.project_id, room_id: room.id, status: 'complete', created_at: '2026-10-13T02:00:00Z', member: { name: 'Engineer' }, output: 'Actual execution result' };
+  const unverifiedMuse = { ...outputTask, id: 'muse', created_at: '2026-10-13T03:00:00Z', output: undefined, response: 'Invented source', sent: true, harness_generated: true, completion_evidence: 'framed_assistant_reply' };
+  const requestPrompt = buildGroupRuntimePrompt('Implement export', [job, { ...job, id: 'other', group_room_id: 'elsewhere', result: { messages: [{ content: 'Foreign content' }] } }], fixtureRoom, [outputTask, { ...outputTask, id: 'failed', status: 'error', output: 'Failed result' }], [unverifiedMuse]);
+  assert.match(requestPrompt, /Implement export/);
+  assert.match(requestPrompt, /Actual answer/);
+  assert.match(requestPrompt, /Actual execution result/);
+  assert.match(requestPrompt, /不代表新的执行授权/);
+  assert.doesNotMatch(requestPrompt, /Foreign content|Failed result|Invented source/);
+  assert.ok(buildGroupRuntimePrompt('x'.repeat(20000), [job], fixtureRoom).length <= 12000);
+});
+
+test('coordinator plan and synthesis keep phase attribution during streamed replay and rendering', () => {
+  const event = { job_id: job.id, seq: 1, type: 'message', member_id: '__coordinator__', member_name: '群主控', model: 'lead-model', round: 1, phase: 'plan', content: 'Delegate real work explicitly.' };
+  const streamed = applyEvent({ ...job, result: null, events: [] }, event);
+  assert.equal(streamed.result.messages[0].phase, 'plan');
+  const html = renderToStaticMarkup(React.createElement(GroupTurn, { job: streamed, room, onOpenArtifacts() {} }));
+  assert.match(html, /统筹规划/);
+  assert.match(html, /lead-model/);
+  const synthesis = { ...streamed, result: { messages: [{ ...streamed.result.messages[0], phase: 'synthesis' }] } };
+  assert.match(renderToStaticMarkup(React.createElement(GroupTurn, { job: synthesis, room, onOpenArtifacts() {} })), /统筹汇总/);
+});
+
+
+test('failed synthesis, planning, and incomplete content cannot become completed handoff conclusions', () => {
+  const planning = { member_id: '__coordinator__', member_name: '统筹模型', model: 'lead', phase: 'plan', content: 'Plan-only text must not be promoted.' };
+  const incomplete = { model: 'model-a', content: 'Truncated member answer', incomplete: true };
+  const failedSynthesis = { model: 'lead', phase: 'synthesis', content: '', error: 'Gateway timeout' };
+  const failed = { ...job, result: { partial_failure: true, messages: [planning, incomplete, failedSynthesis] } };
+  assert.equal(extractGroupDeliverable(failed, room), '');
+  assert.equal(buildMuseHandoffPrompt('Original task', failed, room), 'Original task');
+  assert.equal(buildGroupRuntimePrompt('Explicit work', [failed], room), 'Explicit work');
+  assert.equal(extractGroupDeliverable({ ...job, result: { messages: [planning, incomplete] } }, room), '');
+  const complete = { ...job, result: { messages: [planning, { ...planning, phase: 'synthesis', content: 'Actual completed synthesis' }] } };
+  assert.match(extractGroupDeliverable(complete, room), /Actual completed synthesis/);
+  assert.doesNotMatch(extractGroupDeliverable(complete, room), /Plan-only/);
+});
+
+test('restored selections cannot silently choose an executor after a member type changes', () => {
+  const changedRoster = [{ ...members[0], kind: 'codex' }, members[1], { id: 'muse', kind: 'muse' }];
+  for (const ids of [['writer', 'reviewer'], ['writer', 'muse'], ['writer', 'removed-member']]) {
+    const selection = groupSelection(changedRoster, ids);
+    assert.equal(selection.runtimeMember, undefined);
+    assert.match(selection.selectionError, /重新选择/);
+  }
+  assert.equal(groupSelection(changedRoster, ['writer']).runtimeMember.id, 'writer');
+  assert.equal(groupSelection(changedRoster, ['writer']).selectionError, '');
+  assert.deepEqual(groupSelection(changedRoster, []).discussionMembers, [members[1]]);
 });

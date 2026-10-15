@@ -96,6 +96,35 @@ print(json.dumps({'type':'turn.completed'}))
         self.assertEqual(self.manager.records, {})
         self.assertEqual(self.manager.tasks, {})
 
+    async def test_typed_cli_member_binds_engine_and_supports_default_cli_model(self):
+        room = self.rooms.get(self.room["id"], self.project["id"])
+        room["team_snapshot"]["members"][0].update(kind="codex", model=None)
+        self.rooms.save(room)
+        with self.assertRaises(HTTPException) as caught:
+            await self.manager.create(self.request().model_copy(update={"engine": "claude"}))
+        self.assertEqual(caught.exception.status_code, 422)
+        self.assertFalse(self.manager.records)
+        item = await self.run_task()
+        self.assertEqual(item["status"], "complete", item["error"])
+        self.assertIsNone(item["engine_model"])
+        self.assertEqual(item["member"]["kind"], "codex")
+        room["team_snapshot"]["members"][0].update(kind="muse")
+        self.rooms.save(room)
+        with self.assertRaises(HTTPException) as caught:
+            await self.manager.create(self.request())
+        self.assertIn("Muse 原生任务", str(caught.exception.detail))
+
+    def test_typed_cli_explicit_model_is_one_argument_and_preserves_restrictions(self):
+        with patch.object(tasks.shutil, "which", side_effect=lambda name: "/usr/local/bin/" + name):
+            codex = tasks.worker_command("codex", "code", self.repo, "gpt-test")
+            claude = tasks.worker_command("claude", "review", self.repo, "sonnet")
+        self.assertEqual(codex[codex.index("--model") + 1], "gpt-test")
+        self.assertIn('shell_environment_policy.inherit="none"', codex)
+        self.assertIn('shell_environment_policy.set={PATH="/usr/bin:/bin:/usr/sbin:/sbin"}', codex)
+        self.assertEqual(claude[claude.index("--model") + 1], "sonnet")
+        self.assertIn("--safe-mode", claude)
+        self.assertEqual(claude[claude.index("--tools") + 1], "Read,Glob,Grep")
+
     async def test_review_exact_patch_distinct_member_and_readonly_detection(self):
         source = await self.run_task()
         request = tasks.TaskRequest(project_id=self.project["id"], room_id=self.room["id"], member_id="reviewer", engine="codex", kind="review", source_task_id=source["id"], prompt="Check defects")

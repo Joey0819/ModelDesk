@@ -22,6 +22,16 @@ def completed(mode, result, **fields):
 
 
 class HistoryTests(unittest.TestCase):
+    def test_coordinator_plan_is_excluded_from_completed_history(self):
+        job = completed("group", {"partial_failure": True, "messages": [
+            {"member_id": "__coordinator__", "model": "a", "phase": "plan", "content": "Not a completed result"},
+            {"member_id": "researcher", "model": "b", "phase": "reply", "content": "Actual response"},
+            {"member_id": "__coordinator__", "model": "a", "phase": "synthesis", "content": "", "error": "failed"},
+        ]})
+        items, caveats = deliverables(job)
+        self.assertEqual([item["content"] for item in items], ["Actual response"])
+        self.assertTrue(caveats)
+
     def test_only_actual_complete_deliverables_are_reused(self):
         cases = [
             ("chat", {"responses": [{"model": "a", "text": "good"}, {"model": "b", "text": "error draft", "error": "failed"}, {"model": "c", "text": "truncated", "incomplete": True}]}, ["good"]),

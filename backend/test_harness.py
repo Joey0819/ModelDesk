@@ -10,10 +10,11 @@ from unittest.mock import AsyncMock, patch
 
 import httpx
 from fastapi import FastAPI, HTTPException
+from pydantic import ValidationError
 
 from backend import attachments, super_platform, workbench
 from backend.harness.manager import HarnessManager
-from backend.harness.models import RunRequest, TeamRequest
+from backend.harness.models import RunRequest, TeamRequest, TeamMember
 from backend.harness.engines import request_for_step, output_for_job
 from backend.harness import router as harness_api
 from backend.platform_store import PlatformStore
@@ -342,6 +343,55 @@ class HarnessTests(unittest.IsolatedAsyncioTestCase):
         return TeamRequest(name="项目协作组", project_id=project_id, members=[
             {"id": "writer", "name": "方案作者", "model": "alpha", "role": "输出可执行方案 ROLE_AUTHOR_83"},
             {"id": "critic", "name": "质量检查", "model": "beta", "role": "检查依据 ROLE_REVIEWER_29"}])
+
+    async def test_typed_agent_teams_are_not_silently_sent_to_model_only_harness(self):
+        members = [{"id": "writer", "name": "模型研究员", "model": "alpha"},
+                   {"id": "coder", "name": "独立代码 Agent", "kind": "codex"}]
+        team = self.harness.teams.put(TeamRequest(name="混合团队", members=members, coordinator_model="beta"))
+        request = RunRequest(goal="test", team_id=team["id"], steps=[{"id": "draft", "title": "初稿", "mode": "chat"}])
+        with self.assertRaises(HTTPException) as caught:
+            await self.harness.create(request)
+        self.assertEqual(caught.exception.status_code, 422)
+        self.assertIn("项目群", str(caught.exception.detail))
+        self.assertFalse(self.harness.runs)
+        self.assertFalse(self.jobs.jobs)
+        with self.assertRaises(ValidationError):
+            RunRequest(goal="test", members=members)
+
+    async def test_legacy_run_snapshot_reloads_without_new_default_fields_or_rewrite(self):
+        team = self.harness.teams.put(self.team_request())
+        request = RunRequest(goal="legacy run", team_id=team["id"], steps=[{"id": "draft", "title": "初稿", "mode": "chat"}])
+        with patch.object(self.jobs, "chat", AsyncMock(return_value={"responses": [{"model": "alpha", "text": "actual legacy delivery"}]})):
+            created = await self.harness.create(request)
+            await self.settle(created["id"])
+        path = self.harness.store.directory / (created["id"] + ".json")
+        stored = json.loads(path.read_text())
+        stored["team_snapshot"].pop("coordinator_model")
+        for member in stored["team_snapshot"]["members"]:
+            member.pop("kind")
+        path.write_text(json.dumps(stored))
+        original = path.read_bytes()
+        loaded = self.harness.store.load()
+        self.assertEqual(len(loaded), 1)
+        self.assertEqual(loaded[0]["team_snapshot"], stored["team_snapshot"])
+        self.assertEqual(loaded[0]["result"]["job_id"], stored["result"]["job_id"])
+        self.assertEqual(path.read_bytes(), original)
+
+    def test_member_kinds_require_correct_model_and_team_coordinator_contract(self):
+        legacy = TeamMember(id="writer", name="Writer", model="alpha")
+        self.assertEqual(legacy.kind, "model")
+        for kind in ["codex", "claude", "muse"]:
+            self.assertIsNone(TeamMember(id="agent", name="Agent", kind=kind, model="").model)
+        for payload in [{"kind": "model"}, {"kind": "muse", "model": "alpha"}, {"kind": "claude", "model": "--unsafe-option"}]:
+            with self.assertRaises(ValidationError):
+                TeamMember(id="agent", name="Agent", **payload)
+        agents = [{"id": "coder", "name": "Coder", "kind": "codex"}, {"id": "muse", "name": "Muse", "kind": "muse"}]
+        with self.assertRaises(ValidationError):
+            TeamRequest(name="Missing coordinator", members=agents)
+        configured = TeamRequest(name="Agent team", members=agents, coordinator_model=" alpha ")
+        self.assertEqual(configured.coordinator_model, "alpha")
+        with self.assertRaises(ValidationError):
+            TeamRequest(name="Over capacity", members=[{"id": f"member{i}", "name": "M", "model": f"m{i}"} for i in range(4)], coordinator_model="fifth")
 
     async def test_team_http_scope_archive_and_missing_model_preflight(self):
         projects = ProjectStore(self.directory / "projects")

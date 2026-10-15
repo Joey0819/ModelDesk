@@ -14,20 +14,31 @@ class TeamMember(BaseModel):
     model_config = ConfigDict(extra="forbid")
     id: str = Field(pattern=r"^[A-Za-z][A-Za-z0-9_-]{0,39}$")
     name: str = Field(min_length=1, max_length=80)
-    model: str = Field(min_length=1, max_length=200)
+    kind: Literal["model", "codex", "claude", "muse"] = "model"
+    model: str | None = Field(default=None, max_length=200)
     role: str = Field(default="", max_length=1600)
 
     @field_validator("name", "model")
     @classmethod
     def nonempty_value(cls, value):
-        if not value.strip() or any(ord(char) < 32 for char in value):
+        if value is None:
+            return None
+        if any(ord(char) < 32 for char in value):
             raise ValueError("成员名称与模型标识不能为空或含控制字符")
         return value.strip()
 
     @model_validator(mode="after")
     def no_credentials(self):
         from ..attachments import secret_text
-        if secret_text(self.name + "\n" + self.model + "\n" + self.role):
+        if not self.name or (self.kind == "model" and not self.model):
+            raise ValueError("模型成员需要名称与模型标识")
+        if self.kind == "muse" and self.model:
+            raise ValueError("Muse 使用自己的应用与账户，不配置底层模型")
+        if self.kind in {"codex", "claude"} and self.model and (self.model.startswith("-") or any(char.isspace() for char in self.model)):
+            raise ValueError("CLI 模型标识不能含空格或以选项符号开头")
+        if not self.model:
+            self.model = None
+        if secret_text(self.name + "\n" + (self.model or "") + "\n" + self.role):
             raise ValueError("团队配置不能包含凭据；请使用现有模型连接")
         return self
 
@@ -35,6 +46,8 @@ class TeamMember(BaseModel):
 def validate_members(members, *, distinct_models=True):
     if len({member.id for member in members}) != len(members):
         raise ValueError("每位团队成员必须使用不同的成员标识")
+    if distinct_models and any(member.kind != "model" for member in members):
+        raise ValueError("此协作流程仅支持模型成员；包含可执行 Agent 的团队请使用项目群")
     if distinct_models and len({member.model for member in members}) != len(members):
         raise ValueError("协作流程需要不同模型；同一模型的多个角色请在项目群聊中使用")
 
@@ -45,6 +58,16 @@ class TeamRequest(BaseModel):
     description: str = Field(default="", max_length=2000)
     project_id: UUID | None = None
     members: list[TeamMember] = Field(min_length=2, max_length=4)
+    coordinator_model: str | None = Field(default=None, max_length=200)
+
+    @field_validator("coordinator_model")
+    @classmethod
+    def clean_coordinator(cls, value):
+        if value is None or not value.strip():
+            return None
+        if any(ord(char) < 32 for char in value):
+            raise ValueError("主控模型标识不能含控制字符")
+        return value.strip()
 
     @field_validator("name")
     @classmethod
@@ -60,7 +83,14 @@ class TeamRequest(BaseModel):
         # Group rooms dispatch by member ID; workflow engines still validate
         # their distinct-model invariant when a saved roster is used for a run.
         validate_members(self.members, distinct_models=False)
-        if secret_text(self.name + "\n" + self.description):
+        model_ids = {member.model for member in self.members if member.kind == "model"}
+        if self.coordinator_model:
+            model_ids.add(self.coordinator_model)
+        if not model_ids:
+            raise ValueError("团队至少需要一位模型成员或一个主控模型")
+        if len(model_ids) > 4:
+            raise ValueError("成员与主控合计最多使用四个不同模型")
+        if secret_text(self.name + "\n" + self.description + "\n" + (self.coordinator_model or "")):
             raise ValueError("团队配置不能包含凭据")
         return self
 

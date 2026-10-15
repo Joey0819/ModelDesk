@@ -3,7 +3,7 @@ const active = (job) => ['queued', 'running'].includes(job?.status);
 const text = (value) => typeof value === 'string' ? value : '';
 const output = (task) => text(task?.output) || text(task?.result) || text(task?.raw);
 const taskComplete = (task) => ['complete', 'completed'].includes(task?.status);
-const usefulMessage = (message) => text(message?.content).trim() && !/任务规划|任务细化|模型传输重试|原生任务结果|原生结果整理/.test(message.role || '');
+const usefulMessage = (message) => message.phase !== 'plan' && text(message?.content).trim() && !/任务规划|任务细化|模型传输重试|原生任务结果|原生结果整理/.test(message.role || '');
 
 function makeArtifact(job, id, title, content, extra = {}) {
   if (!text(content).trim()) return null;
@@ -30,10 +30,10 @@ function lastMessages(job, mode) {
   return [...latest.values()].sort((a, b) => b.index - a.index).map(({ message, index }) => {
     const role = { researcher: '研究员', reviewer: '审稿人' }[message.role] || message.role;
     const laterFailed = messages.slice(index + 1).some((next) => (mode === 'group' ? (next.member_id || next.model) === (message.member_id || message.model) : next.model === message.model) && (next.error || next.incomplete));
-    return makeArtifact(job, `${mode}:${index}`, mode === 'group' ? `最后发言 · ${message.member_name || message.model || '参与模型'}` : `最后发言 · ${role || '参与角色'}`, message.content, {
-      kind: 'discussion', source: mode === 'group' ? `群聊第 ${message.round || 1} 轮` : `角色对话${message.round ? `第 ${message.round} 轮` : ''}`,
+    return makeArtifact(job, `${mode}:${index}`, message.phase === 'synthesis' ? '统筹模型综合结论' : mode === 'group' ? `最后发言 · ${message.member_name || message.model || '参与模型'}` : `最后发言 · ${role || '参与角色'}`, message.content, {
+      kind: 'discussion', source: message.phase === 'synthesis' ? '统筹模型实际汇总' : mode === 'group' ? `群聊第 ${message.round || 1} 轮` : `角色对话${message.round ? `第 ${message.round} 轮` : ''}`,
       model: message.model, role, partial: Boolean(message.error || message.incomplete || laterFailed),
-      note: '这是角色的实际发言，未另行生成综合结论。',
+      note: message.phase === 'synthesis' ? '依据本轮实际返回的发言汇总；执行 Agent 是否已完成以任务记录为准。' : '这是角色的实际发言，未另行生成综合结论。',
     });
   }).filter(Boolean);
 }
@@ -75,10 +75,11 @@ export function deriveArtifacts(job) {
   if (!job) return [];
   const result = job.result || {};
   if (job.mode === 'muse_task') return [
-    makeArtifact(job, 'muse:deliverable', job.video_url ? 'Muse 视频成片与分镜方案' : 'Muse 任务成果', text(job.response) || text(job.prompt), {
-      source: job.harness_generated ? 'Muse Harness 视频与创意引擎' : 'Muse 本机桥接',
-      video_url: job.video_url || null,
-      note: job.verification || '由 Muse 完成并回传至 ModelDesk 工作台。',
+    makeArtifact(job, 'muse:deliverable', job.harness_generated ? '历史创意输出 · 来源未核实' : job.video_url ? 'Muse 返回的视频与回复' : 'Muse 任务回复', text(job.response), {
+      source: job.harness_generated ? '历史 ModelDesk 生成内容，未验证为 Muse 原生回复' : 'Muse 本机桥接',
+      video_url: job.harness_generated ? null : job.video_url || null,
+      partial: job.harness_generated || job.completion_evidence !== 'framed_assistant_reply',
+      note: job.verification || '来自保存的任务记录；外部操作与视频生成结果需要核查实际产物。',
     }),
   ].filter(Boolean);
   if (job.mode === 'group_agent') return [

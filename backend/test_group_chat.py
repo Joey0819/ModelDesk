@@ -103,6 +103,30 @@ class GroupTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(current["result"]["messages"]), 1)
         self.assertEqual(current["result"]["messages"][0]["content"], "已完成发言")
 
+    async def test_coordinator_failure_and_partial_member_evidence_remain_explicit(self):
+        current = job(rounds=1, group_broadcast=True, group_coordinator_model="first", group_recipient_member_ids=["research", "coder"],
+                      group_team_snapshot={"members": [{"id": "research", "name": "研究员", "model": "second", "role": "核查依据"},
+                                                       {"id": "coder", "name": "工程 Agent", "kind": "codex", "model": None}]})
+        captured = []
+        client_type = httpx.AsyncClient
+
+        def handle(request):
+            payload = json.loads(request.content)
+            captured.append(payload)
+            if len(captured) == 1:
+                return httpx.Response(403, json={"error": "private-provider-error"})
+            return httpx.Response(200, json={"choices": [{"message": {"content": "ACTUAL_REPLY"}, "finish_reason": "length" if len(captured) == 2 else "stop"}]})
+
+        with patch.object(group_chat.httpx, "AsyncClient", side_effect=lambda **kwargs: client_type(transport=httpx.MockTransport(handle), **kwargs)):
+            result = await group_chat.run_group(Owner(current), current)
+        self.assertEqual([payload["model"] for payload in captured], ["first", "second", "first"])
+        self.assertTrue(result["partial_failure"])
+        self.assertEqual([message["phase"] for message in result["messages"]], ["plan", "reply", "synthesis"])
+        self.assertIn("403", result["messages"][0]["error"])
+        self.assertIn("没有可用交付", str(captured[2]))
+        self.assertIn("内容可能不完整", str(captured[2]))
+        self.assertNotIn("private-provider-error", json.dumps(current))
+
 
 if __name__ == "__main__":
     unittest.main()

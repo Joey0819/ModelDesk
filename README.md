@@ -15,6 +15,8 @@ ModelDesk 基于 [Karpathy 的 LLM Council](https://github.com/karpathy/llm-coun
 
 需要长期讨论时，进入「项目群聊」，为同一项目创建多个固定成员的群，指定成员回复并接续群内历史。群内的「Muse Mac · 本机桥接」可向已登录的原生 Muse 窗口派发文本任务；读取回复后，由你选择交给群内成员继续讨论。操作步骤、恢复方式和权限边界见 [项目群聊与 Muse 指南](docs/PROJECT_GROUPS_AND_MUSE.md)。
 
+2.7 新增可选统筹模型（Ruler）和有明确执行器的群成员：LLM、Codex、Claude Code、Muse。统筹规划与总结调用所选模型；执行 Agent 从群聊明确派发，保留真实任务与来源记录。见 [统筹模型与执行 Agent](docs/COORDINATOR_AND_AGENTS.md)。
+
 2.6 新增自定义模型连接（Grok / xAI、兼容 OpenAI 的自定义 API、本机 Ollama）、Worker 凭据隔离与动态群协作组管理。见 [模型连接与动态协作组](docs/MODEL_CONNECTIONS.md)；2.5 新增「Agent 任务」与私有 Tailscale HTTPS 手机入口，见 [Agent 群协作与手机操作](docs/AGENT_GROUPS_AND_PHONE.md)。
 
 ## 协作与执行

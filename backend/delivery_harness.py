@@ -177,6 +177,7 @@ async def produce_media(manager, job, result, delivery, contract):
                     "asset_id": matched[0] if matched else None, "asset_ids": matched,
                     "status": "complete" if count >= needed else "error", "error": None if count >= needed else "尚未取得足够的真实 Muse 媒体文件"})
     direct_count = min(4, contract["images"]) if contract["provider"] != "muse" else 0
+    saved_images = {asset.get("slot_id"): asset for asset in delivery["media"] if asset.get("kind") == "image"}
     if direct_count:
         briefs = []
         try:
@@ -199,6 +200,17 @@ async def produce_media(manager, job, result, delivery, contract):
             "caption": brief.caption, "provider": contract["provider"], "status": "pending"} for index, brief in enumerate(briefs))
         for task in delivery["media_tasks"]:
             if task["status"] != "pending":
+                continue
+            saved = saved_images.get(task["id"])
+            if saved:
+                # Resume keeps the actual file and its original provenance;
+                # only missing slots are generated again.
+                from .delivery_media import store
+                manifest, _ = await asyncio.to_thread(store.read, job, saved["id"])
+                if manifest["sha256"] != saved["sha256"]:
+                    raise ValueError("已保存图片内容发生变化")
+                task.update(status="complete", asset_id=saved["id"], caption=saved.get("caption", task["caption"]),
+                            provider=saved["provider"], model=saved.get("model"), reused=True)
                 continue
             task["status"] = "running"
             media_progress(manager, job, result, delivery)

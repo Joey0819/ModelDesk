@@ -91,6 +91,9 @@ def discussion_messages(job, model, history, member=None, phase="reply"):
 
 
 async def run_group(manager, job):
+    if job.get("group_harness_version") == 1 and job.get("group_delivery_mode") == "auto":
+        from .coordination import run
+        return await run(manager, job)
     # The manager's same-topic lock serializes runs; distinct topics can progress
     # independently. Never read another conversation's transcript.
     history = topic_history(manager, job)

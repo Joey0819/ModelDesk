@@ -3,6 +3,7 @@ import { API_BASE } from '../api-base';
 import { deliveryMediaProgress, deliveryMediaWarnings, embeddedMediaIds, managedDeliveryMedia, resolveManagedMediaUrl } from '../delivery-media';
 import { Icon, Markdown } from './WorkbenchResults';
 import './MediaDelivery.css';
+import CoordinationProgress from './CoordinationProgress';
 
 const taskStatus = { pending: '等待生成', running: '正在生成', complete: '已生成', error: '生成失败', cancelled: '已取消' };
 const sizeLabel = (size) => size < 1024 * 1024 ? `${Math.max(1, Math.round(size / 1024))} KB` : `${(size / (1024 * 1024)).toFixed(1)} MB`;
@@ -24,12 +25,12 @@ export function DeliveryMediaProgress({ job, apiBase = API_BASE }) {
   const media = managedDeliveryMedia(job, apiBase);
   const progress = deliveryMediaProgress({ ...delivery, media });
   const warnings = deliveryMediaWarnings(delivery);
-  if (!progress.length && !warnings.length) return null;
-  return <section className="delivery-media-progress" aria-label="图片与视频生成进度">
+  if (!progress.length && !warnings.length) return <CoordinationProgress job={job} />;
+  return <><CoordinationProgress job={job} /><section className="delivery-media-progress" aria-label="图片与视频生成进度">
     <div className="delivery-media-counts">{progress.map((item) => <span key={item.kind}><Icon name={item.kind === 'image' ? 'file' : 'layers'} size={13} /><strong>{item.kind === 'image' ? '配图' : '视频'} {item.complete}/{Math.max(item.required, item.complete)}</strong>{item.tasks.some((task) => task.status === 'running') && <span className="small-spinner" />}</span>)}</div>
     {progress.some((item) => item.tasks.length) && <ul>{progress.flatMap((item) => item.tasks.map((task, index) => <li key={task.id || `${item.kind}-${index}`} className={`delivery-media-task-${task.status}`}><div><strong>{item.kind === 'image' ? '配图' : '视频'} {index + 1}</strong><span>{task.provider || task.model || '正在选择生成工具'}</span><span>{task.status === 'complete' && !hasSavedTaskMedia(task, media) ? '未收到已保存文件' : taskStatus[task.status] || '状态待同步'}</span></div>{task.error && <p className="output-error">{task.error}</p>}</li>))}</ul>}
     {warnings.length > 0 && <details className="delivery-media-warnings"><summary>未采用的资源说明（{warnings.length}）</summary><ul>{warnings.map((warning) => <li key={warning}>{warning}</li>)}</ul></details>}
-  </section>;
+  </section></>;
 }
 
 /** Rich delivery only loads stored media from this job's verified asset manifest. */

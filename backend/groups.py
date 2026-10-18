@@ -12,6 +12,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from . import workbench
+from .coordination import ContinueRequest
 from .harness.models import TeamRequest
 from .harness.store import RunStore, checked_id
 
@@ -348,6 +349,7 @@ async def send_message(identifier: str, request: MessageRequest, transport: Requ
                 "group_team_snapshot": room["team_snapshot"], "group_recipient_member_ids": selected,
                 "group_broadcast": broadcast, "group_coordinator_model": room["team_snapshot"].get("coordinator_model"),
                 "group_agent_sources": freeze_agent_sources(room), "group_delivery_mode": request.delivery_mode,
+                "group_harness_version": 1 if request.delivery_mode == "auto" else None,
                 "group_output_format": request.output_format, "group_image_count": request.image_count, "group_media_provider": request.media_provider,
                 "group_runtime_allowed": request.delivery_mode == "auto",
                 "group_native_allowed": request.delivery_mode == "auto" and not transport.headers.get("x-modeldesk-remote")}
@@ -357,3 +359,9 @@ async def send_message(identifier: str, request: MessageRequest, transport: Requ
     room["updated_at"] = job["created_at"]
     store.save(room)
     return job
+
+
+@router.post("/{identifier}/messages/{job_id}/continue", status_code=202)
+async def continue_message(identifier: str, job_id: str, request: ContinueRequest, transport: Request, project_id: str | None = None):
+    from .coordination import continue_run
+    return await continue_run(workbench.manager, job_id, identifier, project_id, request, transport)

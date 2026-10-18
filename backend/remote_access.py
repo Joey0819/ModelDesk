@@ -349,7 +349,7 @@ def create_gateway(remote_store=None, *, frontend=None, upstream_transport=None,
         # These explicit user-control endpoints share the local API approval
         # boundary. Only an authenticated, same-origin gateway request is promoted.
         if request.method == "POST" and (request.url.path in {"/api/group-tasks", "/api/group-approvals"} or re.fullmatch(
-                r"/api/(?:group-tasks/[0-9a-f-]{36}/cancel|group-approvals/[0-9a-f-]{36}/decision|groups/[0-9a-f-]{36}/messages)", request.url.path)):
+                r"/api/(?:group-tasks/[0-9a-f-]{36}/cancel|group-approvals/[0-9a-f-]{36}/decision|groups/[0-9a-f-]{36}/messages(?:/[0-9a-f-]{36}/continue)?)", request.url.path)):
             headers["origin"] = "http://localhost:5173"
         headers["X-ModelDesk-Remote"] = "phone"
         query = request.url.query

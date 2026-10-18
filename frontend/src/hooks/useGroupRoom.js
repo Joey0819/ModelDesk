@@ -32,6 +32,13 @@ export default function useGroupRoom(projectId, roomId) {
   }, [roomId, projectId]);
   useEffect(() => { refresh(); const timer = setInterval(refresh, activeId ? 4000 : 12000); return () => clearInterval(timer); }, [refresh, activeId]);
   useEffect(() => {
+    const continued = (event) => {
+      if (event.detail?.roomId === roomId && (event.detail?.projectId || null) === (projectId || null)) refresh();
+    };
+    globalThis.addEventListener?.('modeldesk-coordination-continued', continued);
+    return () => globalThis.removeEventListener?.('modeldesk-coordination-continued', continued);
+  }, [refresh, roomId, projectId]);
+  useEffect(() => {
     if (!activeId) return;
     let disposed = false;
     const source = workbenchApi.events(activeId);

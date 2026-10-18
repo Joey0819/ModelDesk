@@ -1,0 +1,19 @@
+.coordination-progress { margin: 14px 0; padding: 14px 0; border-block: 1px solid var(--line, #d9dee8); color: inherit; font-size: 13px; line-height: 1.6; }
+.coordination-progress > header { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 8px; }
+.coordination-progress > header > span, .coordination-progress small { color: var(--muted, #64748b); }
+.coordination-progress .coordination-checks { list-style: none; padding: 0; margin: 12px 0; }
+.coordination-checks li { display: flex; align-items: start; gap: 10px; margin: 8px 0; }
+.coordination-checks li > span { flex: 0 0 18px; font-weight: 700; }
+.coordination-checks li[data-state="met"] > span { color: #18784c; }
+.coordination-checks li[data-state="missing"] > span { color: #ad5b16; }
+.coordination-progress small { display: block; font-weight: 400; overflow-wrap: anywhere; }
+.coordination-progress details { margin-top: 10px; }
+.coordination-progress summary { cursor: pointer; padding: 5px 0; }
+.coordination-progress ol { padding-left: 22px; }
+.coordination-progress ol li { margin: 8px 0; }
+.coordination-review-note { margin: 10px 0 0; color: var(--muted, #64748b); }
+.coordination-continue { margin-top: 12px; }
+.coordination-continue button { padding: 8px 12px; border: 1px solid var(--line, #d9dee8); border-radius: 6px; background: var(--shell-wash, #fff); color: inherit; cursor: pointer; }
+.coordination-continue button:focus-visible, .coordination-progress summary:focus-visible { outline: 2px solid #545acb; outline-offset: 3px; }
+.coordination-continue button:disabled { opacity: .6; cursor: wait; }
+.coordination-continue small { margin-top: 6px; }

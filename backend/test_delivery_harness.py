@@ -123,6 +123,21 @@ class MediaDeliveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(delivery["status"], "partial")
         self.assertEqual([item["status"] for item in delivery["media_tasks"]], ["cancelled", "cancelled"])
 
+    async def test_resume_reuses_verified_images_and_generates_only_missing_slot(self):
+        job = self.setup_job()
+        assets = [{"id": str(index), "kind": "image", "slot_id": f"image-{index}", "sha256": str(index) * 64,
+                   "provider": "gemini", "model": "image-model"} for index in (1, 2)]
+        delivery = {"model": "a", "steps": [], "limitations": [], "media": [assets[0]]}
+        with patch.object(group_delivery, "model_output", AsyncMock(return_value=("bad-plan", False))), \
+                patch("backend.delivery_media.store.read", return_value=(assets[0], b"verified")) as read, \
+                patch.object(media_providers, "generate_image", AsyncMock(return_value=assets[1])) as generate:
+            await delivery_harness.produce_media(Owner(job), job, discussion(), delivery, {"images": 2, "videos": 0, "provider": "gemini"})
+        read.assert_called_once_with(job, "1")
+        generate.assert_awaited_once()
+        self.assertEqual(generate.call_args.kwargs["slot_id"], "image-2")
+        self.assertEqual(delivery["media"], assets)
+        self.assertTrue(delivery["media_tasks"][0]["reused"])
+
     async def test_native_download_cancellation_preserves_first_saved_asset(self):
         job = self.setup_job()
         member = {"id": "native", "name": "Muse", "kind": "muse"}

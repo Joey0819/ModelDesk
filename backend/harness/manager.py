@@ -1,6 +1,5 @@
 """LangGraph schedules steps; RunStore owns durable checkpoints and replay policy."""
 import asyncio
-import hashlib
 import json
 import time
 import uuid
@@ -14,6 +13,7 @@ from langsmith import tracing_context
 from .. import workbench
 from ..attachments import store as assets
 from ..platform_store import store as resources
+from .context import capture_revisions, validate_revisions, revision
 from ..super_platform import validate_context
 from .engines import output_for_job, participants_for_step, request_for_step
 from .store import RunStore, checked_id, public_run
@@ -21,9 +21,6 @@ from .teams import TeamStore
 
 ACTIVE = {"queued", "running"}
 
-
-def revision(value):
-    return hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
 
 
 class GraphState(TypedDict):
@@ -109,22 +106,10 @@ class HarnessManager:
             self.save_event(run, "recovered", status=run["status"])
 
     def capture_revisions(self, body):
-        records = []
-        for kind, field in [("knowledge", "knowledge_ids"), ("memories", "memory_ids"), ("mcp", "mcp_server_ids")]:
-            for identifier in body.get(field, []):
-                record = resources.get(kind, identifier)
-                if record.get("project_id") not in {None, body.get("project_id")}:
-                    raise HTTPException(403, "所选资料不属于当前项目")
-                records.append({"kind": kind, "id": identifier, "digest": revision(record)})
-        return records
+        return capture_revisions(body, resources)
 
     def validate_revisions(self, run):
-        for record in run["resource_revisions"]:
-            current = resources.get(record["kind"], record["id"])
-            if current.get("project_id") not in {None, run.get("project_id")}:
-                raise HTTPException(403, "协作资料已移至其他项目，请创建新协作任务")
-            if revision(current) != record["digest"]:
-                raise HTTPException(409, "协作资料已修改，请创建新任务以确认更新后的输入")
+        validate_revisions(run["resource_revisions"], run.get("project_id"), resources)
 
     async def create(self, request, *, resolved_team=None):
         if sum(run["status"] in ACTIVE for run in self.runs.values()) >= 4:

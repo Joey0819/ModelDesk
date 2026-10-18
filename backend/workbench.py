@@ -217,6 +217,17 @@ class JobManager:
                         for step in delivery.get("steps", []):
                             if step.get("status") in {"pending", "running"}:
                                 step["status"] = "cancelled"
+                            for attempt in step.get("attempts", []):
+                                if attempt.get("status") == "running":
+                                    attempt.update(status="interrupted", finished_at=now())
+                        if delivery.get("workflow"):
+                            workflow = delivery["workflow"]
+                            try:
+                                unobserved = max(0, (datetime.now(timezone.utc) - datetime.fromisoformat(workflow["last_active_at"])).total_seconds())
+                                workflow["elapsed_seconds"] = min(1200, workflow.get("elapsed_seconds", 0) + unobserved)
+                            except (ValueError, KeyError, TypeError):
+                                workflow["elapsed_seconds"] = 1200
+                            workflow["revision"] += 1
                     self.emit(job, "error", message=job["error"])
             except (ValueError, KeyError, TypeError, OSError):
                 # A malformed local file must not prevent all other jobs loading.

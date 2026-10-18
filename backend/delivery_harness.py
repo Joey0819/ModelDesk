@@ -136,9 +136,9 @@ async def collect_native_media(job, steps, on_asset=None):
     return assets, list(dict.fromkeys(errors))
 
 
-async def produce_media(manager, job, result, delivery, contract):
+async def produce_media(manager, job, result, delivery, contract, *, steps=None):
     from . import media_providers
-    from .group_delivery import json_document, model_output
+    from .group_delivery import json_document, model_output, execution_evidence
     delivery["media_requirements"] = {key: contract[key] for key in ("images", "videos")}
     delivery.setdefault("media", [])
     delivery["media_tasks"] = []
@@ -159,7 +159,7 @@ async def produce_media(manager, job, result, delivery, contract):
         media_progress(manager, job, result, delivery)
         return True
     if contract["provider"] == "muse" or (contract["videos"] and video_provider in {"auto", "muse"}):
-        _, errors = await collect_native_media(job, delivery["steps"], on_asset=append_unique)
+        _, errors = await collect_native_media(job, delivery["steps"] if steps is None else steps, on_asset=append_unique)
         native = [asset for asset in delivery["media"] if asset.get("provider") == "muse"]
         native_missing = (contract["provider"] == "muse" and sum(asset["kind"] == "image" for asset in native) < contract["images"]
                           or sum(asset["kind"] == "video" for asset in native) < contract["videos"])
@@ -181,12 +181,19 @@ async def produce_media(manager, job, result, delivery, contract):
     if direct_count:
         briefs = []
         try:
-            body, incomplete = await model_output(job, delivery["model"],
+            cached = delivery.get("image_briefs")
+            if cached:
+                plan = ImagePlan.model_validate({"images": cached})
+                incomplete = False
+            else:
+                body, incomplete = await model_output(job, delivery["model"],
                 "你是图文成品的美术编辑。为用户的文章安排真实配图，图片是原创说明插图，不冒充真实产品截图、实验数据或现场照片。"
                 "只返回 JSON：{\"images\":[{\"prompt\":\"可直接交给生图模型的详细画面说明\",\"caption\":\"简短图注\"}]}。"
                 "图片数量必须匹配要求，每张应承担不同表达目的；画面风格统一，避免重复。不得输出 URL 或声称图片已生成。",
-                f"需要 {direct_count} 张配图。用户本次需求：\n{manager.jobs.get(job['id'], job)['prompt']}", max_tokens=3000)
-            plan = ImagePlan.model_validate(json_document(body))
+                f"需要 {direct_count} 张配图。用户本次需求：\n{manager.jobs.get(job['id'], job)['prompt']}"
+                + "\n团队已完成的实际内容（配图必须与正文一致）：\n"
+                + json.dumps(execution_evidence(delivery.get("steps", [])), ensure_ascii=False), max_tokens=3000)
+                plan = ImagePlan.model_validate(json_document(body))
             if incomplete or len(plan.images) != direct_count:
                 raise ValueError("配图分工不完整")
             briefs = plan.images
@@ -196,6 +203,7 @@ async def produce_media(manager, job, result, delivery, contract):
             goal = manager.jobs.get(job["id"], job)["prompt"][:2400]
             briefs = [ImageBrief(prompt=("为以下要求创作原创说明插图，保持统一风格；" + ("表现整体主题和场景。" if index == 0 else "表现流程或核心细节，避免与封面重复。") + goal)[:2400],
                                  caption="主题插图" if index == 0 else f"说明插图 {index + 1}") for index in range(direct_count)]
+        delivery["image_briefs"] = [brief.model_dump() for brief in briefs]
         delivery["media_tasks"].extend({"id": f"image-{index + 1}", "kind": "image", "prompt": brief.prompt,
             "caption": brief.caption, "provider": contract["provider"], "status": "pending"} for index, brief in enumerate(briefs))
         for task in delivery["media_tasks"]:

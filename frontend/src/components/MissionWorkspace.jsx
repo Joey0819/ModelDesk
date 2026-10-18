@@ -13,6 +13,9 @@ import { CopyTextButton } from './ConversationActions';
 import AttachmentComposer from './AttachmentComposer';
 import ContextAttachments from './ContextAttachments';
 import MissionTeamPicker from './MissionTeamPicker';
+import GroupWorkspace from './GroupWorkspace';
+import MuseDesktopPanel from './MuseDesktopPanel';
+import { REMOTE_CLIENT } from '../api-base';
 import { teamIssues } from '../mission-teams';
 import './MissionWorkspace.css';
 
@@ -30,7 +33,23 @@ export function MissionPlan({ steps, onChange, editable, models = [] }) {
     </div></li>)}</ol>;
 }
 
-export default function MissionWorkspace({ status, models, onModelsChange, context, onContextChange, jobs, onOpenNavigation, onOpenProjects, onOpenArtifacts, onClearArtifacts, onToggleArtifacts }) {
+export default function MissionWorkspace(props) {
+  const { activeProjectId } = useProjects();
+  const [mode, setMode] = useState('auto');
+  const switchMode = (next) => { if (next !== mode) { props.onClearArtifacts(); setMode(next); } };
+  return <section className="automatic-workspace" aria-label="协作工作台">
+    <nav className="collaboration-modes" aria-label="选择协作方式">
+      <button type="button" aria-pressed={mode === 'auto'} onClick={() => switchMode('auto')}>自动协作</button>
+      <button type="button" aria-pressed={mode === 'pipeline'} onClick={() => switchMode('pipeline')}>自定义流水线</button>
+      <span>{mode === 'auto' ? '分工、执行、检查、交付' : '手动安排步骤与审阅节点'}</span>
+    </nav>
+    {mode === 'auto' ? <GroupWorkspace key={`auto:${activeProjectId}`} {...props}
+      renderIntegration={(integration) => REMOTE_CLIENT ? <p className="group-remote-muse-note">Muse 原生窗口操作请在 Mac 完成。项目讨论与 Agent 任务可在此继续。</p> : <MuseDesktopPanel {...integration} />} />
+      : <StagedMissionWorkspace key={`pipeline:${activeProjectId}`} {...props} />}
+  </section>;
+}
+
+function StagedMissionWorkspace({ status, models, onModelsChange, context, onContextChange, jobs, onOpenNavigation, onOpenProjects, onOpenArtifacts, onClearArtifacts, onToggleArtifacts }) {
   const { activeProjectId, activeProject, assets, transfers } = useProjects();
   const [saved] = useState(() => readMissionWorkspace(localStorage, activeProjectId));
   const mission = useMissions(activeProjectId, saved.runId);

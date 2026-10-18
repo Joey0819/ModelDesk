@@ -131,6 +131,50 @@ class CoordinationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(delivery["artifact"]["version"], 2)
         self.assertEqual(delivery["status"], "complete")
 
+    async def test_final_review_resolves_editor_questions_using_actual_evidence(self):
+        async def provider(job, model, system, prompt, **kwargs):
+            if "最终交付编辑" in system:
+                return json.dumps({"title":"Article", "content":"Complete text", "missing_outputs":["Please check content"]}), False
+            if "你是交付审查者" in system:
+                self.assertIn("Please check content", prompt)
+            return await self.provider(job, model, system, prompt, **kwargs)
+        delivery = (await self.run_delivery(provider))["delivery"]
+        self.assertEqual(delivery["status"], "complete")
+        self.assertEqual(delivery["resolved_editor_questions"], ["Please check content"])
+        self.assertEqual(len(delivery["versions"]), 2)
+        self.assertEqual(len(delivery["reviews"]), 2)
+
+    async def test_review_can_assign_exactly_one_confirmed_native_revision(self):
+        member = {"id": "creator", "kind": "muse", "name": "Creator", "model": None, "role": "Respect brand colors"}
+        self.job["group_team_snapshot"]["members"].append(member)
+        self.job["group_recipient_member_ids"].append("creator")
+        reviewed = 0
+        async def provider(job, model, system, prompt, **kwargs):
+            nonlocal reviewed
+            if "你是项目统筹者" in system:
+                return json.dumps(plan([{"id": "creative", "member_id": "creator", "instruction": "Create", "expected_output": "Actual result"}])), False
+            if "你是交付审查者" in system:
+                reviewed += 1
+                return json.dumps({"goal_met": reviewed > 1, "missing_requirements": [] if reviewed > 1 else ["颜色不符合要求"],
+                    "checks": [{"requirement_id": "body", "met": reviewed > 1, "reason": "Color"}],
+                    "runtime_revision": {"step_id": "creative", "instruction": "Change to requested colors"}}), False
+            return await self.provider(job, model, system, prompt, **kwargs)
+        dispatched = []
+        async def runtime(job, member, prompt, **kwargs):
+            self.assertIn("Respect brand colors", prompt)
+            dispatched.append(kwargs)
+            return {"status": "complete", "task_id": str(uuid.uuid4()), "output": "Original" if len(dispatched) == 1 else "Fixed", "sources": []}
+        with patch("backend.group_delivery_runtime.run_runtime_step", side_effect=runtime):
+            delivery = (await self.run_delivery(provider))["delivery"]
+        self.assertEqual(delivery["status"], "complete", delivery["limitations"])
+        self.assertEqual(len(dispatched), 2)
+        self.assertEqual(dispatched[1]["revision_of"], delivery["steps"][0]["task_id"])
+        self.assertEqual(delivery["workflow"]["native_revision_count"], 1)
+        self.assertEqual(len(delivery["versions"]), 2)
+        self.assertEqual([s["id"] for s in coordination.active_steps(delivery)], ["native-revision"])
+        from backend.harness.contracts import RuntimeRevision
+        self.assertFalse(coordination.schedule_native_revision(delivery, RuntimeRevision(step_id="creative", instruction="Again")))
+
     async def test_reviewer_omission_and_invented_media_cannot_complete(self):
         async def provider(job, model, system, prompt, **kwargs):
             if "你是交付审查者" in system:

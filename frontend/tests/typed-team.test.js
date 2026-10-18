@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { appendTeamMember, memberKind, memberKindLabel, teamRequest, teamIssues, temporaryMembers } from '../src/mission-teams.js';
+import { appendTeamMember, memberKind, memberKindLabel, teamRequest, teamIssues, temporaryMembers, recipeTeam } from '../src/mission-teams.js';
 import { deriveArtifacts } from '../src/artifacts.js';
 const catalog = [{ id: 'gpt', verified: true }, { id: 'gemini', verified: true }];
 test('existing model roles keep their type and typed runtimes save without fake model IDs', () => {
@@ -33,4 +33,18 @@ test('historical generated Muse output retains text but cannot masquerade as ver
   const artifacts=deriveArtifacts({id:'old',mode:'muse_task',status:'complete',harness_generated:true,response:'Retained old draft',video_url:'/muse-media/other.mp4'});
   assert.equal(artifacts[0].status,'partial'); assert.equal(artifacts[0].video_url,null);
   assert.match(artifacts[0].source,/未验证/);
+});
+
+test('role recipes bind only connected models and create editable typed teams', () => {
+  for (const id of ['article', 'video', 'code']) {
+    const team = recipeTeam(id, catalog);
+    assert.deepEqual(teamIssues(team, catalog, {allowRepeatedModels: true, allowExecutableMembers: true}), []);
+    assert.equal(team.id, undefined);
+  }
+  assert.equal(recipeTeam('video', catalog).members[1].kind, 'muse');
+  assert.equal(recipeTeam('code', catalog).members[1].kind, 'codex');
+  assert.equal(recipeTeam('article', []).members[0].model, '');
+  assert.ok(teamIssues(recipeTeam('article', []), []).length);
+  assert.equal(recipeTeam('unknown', catalog), null);
+  assert.equal(recipeTeam('article', [{id: 'one'}]).members[1].model, 'one');
 });

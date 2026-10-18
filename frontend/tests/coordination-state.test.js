@@ -52,6 +52,13 @@ test('a review cannot visually override a failed real-output check', () => {
 
 test('progress renders requirements, lineage, review scope and a clear continue action', () => {
   const html = renderToStaticMarkup(React.createElement(module.exports.Progress, { job: job() }));
-  for (const text of ['任务要求与交付检查', '完整文章', '缺少结尾', '查看分工与依赖', '成果版本', '旧版本', '新版本', '继续未完成的工作', '不会重新派发']) assert.ok(html.includes(text), text);
+  for (const text of ['任务要求与交付检查', '完整文章', '缺少结尾', '查看分工与依赖', '成果版本', '旧版本', '新版本', '继续未完成的工作', '不重发状态未确认的任务']) assert.ok(html.includes(text), text);
   assert.equal(renderToStaticMarkup(React.createElement(module.exports.Progress, { job: { id: 'old' } })), '');
+});
+
+test('visual review shows actual sampling scope without claiming audio or full-film checks', () => {
+  const value = job({visual_evidence: {assets: [{asset_id:'video', kind:'video', status:'sampled', width:160, height:120, duration_seconds:2, samples:[{timestamp_seconds:.2},{timestamp_seconds:1},{timestamp_seconds:1.8}]}]}});
+  value.result.delivery.validation.review.visual_input_count = 3;
+  const html = renderToStaticMarkup(React.createElement(module.exports.Progress, {job:value}));
+  for (const text of ['图片与视频检查依据', '0.2s', '1.8s', '不包含音轨或全片连续动作检查', '处实际画面']) assert.ok(html.includes(text), text);
 });

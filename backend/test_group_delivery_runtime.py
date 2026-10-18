@@ -150,6 +150,24 @@ class RuntimeDeliveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(durable["parent_job_id"], self.job["id"])
         self.assertTrue(durable["sent"])
 
+    async def test_confirmed_muse_revision_is_linked_bounded_and_idempotent(self):
+        with patch.object(self.muse, "helper_call", self.muse_helper), patch.object(self.muse, "create", wraps=self.muse.create) as create:
+            first = await runtime.run_runtime_step(self.job, self.designer, "Original", native_allowed=True)
+            revised = await runtime.run_runtime_step(self.job, self.designer, "Correction", native_allowed=True, revision_of=first["task_id"])
+            repeated = await runtime.run_runtime_step(self.job, self.designer, "Correction", native_allowed=True, revision_of=first["task_id"])
+            self.assertEqual(revised["status"], "complete", revised)
+            self.assertEqual(repeated["task_id"], revised["task_id"])
+            self.assertNotEqual(first["task_id"], revised["task_id"])
+            third = await runtime.run_runtime_step(self.job, self.designer, "Another", native_allowed=True, revision_of=revised["task_id"])
+            self.assertEqual(third["status"], "error")
+            remote = await runtime.run_runtime_step(self.job, self.designer, "Correction", revision_of=first["task_id"])
+            self.assertEqual(remote["status"], "blocked")
+            self.muse.records[first["task_id"]]["uncertain"] = True
+            invalid = await runtime.run_runtime_step(self.job, self.designer, "Correction", native_allowed=True, revision_of=first["task_id"])
+            self.assertEqual(invalid["status"], "error")
+            self.assertEqual(create.await_count, 2)
+        self.assertEqual(self.muse.records[revised["task_id"]]["revision_of_task_id"], first["task_id"])
+
     async def test_cancel_muse_stops_observation_without_resending_or_claiming_remote_stop(self):
         entered = asyncio.Event()
         submits = []

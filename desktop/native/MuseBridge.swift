@@ -55,7 +55,7 @@ func newChatButton(_ tree: [AXUIElement]) -> AXUIElement? {
     tree.first { string($0, kAXRoleAttribute) == kAXButtonRole && ["New side chat", "New chat"].contains(label($0)) }
 }
 func chatMenuButton(_ tree: [AXUIElement]) -> AXUIElement? {
-    tree.first { string($0, kAXRoleAttribute) == kAXPopUpButtonRole && label($0) == "Chats Open chat and side chats" }
+    tree.first { [kAXPopUpButtonRole, kAXButtonRole].contains(string($0, kAXRoleAttribute)) && label($0) == "Chats Open chat and side chats" }
 }
 func backToMainButton(_ tree: [AXUIElement]) -> AXUIElement? {
     tree.first { string($0, kAXRoleAttribute) == kAXButtonRole && label($0) == "Back to main chat" }

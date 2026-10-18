@@ -6,6 +6,32 @@ export const MEMBER_KINDS = { model: 'LLM 模型', codex: 'Codex Agent', claude:
 export const memberKind = (member) => member?.kind || 'model';
 export const memberKindLabel = (member) => MEMBER_KINDS[memberKind(member)] || '未知类型';
 
+export const TEAM_RECIPES = [
+  { id: 'article', name: '文章与配图', summary: '作者完成正文，编辑核查，平台按需求配图' },
+  { id: 'video', name: '视频创作', summary: '编剧交付分镜，Muse 制作，审片员检查' },
+  { id: 'code', name: '代码交付', summary: '分析需求，Codex 实现测试，审查实际改动' },
+];
+
+export function recipeTeam(id, catalog = []) {
+  const models = [...catalog.filter((item) => item.verified), ...catalog.filter((item) => !item.verified)];
+  const first = models[0]?.id || '';
+  const second = models.find((item) => item.id !== first)?.id || first;
+  const recipe = TEAM_RECIPES.find((item) => item.id === id);
+  if (!recipe) return null;
+  const role = (key, name, model, duty, kind = 'model') => ({ id: key, name, model, role: duty, kind });
+  const members = {
+    article: [role('writer', '作者', first, '根据用户目标和项目资料写出完整成品正文。明确未核实信息；需要配图时给出与正文一致的画面说明。'),
+      role('editor', '审稿编辑', second, '检查作者的实际初稿，指出事实、结构和用户要求的遗漏，提供可以直接采用的修订内容。')],
+    video: [role('writer', '编剧', first, '根据用户要求完成可制作的脚本、镜头说明与字幕；先把完整分镜交给 Muse 创作。'),
+      role('creator', 'Muse 创作', null, '接收编剧的实际分镜，在 Muse 制作所需视频和图片，返回实际媒体文件。不要仅提供提示词或制作建议。', 'muse'),
+      role('editor', '审片员', second, '接收 Muse 的实际交付，核对脚本与要求。根据提供的画面证据检查内容；区分抽帧检查与全片音视频验收，不虚构已看过的内容。')],
+    code: [role('planner', '需求分析', first, '将用户要求整理为实现与测试条件，交给工程师执行。'),
+      role('builder', 'Codex 工程师', null, '在隔离项目副本中完成代码、执行必要测试，并返回实际改动与命令证据。', 'codex'),
+      role('reviewer', '代码审查', second, '检查工程师实际输出、改动和测试记录，指出未解决问题。合并前保留用户审批。')],
+  }[id];
+  return { name: recipe.name, description: recipe.summary, coordinator_model: first || null, members };
+}
+
 export function appendTeamMember(team, catalog = [], kind = 'model') {
   const draft = structuredClone(team);
   if (draft.members.length >= 4) return draft;

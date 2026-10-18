@@ -35,11 +35,18 @@ class ReviewItem(BaseModel):
     reason: str = Field(min_length=1, max_length=600)
 
 
+class RuntimeRevision(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    step_id: str = Field(pattern=r"^[a-z][a-z0-9_-]{0,39}$")
+    instruction: str = Field(min_length=1, max_length=2000)
+
+
 class Review(BaseModel):
     model_config = ConfigDict(extra="forbid")
     goal_met: bool
     missing_requirements: list[str] = Field(max_length=10)
     checks: list[ReviewItem] = Field(min_length=1, max_length=12)
     revision_instructions: str = Field(default="", max_length=2500)
+    runtime_revision: RuntimeRevision | None = None
 
 

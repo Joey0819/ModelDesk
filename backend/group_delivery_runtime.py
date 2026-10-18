@@ -1,7 +1,8 @@
 """Bounded, project-scoped adapters for automatic group delivery steps.
 
 The existing managers retain their sandbox, native receipts, durable logs and
-human approval boundaries. This adapter never merges, resumes or retries a task.
+human approval boundaries. Confirmed Muse deliveries may receive one linked
+revision; uncertain dispatches are never retried. This adapter never merges.
 """
 import asyncio
 import copy
@@ -79,7 +80,7 @@ def _get(manager, identifier, project_id, room_id, engine):
     return item
 
 
-def _link(manager, created, scope, member, prompt_sha256):
+def _link(manager, created, scope, member, prompt_sha256, revision_of=None):
     parent_id, project_id, room_id = scope
     identifier = checked_id(created["id"])
     item = manager.records.get(identifier)
@@ -92,6 +93,8 @@ def _link(manager, created, scope, member, prompt_sha256):
     if item.get("parent_job_id") not in {None, parent_id}:
         raise ValueError("运行时任务已关联其他父任务")
     item.update(parent_job_id=parent_id, parent_step_member_id=member["id"], parent_prompt_sha256=prompt_sha256)
+    if revision_of:
+        item["revision_of_task_id"] = revision_of
     # No await between create returning and this durable parent linkage.
     manager.save(item)
     return identifier
@@ -187,7 +190,7 @@ def _finished(manager, item, engine, project_id, room_id):
     return None
 
 
-async def run_runtime_step(job, member, prompt, *, native_allowed=False):
+async def run_runtime_step(job, member, prompt, *, native_allowed=False, revision_of=None):
     """Run one saved typed member and return actual output with provenance.
 
     ``complete`` means the child manager observed completion, never that its
@@ -217,8 +220,20 @@ async def run_runtime_step(job, member, prompt, *, native_allowed=False):
                                   prompt=prompt, timeout_seconds=RUNTIME_TIMEOUT_SECONDS)
         async with _step_lock((parent_id, member["id"])):
             _scope(job, member)
+            if revision_of is not None:
+                if engine != "muse":
+                    raise ValueError("此自动修订通道仅支持已确认完成的 Muse 任务")
+                original = _get(manager, checked_id(revision_of), project_id, room_id, engine)
+                _check_child(original, *scope, member)
+                finished = _finished(manager, original, engine, project_id, room_id)
+                if original.get("revision_of_task_id") or not finished or finished["status"] != "complete":
+                    raise ValueError("只能修订已确认完成的原始任务，不能重发未确认任务或再次修订")
+                if any(item.get("parent_job_id") == parent_id and item.get("revision_of_task_id")
+                       and item["revision_of_task_id"] != revision_of for item in manager.records.values()):
+                    raise ValueError("本轮原生修订预算已用完")
             existing = [item for item in manager.records.values()
-                        if item.get("parent_job_id") == parent_id and item.get("member_id") == member["id"]]
+                        if item.get("parent_job_id") == parent_id and item.get("member_id") == member["id"]
+                        and item.get("revision_of_task_id") == revision_of]
             if len(existing) > 1:
                 raise ValueError("父任务存在重复的执行记录；请核对现有任务，不会再次派发")
             if existing:
@@ -239,7 +254,7 @@ async def run_runtime_step(job, member, prompt, *, native_allowed=False):
                         _check_child(created, *scope, member)
                         _check_child(canonical, *scope, member)
                         identifier = candidate
-                        identifier = _link(manager, created, scope, member, prompt_sha256)
+                        identifier = _link(manager, created, scope, member, prompt_sha256, revision_of)
                 except asyncio.TimeoutError:
                     raise ValueError("创建执行任务超时；没有自动重试")
             deadline = time.monotonic() + RUNTIME_TIMEOUT_SECONDS + CREATE_TIMEOUT_SECONDS

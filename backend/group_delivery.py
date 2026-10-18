@@ -57,9 +57,9 @@ def parse_plan(content, members):
     return plan
 
 
-async def model_output(job, model, system, prompt, *, max_tokens=8192):
+async def model_output(job, model, system, prompt, *, max_tokens=8192, image_parts=None):
     payload = {"model": model, "messages": [{"role": "system", "content": system},
-               {"role": "user", "content": user_content(prompt, image_content_parts(job))}], "max_tokens": max_tokens}
+               {"role": "user", "content": user_content(prompt, image_content_parts(job) if image_parts is None else image_parts)}], "max_tokens": max_tokens}
     # Native operations are never retried here. A failed model request is safe
     # to retry once; it has no tools or access to the execution managers.
     for attempt in range(2):
@@ -103,7 +103,7 @@ def execution_evidence(steps):
     """Fit actual outputs from every executor, before any discussion transcript."""
     items = []
     for step in steps:
-        entry = {key: step.get(key) for key in ("member_id", "member_name", "kind", "status", "task_id", "error",
+        entry = {key: step.get(key) for key in ("id", "supersedes_step_id", "member_id", "member_name", "kind", "status", "task_id", "error",
                  "output_sha256", "patch_sha256", "exit_code", "thread_url", "commands_observed", "commands_omitted")}
         raw = str(step.get("output") or "")
         files = step.get("changed_files") or []

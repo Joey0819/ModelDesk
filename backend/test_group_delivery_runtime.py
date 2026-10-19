@@ -9,7 +9,7 @@ import unittest
 from unittest.mock import AsyncMock, patch
 import uuid
 
-from backend import group_delivery_runtime as runtime, group_tasks, groups, muse_bridge, projects
+from backend import group_delivery_runtime as runtime, group_tasks, groups, muse_bridge, projects, native_skills
 from backend.harness.models import TeamRequest
 from backend.harness.teams import TeamStore
 
@@ -167,6 +167,54 @@ class RuntimeDeliveryTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(invalid["status"], "error")
             self.assertEqual(create.await_count, 2)
         self.assertEqual(self.muse.records[revised["task_id"]]["revision_of_task_id"], first["task_id"])
+
+    async def test_muse_receives_parent_frozen_skills_and_revision_preserves_them(self):
+        member = self.room['team_snapshot']['members'][2]
+        member['skill_ids'] = ['director']
+        self.rooms.save(self.room)
+        self.job['group_team_snapshot'] = copy.deepcopy(self.room['team_snapshot'])
+        source = {'director': dict(id='director', name='Director', instructions='Frozen director rules', sha256=native_skills.digest('Frozen director rules'))}
+        driver = AsyncMock(side_effect=self.muse_helper)
+        with patch.object(self.muse, 'helper_call', driver):
+            first = await runtime.run_runtime_step(self.job, member, 'Create the movie', native_allowed=True, skill_snapshot=source)
+            self.assertEqual(first['status'], 'complete', first)
+            revised = await runtime.run_runtime_step(self.job, member, 'Fix the movie', native_allowed=True, revision_of=first['task_id'], skill_snapshot=source)
+            self.assertEqual(revised['status'], 'complete', revised)
+        prompts = [call.args[1]['prompt'] for call in driver.call_args_list if call.args[0] == 'submit']
+        self.assertEqual(len(prompts), 2)
+        self.assertTrue(all('Frozen director rules' in prompt for prompt in prompts))
+        child = self.muse.records[first['task_id']]
+        self.assertEqual(child['skill_application']['mode'], 'role_instructions')
+        self.assertEqual(child['_skill_snapshots'], source)
+        self.assertNotIn('_skill_snapshots', muse_bridge.public_task(child))
+
+    async def test_muse_skill_preparation_failure_never_submits_or_retries(self):
+        member = self.room['team_snapshot']['members'][2]
+        member['skill_ids'] = ['director']
+        self.rooms.save(self.room)
+        self.job['group_team_snapshot'] = copy.deepcopy(self.room['team_snapshot'])
+        text = 'Long skill' * 900
+        source = {'director': dict(id='director', name='Director', instructions=text, sha256=native_skills.digest(text))}
+        with patch.object(self.muse, 'helper_call', AsyncMock()) as helper, patch.object(native_skills, 'model_output', AsyncMock(side_effect=RuntimeError('offline'))):
+            first = await runtime.run_runtime_step(self.job, member, 'Create the movie', native_allowed=True, skill_snapshot=source)
+            second = await runtime.run_runtime_step(self.job, member, 'Create the movie', native_allowed=True, skill_snapshot=source)
+        helper.assert_not_called()
+        self.assertEqual(first['status'], 'error')
+        self.assertEqual(first['task_id'], second['task_id'])
+        self.assertFalse(self.muse.records[first['task_id']]['sent'])
+
+    async def test_direct_native_dispatch_freezes_saved_member_skill_before_queue(self):
+        member = self.room['team_snapshot']['members'][2]
+        member['skill_ids'] = ['director']
+        self.rooms.save(self.room)
+        source = dict(id='director', name='Director', instructions='Original director guidance', sha256=native_skills.digest('Original director guidance'))
+        with patch('backend.skill_library.get_skill', return_value=source), patch.object(self.muse, 'helper_call', AsyncMock(side_effect=self.muse_helper)) as helper:
+            created = await self.muse.create(muse_bridge.MuseTaskRequest(project_id=self.project['id'], room_id=self.room['id'], member_id=member['id'], prompt='Direct dispatch'))
+            source['instructions'] = 'Later library change'
+            await self.muse.tasks[created['id']]
+        submitted = next(call.args[1]['prompt'] for call in helper.call_args_list if call.args[0] == 'submit')
+        self.assertIn('Original director guidance', submitted)
+        self.assertNotIn('Later library change', submitted)
 
     async def test_cancel_muse_stops_observation_without_resending_or_claiming_remote_stop(self):
         entered = asyncio.Event()

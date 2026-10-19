@@ -7,6 +7,18 @@ export const isImageModel = (id = '') => /^(gpt-image(?:-|$)|grok.*image|gemini.
 export const memberKind = (member) => (!member?.kind || member.kind === 'model') && isImageModel(member?.model) ? 'image' : member?.kind || 'model';
 export const memberKindLabel = (member) => MEMBER_KINDS[memberKind(member)] || '未知类型';
 
+export const supportsRoleSkills = (kind) => ['model', 'codex', 'claude', 'muse'].includes(kind);
+export function roleSkillHelp(kind, skill) {
+  if (kind === 'muse') return '随任务发送创作指引；长技能由统筹模型整理。使用 Muse 自身能力，不安装原生插件。';
+  if (skill.renderer && kind === 'codex') return '编写动画代码，由平台渲染并回收 MP4。';
+  if (skill.renderer) return '使用导演与审片指令；平台自动渲染需 Codex 成员。';
+  return kind === 'model' ? '本角色回复时使用技能指令。' : '在现有执行权限内使用技能指令；外部依赖需单独配置。';
+}
+export function changeMemberKind(member, kind, catalog) {
+  return { ...member, kind, skill_ids: supportsRoleSkills(kind) ? [...(member.skill_ids || [])] : [],
+    model: ['model', 'image'].includes(kind) ? catalog.find((model) => isImageModel(model.id) === (kind === 'image'))?.id || '' : null };
+}
+
 export const TEAM_RECIPES = [
   { id: 'article', name: '文章与配图', summary: '作者完成正文，编辑核查，平台按需求配图' },
   { id: 'video', name: '视频创作', summary: '编剧交付分镜，Muse 制作，审片员检查' },

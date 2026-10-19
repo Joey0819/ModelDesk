@@ -2,7 +2,7 @@ import test from 'node:test';
 import { setImmediate } from 'node:timers';
 import assert from 'node:assert/strict';
 import { missionRequest, copyMissionDraft, missionProgress, missionErrors, readMissionWorkspace, missionScopeKey, scopedMissions, selectedMissionStep, stepJobId } from '../src/mission-state.js';
-import { appendTeamMember, temporaryMembers, teamIssues, teamRequest, runTeamSelection, copyRunTeam } from '../src/mission-teams.js';
+import { appendTeamMember, temporaryMembers, teamIssues, teamRequest, runTeamSelection, copyRunTeam, changeMemberKind, supportsRoleSkills, roleSkillHelp } from '../src/mission-teams.js';
 import { pollMission } from '../src/mission-polling.js';
 import Module from 'node:module';
 import path from 'node:path';
@@ -14,6 +14,20 @@ import { renderToStaticMarkup } from 'react-dom/server';
 const models = ['model-a', 'model-b'];
 const steps = [{ id: 'research', title: '研究', mode: 'camel', instructions: '阅读实际材料', require_review: true, rounds: 1 }, { id: 'review', title: '评审', mode: 'council', instructions: '核查' }];
 const context = { project_id: 'project-a', attachment_ids: ['image'], knowledge_ids: ['knowledge'], remember: true, memory_scope: 'project-a', include_project_assets: false, tools: ['math'] };
+
+test('switching between capable agents retains role skills and explains execution differences', () => {
+  const member = { id: 'director', kind: 'model', name: 'Director', model: 'text', role: 'Direct', skill_ids: ['lemo-opuscar'] };
+  for (const kind of ['model', 'codex', 'claude', 'muse']) {
+    const changed = changeMemberKind(member, kind, [{ id: 'text' }]);
+    assert.equal(supportsRoleSkills(kind), true);
+    assert.deepEqual(changed.skill_ids, ['lemo-opuscar']);
+    assert.deepEqual(teamRequest({ name: 'Team', members: [changed] }, 'p').members[0].skill_ids, ['lemo-opuscar']);
+  }
+  assert.deepEqual(changeMemberKind(member, 'image', [{ id: 'gpt-image-2.5' }]).skill_ids, []);
+  assert.match(roleSkillHelp('muse', { renderer: 'canvas-film' }), /Muse 自身能力/);
+  assert.match(roleSkillHelp('codex', { renderer: 'canvas-film' }), /MP4/);
+  assert.deepEqual(member.skill_ids, ['lemo-opuscar']);
+});
 
 test('mission request includes accepted context fields and bounds copied execution settings', () => {
   const request = missionRequest({ goal: ' goal ', templateId: 'research-review', steps, models, context: { ...context, _private: 'secret', UI_selection: true }, requestOptions: { timeout_seconds: 500, max_attempts: 2, status: 'complete', _auth: 'secret' } });

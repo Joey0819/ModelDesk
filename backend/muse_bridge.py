@@ -110,7 +110,8 @@ def marker(identifier):
 
 
 def framed_prompt(task):
-    return (task["prompt"] + "\n\nModelDesk 回复格式要求：完成本次回复后，请在最后单独一行输出：\n" + marker(task["request_id"]) +
+    from .native_skills import native_prompt
+    return (native_prompt(task) + "\n\nModelDesk 回复格式要求：完成本次回复后，请在最后单独一行输出：\n" + marker(task["request_id"]) +
             "\n如有媒体附件，请先用简短文字说明本次实际产物，再附上媒体，最后输出上述结束标记。"
             "此标记只表示这条回复已经结束，不表示外部动作已成功。若需要我确认权限或补充资料，请明确说明并等待；不要虚构完成。")
 
@@ -485,13 +486,20 @@ class MuseManager:
             raise HTTPException(409, '未确认原会话。请在 Muse 打开此任务的原会话，再重新回收附件；没有重新发送。')
         return self.get(identifier, project_id)
 
-    async def create(self, request, *, parent_job_id=None, reference_assets=None):
+    async def create(self, request, *, parent_job_id=None, reference_assets=None, skill_snapshot=None):
         parent_link = {"parent_job_id": checked_id(parent_job_id)} if parent_job_id is not None else {}
         body = request.model_dump(mode="json")
         if body["project_id"]:
             from .projects import store as projects
             projects.get(body["project_id"])
         member, revision = self.member_scope(body)
+        from .native_skills import freeze_native_skills
+        frozen = freeze_native_skills(member, skill_snapshot)
+        skill_model = None
+        if frozen:
+            from .groups import store as rooms
+            team = rooms.get(body['room_id'], body['project_id'])['team_snapshot']
+            skill_model = team.get('coordinator_model') or next((m.get('model') for m in team['members'] if m.get('kind', 'model') == 'model'), None)
         if sum(task.get("monitoring", False) for task in self.records.values()) >= 8:
             raise HTTPException(429, "Muse 最多排队八个任务，请等待当前任务完成")
         identifier, timestamp = str(uuid.uuid4()), now()
@@ -499,7 +507,8 @@ class MuseManager:
                 "response": "", "messages": [], "sent": False, "uncertain": False, "remote_state": "not_sent", "error": None,
                 "created_at": timestamp, "updated_at": timestamp, "submitted_at": None, "finished_at": None, "events": [],
                 "monitoring": True, "verification": VERIFICATION, "completion_evidence": None,
-                "source_kind": "native_muse", "member": member, "team_revision": revision}
+                "source_kind": "native_muse", "member": member, "team_revision": revision,
+                "_skill_snapshots": frozen, "_skill_model": skill_model}
         if reference_assets:
             if not parent_job_id or len(reference_assets) > 4:
                 raise HTTPException(422, '图片交接必须关联当前父任务，最多四张')
@@ -525,6 +534,13 @@ class MuseManager:
 
     async def execute(self, task, *, observe_only=False):
         try:
+            if not observe_only and task.get('_skill_snapshots'):
+                from .native_skills import prepare_native_skills
+                self.validate_member(task)
+                self.save(task, 'skill_guidance_preparing')
+                await prepare_native_skills(task)
+                self.validate_member(task)
+                self.save(task, 'skill_guidance_prepared')
             async with self.account_lock:
                 if not task["monitoring"]:
                     return
@@ -544,9 +560,10 @@ class MuseManager:
                         return
                     # Persist uncertainty BEFORE dispatch: a crash cannot safely
                     # distinguish 'not delivered' from 'delivered but no receipt'.
+                    prepared_prompt = framed_prompt(task)
                     task.update(status="dispatching", sent=None, uncertain=True, remote_state="unknown")
                     self.save(task, "dispatch_started")
-                    submit_payload = {"prompt": framed_prompt(task), "request_id": task["request_id"], "thread_url": None}
+                    submit_payload = {"prompt": prepared_prompt, "request_id": task["request_id"], "thread_url": None}
                     if task.get('_reference_names'):
                         folder, descriptor = native_stage(task['id'])
                         os.close(descriptor)

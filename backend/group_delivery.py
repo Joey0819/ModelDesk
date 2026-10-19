@@ -121,6 +121,8 @@ def execution_evidence(steps, output_limit=5000):
             rendered = step['skill_delivery']
             entry['platform_render'] = {key: rendered.get(key) for key in ['duration_seconds', 'fps', 'decoding', 'has_narration', 'source_sha256', 'renderer']}
             entry['platform_render']['asset_ids'] = [asset['id'] for asset in rendered.get('assets', [])]
+        if step.get('skill_application'):
+            entry['skill_application'] = step['skill_application']
         items.append(entry)
     return items
 

@@ -4,9 +4,11 @@
 
 把模型、执行 Agent、项目资料、代码审查和最终成果放在同一个工作区。你可以指定一个 LLM 担任 **统筹模型（Ruler）**，让它组织讨论、按需调用群内 Codex、Claude Code 或 Muse，以及可用的生图模型，再把真实正文、图片与视频整理成完整成果。
 
-**当前桌面版本：2.13.2** · macOS / Apple Silicon · 中文界面 · 本机服务与私有手机入口
+**当前桌面版本：2.13.3** · macOS / Apple Silicon · 中文界面 · 本机服务与私有手机入口
 
-本次真实协作验收与已知限制：[2.13.2 系统验收](docs/MODELDESK_2132_SYSTEM_ACCEPTANCE.md)。
+Muse 角色可绑定 Skills，长技能由统筹模型转换为创作指引，并保留原版本与实际发送内容。Lemo 的代码渲染由 Codex 执行；Muse 使用自身创作能力。详见 [2.13.3 Skills 接入与验收](docs/MODELDESK_2133_SKILLS.md)。
+
+之前的真实协作验收与已知限制：[2.13.2 系统验收](docs/MODELDESK_2132_SYSTEM_ACCEPTANCE.md)。
 
 ModelDesk 基于 [Karpathy 的 LLM Council](https://github.com/karpathy/llm-council) 扩展，保留独立回答 → 匿名互评 → 主席综合的三阶段流程，并复用 CAMEL、CrewAI 和 LangGraph 的执行能力。原项目说明见 [上游 README](docs/UPSTREAM_COUNCIL.md)。
 
@@ -81,6 +83,8 @@ ModelDesk 基于 [Karpathy 的 LLM Council](https://github.com/karpathy/llm-coun
 绘图角色使用所选模型的图像接口。已保存为 LLM 类型的 `gpt-image-*` 会按绘图能力识别；它不会被用作聊天或统筹模型。本机已实测用户网关的 `gpt-image-2.5` 标识返回真实 PNG，此标识是否可用取决于实际连接，不能据此推断官方公共 API 型号。绘图失败不会偷偷换成其他模型。图片与视频步骤建立依赖，真实图片校验后交给 Muse 的原生附件入口或 Codex 的隔离 `film/inputs/`。
 
 **Lemo 执行范围**：绑定到 Codex Agent 时，读取固定版本的导演与风格资料，编写自包含 Canvas/HTML 动画，平台用 Chromium + FFmpeg 渲染 1–120 秒、1280×720、24fps MP4。支持画面字幕和可选 macOS 中文系统旁白。它不是通用写实视频模型，也不继承 Muse 的云端工具。LLM 角色仅使用技能指令；Claude Code 可读取指令，但当前自动动画渲染只支持 Codex。Skills 当前用于项目群和独立代码任务；自定义流程模板遇到 Skills 会明确提示切换到项目群。
+
+**Muse 的 Skills**：在成员编辑器选择「Muse 应用 Agent」，勾选 Skill，保存协作组后应用到当前群。通过群聊「自动完成」或 `@Muse` 派发时，平台冻结该成员的技能版本并随原任务发送。短指令原文传递；长指令及代码渲染技能由本群统筹模型转换为最多 6000 字符的 Muse 创作指引。转换失败或材料过长时停止发送，不截断用户任务、不忽略技能重发。在 Muse 任务卡展开「本次 Skills」可以检查来源版本、指引与送达状态；这不代表在 Muse 中安装上游插件。独立 Muse 面板中未指定群成员的任务不继承群成员技能。
 
 安装不运行第三方 setup/hooks。每轮冻结技能指令和风格参考文件；继续任务复用原版本。自定义导入仅包含 `SKILL.md`，依赖额外脚本或服务的技能需要相应执行适配。新机器的动画依赖：
 

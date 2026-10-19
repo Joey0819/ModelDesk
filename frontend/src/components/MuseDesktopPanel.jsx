@@ -27,6 +27,7 @@ export function MuseTaskCard({ task: rawTask, projectId, roomId, busy, onCancel,
   return <section className="muse-task-card" aria-label="Muse 任务与实际回复">
     <header><span className={`muse-task-status muse-task-${task.status}`}>{task.monitoring && <span className="activity-dot" />}{MUSE_STATUS[task.status] || task.status}</span><time>{dateLabel(task.created_at)}</time>{threadUrl && <a href={threadUrl} target="_blank" rel="noopener noreferrer">打开 Muse 会话 ↗</a>}</header>
     <details className="muse-task-prompt"><summary>{task.prompt?.slice(0, 100) || '交给 Muse 的任务'}</summary><Markdown>{task.prompt || ''}</Markdown><CopyTextButton text={task.prompt || ''} label="复制 Muse 任务" /></details>
+    {task.skill_application && <details className="muse-task-prompt"><summary>本次 Skills · {task.skill_application.skills.map((skill) => skill.name).join('、')} · {task.sent === true ? '已随任务发送' : '已准备，尚未确认送达'}</summary><p>{task.skill_application.mode === 'adapted_guidance' ? `由 ${task.skill_application.prepared_by} 整理为 Muse 创作指引` : '按角色传递技能指令'}。使用 Muse 自身能力；未安装原生插件。</p>{task.skill_application.skills.map((skill) => <p key={skill.id}>{skill.name} · 版本 {(skill.revision || skill.sha256).slice(0, 12)}</p>)}<Markdown>{task.skill_application.guidance || ''}</Markdown><CopyTextButton text={task.skill_application.guidance || ''} label="复制本次 Skill 指引" /></details>}
     {task.error && <p className="output-error" role="status">{task.error}</p>}
     {videoUrl && (
       <div className="muse-video-card" aria-label="Muse 已回传视频">

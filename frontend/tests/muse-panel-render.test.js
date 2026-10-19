@@ -30,3 +30,13 @@ test('historical local generation renders as unverified without a native video o
   assert.match(html, /历史 ModelDesk 本地生成内容/);
   assert.doesNotMatch(html, /<video|使用 Muse 回复继续讨论|打开 Muse 会话/);
 });
+
+test('skill card distinguishes prepared guidance from confirmed native dispatch', () => {
+  const task = { id: 'skill', status: 'queued', sent: false, skill_application: { mode: 'adapted_guidance', prepared_by: 'coordinator', skills: [{ id: 'director', name: 'Director', sha256: '1234567890abcdef' }], guidance: 'Keep the approved characters.' } };
+  const prepared = renderToStaticMarkup(React.createElement(MuseTaskCard, { task }));
+  assert.match(prepared, /已准备，尚未确认送达/);
+  assert.match(prepared, /未安装原生插件/);
+  assert.match(prepared, /Keep the approved characters/);
+  const sent = renderToStaticMarkup(React.createElement(MuseTaskCard, { task: { ...task, sent: true } }));
+  assert.match(sent, /已随任务发送/);
+});

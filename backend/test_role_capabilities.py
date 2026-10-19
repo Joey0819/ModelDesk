@@ -88,7 +88,9 @@ class SkillsTests(unittest.TestCase):
     def test_missing_skill_and_runtime_binding_are_explicit(self):
         with self.assertRaises(HTTPException):skill_library.skill_prompt(['missing'])
         from backend.harness.models import TeamMember
-        with self.assertRaises(ValueError):TeamMember(id='muse',name='Muse',kind='muse',skill_ids=['writer'])
+        self.assertEqual(TeamMember(id='muse',name='Muse',kind='muse',skill_ids=['writer']).skill_ids, ['writer'])
+        for kind in ['model', 'image']:
+            with self.assertRaises(ValueError):TeamMember(id='image',name='Image',kind=kind,model='gpt-image-2.5',skill_ids=['writer'])
 
     def test_muse_public_status_distinguishes_reply_from_file(self):
         result=muse_bridge.public_task(dict(status='complete',_native_media=[],_native_media_errors=['Video not found']))

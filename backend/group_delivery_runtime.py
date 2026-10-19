@@ -169,6 +169,8 @@ def _result(item, engine, status, error=None):
         result["error"] = _public(error)
     if item.get("skill_delivery"):
         result["skill_delivery"] = copy.deepcopy(item["skill_delivery"])
+    if item.get('skill_application'):
+        result['skill_application'] = {key: copy.deepcopy(value) for key, value in item['skill_application'].items() if key != 'guidance'}
     return result
 
 
@@ -288,7 +290,7 @@ async def run_runtime_step(job, member, prompt, *, native_allowed=False, revisio
                         options = {}
                         if reference_assets and (engine == 'muse' or request.kind == 'creative'):
                             options['reference_assets'] = reference_assets
-                        if skill_snapshot and engine != 'muse':
+                        if skill_snapshot is not None:
                             options['skill_snapshot'] = skill_snapshot
                         created = await manager.create(request, parent_job_id=parent_id, **options)
                         candidate = checked_id(created["id"])

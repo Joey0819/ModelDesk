@@ -43,8 +43,9 @@ class TeamMember(BaseModel):
             raise ValueError("团队配置不能包含凭据；请使用现有模型连接")
         if len(set(self.skill_ids)) != len(self.skill_ids) or any(not __import__('re').fullmatch(r'[a-z0-9][a-z0-9_-]{0,79}', value) for value in self.skill_ids):
             raise ValueError("Skill 标识无效或重复")
-        if self.skill_ids and self.kind in {"muse", "image"}:
-            raise ValueError("Skills 绑定到 LLM 或代码 Agent；Muse 使用其自身应用能力")
+        from ..member_capabilities import member_kind
+        if self.skill_ids and member_kind(self.model_dump()) == "image":
+            raise ValueError("绘图模型不执行 Skills；请将技能绑定到编剧、导演或执行 Agent")
         return self
 
 

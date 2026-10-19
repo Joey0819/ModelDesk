@@ -14,6 +14,7 @@ import re
 import shutil
 import stat
 import subprocess
+import sys
 import time
 from typing import Literal
 import uuid
@@ -204,11 +205,26 @@ def scan_workspace(workspace):
     return manifest
 
 
+def python_runtime():
+    """Reuse the running backend's base interpreter, never a user's PATH shim.
+
+    Only the interpreter distribution is readable in the worker, not the
+    backend venv/site-packages, project, home folder or inherited environment.
+    """
+    root = Path(sys.base_prefix).resolve()
+    executable = root / "bin/python3"
+    if root == Path(root.anchor) or not executable.is_file() or not executable.resolve().is_relative_to(root):
+        raise ValueError("平台 Python 运行环境不可用；未扩大 Agent 文件权限")
+    return root
+
+
 def codex_profile(kind):
-    return {"extends": ":read-only" if kind == "review" else ":workspace",
+    profile = {"extends": ":read-only" if kind == "review" else ":workspace",
             "filesystem": {":root": "deny", ":minimal": "read", ":tmpdir": "deny", ":slash_tmp": "deny",
                            ":workspace_roots": {".": "read" if kind == "review" else "write", ".git": "read"}},
             "network": {"enabled": False}}
+    profile["filesystem"][str(python_runtime())] = "read"
+    return profile
 
 
 def worker_command(engine, kind, workspace, model=None):
@@ -217,13 +233,14 @@ def worker_command(engine, kind, workspace, model=None):
         raise ValueError(f"未安装 {engine} CLI")
     if engine == "codex":
         profile = codex_profile(kind)
+        shell_path = str(python_runtime() / "bin") + ":/usr/bin:/bin:/usr/sbin:/sbin"
         # TOML inline tables are intentionally generated from constants only.
         filesystem = ', '.join(json.dumps(key) + ' = ' + (json.dumps(value) if isinstance(value, str) else '{ ' + ', '.join(json.dumps(k) + ' = ' + json.dumps(v) for k, v in value.items()) + ' }') for key, value in profile["filesystem"].items())
         command = [executable, "exec", "--ignore-user-config", "--ignore-rules", "--ephemeral", "--json", "--color", "never", "-C", str(workspace),
                    "-c", 'approval_policy="never"', "-c", 'default_permissions="modeldesk"',
                    "-c", f'permissions.modeldesk={{extends={json.dumps(profile["extends"])}, filesystem={{{filesystem}}}, network={{enabled=false}}}}',
                    "-c", 'shell_environment_policy.inherit="none"',
-                   "-c", 'shell_environment_policy.set={PATH="/usr/bin:/bin:/usr/sbin:/sbin"}',
+                   "-c", 'shell_environment_policy.set={PATH=' + json.dumps(shell_path) + '}',
                    "-c", "project_doc_max_bytes=0", "-c", 'web_search="disabled"']
         for feature in ["apps", "plugins", "hooks", "multi_agent", "browser_use", "computer_use", "chronicle"]:
             command.extend(["--disable", feature])

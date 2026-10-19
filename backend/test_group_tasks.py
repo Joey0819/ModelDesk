@@ -120,7 +120,7 @@ print(json.dumps({'type':'turn.completed'}))
             claude = tasks.worker_command("claude", "review", self.repo, "sonnet")
         self.assertEqual(codex[codex.index("--model") + 1], "gpt-test")
         self.assertIn('shell_environment_policy.inherit="none"', codex)
-        self.assertIn('shell_environment_policy.set={PATH="/usr/bin:/bin:/usr/sbin:/sbin"}', codex)
+        self.assertIn('shell_environment_policy.set={PATH=' + json.dumps(str(tasks.python_runtime() / "bin") + ":/usr/bin:/bin:/usr/sbin:/sbin") + '}', codex)
         self.assertEqual(claude[claude.index("--model") + 1], "sonnet")
         self.assertIn("--safe-mode", claude)
         self.assertEqual(claude[claude.index("--tools") + 1], "Read,Glob,Grep")
@@ -329,6 +329,27 @@ print(json.dumps({'type':'item.completed','item':{'type':'agent_message','text':
             self.assertNotIn("OPENAI_API_KEY", env)
             self.assertNotIn("GITHUB_TOKEN", env)
             self.assertNotIn("NODE_OPTIONS", env)
+
+    def test_runtime_scope_rejects_root_missing_and_escaping_interpreter(self):
+        for prefix in ["/", str(self.root / "missing")]:
+            with patch.object(tasks.sys, "base_prefix", prefix), self.assertRaises(ValueError):
+                tasks.codex_profile("code")
+        runtime = self.root / "runtime"
+        (runtime / "bin").mkdir(parents=True)
+        (runtime / "bin/python3").symlink_to(Path(sys.executable).resolve())
+        with patch.object(tasks.sys, "base_prefix", str(runtime)), self.assertRaises(ValueError):
+            tasks.codex_profile("review")
+
+    def test_runtime_does_not_import_user_path_or_broaden_workspace_permissions(self):
+        with patch.dict(os.environ, {"PATH": "/untrusted-python:/usr/bin"}), patch.object(tasks.shutil, "which", return_value="/usr/local/bin/codex"):
+            command = tasks.worker_command("codex", "code", self.repo)
+        self.assertNotIn("/untrusted-python", str(command))
+        for kind, access in [("code", "write"), ("review", "read")]:
+            profile = tasks.codex_profile(kind)
+            self.assertEqual(profile["filesystem"][str(tasks.python_runtime())], "read")
+            self.assertEqual(profile["filesystem"][":workspace_roots"]["."], access)
+            self.assertEqual(profile["filesystem"][":root"], "deny")
+            self.assertFalse(profile["network"]["enabled"])
 
 
 if __name__ == "__main__":

@@ -75,7 +75,8 @@ class TeamStore:
         body = request.model_dump(mode="json")
         if request.team_id:
             snapshot = self.get(str(request.team_id), body["project_id"])
-            if any(member.get("kind", "model") != "model" for member in snapshot["members"]):
+            from ..member_capabilities import member_kind
+            if any(member_kind(member) != "model" for member in snapshot["members"]):
                 raise HTTPException(422, "此协作流程仅支持模型成员；包含可执行 Agent 的团队请使用项目群")
             body["models"] = [member["model"] for member in snapshot["members"]]
             if len(body["models"]) != len(set(body["models"])):
@@ -85,6 +86,8 @@ class TeamStore:
                         "members": body["members"], "created_at": now(), "updated_at": now(), "archived": False}
         else:
             snapshot = None
+        if snapshot and any(member.get("skill_ids") for member in snapshot["members"]):
+            raise HTTPException(422, "绑定 Skills 的团队请在项目群中使用；此流程模板尚未支持角色技能执行")
         for step in request.steps:
             if step.models and not set(step.models) <= set(body["models"]):
                 raise HTTPException(422, "步骤模型必须来自所选团队成员")

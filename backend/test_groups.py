@@ -289,7 +289,7 @@ class GroupRoomTests(unittest.IsolatedAsyncioTestCase):
         ]
         self.team = self.teams.put(TeamRequest(name="同一模型的不同角色", project_id=self.project["id"], members=roster))
         room = await self.room()
-        self.assertEqual(self.rooms.get(room["id"], room["project_id"])["team_snapshot"]["members"], [{"kind": "model", **member} for member in roster])
+        self.assertEqual(self.rooms.get(room["id"], room["project_id"])["team_snapshot"]["members"], [{"kind": "model", "skill_ids": [], **member} for member in roster])
         first = await self.send(room, prompt="请共同规划产品", rounds=2)
         self.assertEqual(first["models"], ["a"])
         self.assertEqual([call["model"] for call in self.calls], ["a"] * 6)

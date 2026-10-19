@@ -141,6 +141,9 @@ def _result(item, engine, status, error=None):
         item = public_task(item)
     raw = item.get("response" if engine == "muse" else "output", "")
     raw = raw if isinstance(raw, str) else ""
+    if item.get('skill_delivery'):
+        raw += "\n\n后续平台渲染阶段（Agent 写完源码之后执行）：已生成真实媒体。\n" + __import__('json').dumps(item['skill_delivery'], ensure_ascii=False)
+
     hidden = secret_text(raw)
     output = "[已隐藏包含疑似凭据的运行时输出]" if hidden else raw[:MAX_OUTPUT]
     digest = hashlib.sha256(raw.encode()).hexdigest()
@@ -164,6 +167,8 @@ def _result(item, engine, status, error=None):
         source["thread_url"] = result["thread_url"] = item.get("thread_url")
     if error:
         result["error"] = _public(error)
+    if item.get("skill_delivery"):
+        result["skill_delivery"] = copy.deepcopy(item["skill_delivery"])
     return result
 
 
@@ -184,7 +189,7 @@ def _finished(manager, item, engine, project_id, room_id):
     elif status == "complete":
         if item.get("exit_code") != 0 or not isinstance(item.get("output"), str) or not item["output"].strip():
             return _result(item, engine, "error", "执行 Agent 没有成功的实际输出")
-        if item.get("changed_files"):
+        if item.get("changed_files") and item.get("kind") != "creative":
             # read_patch validates the saved bytes against the immutable hash.
             manager.read_patch(item["id"], project_id, room_id)
         return _result(item, engine, "complete")
@@ -217,7 +222,7 @@ def _can_renew_muse_observation(item):
     )
 
 
-async def run_runtime_step(job, member, prompt, *, native_allowed=False, revision_of=None):
+async def run_runtime_step(job, member, prompt, *, native_allowed=False, revision_of=None, output_kind=None, reference_assets=None, skill_snapshot=None):
     """Run one saved typed member and return actual output with provenance.
 
     ``complete`` means the child manager observed completion, never that its
@@ -246,7 +251,8 @@ async def run_runtime_step(job, member, prompt, *, native_allowed=False, revisio
             if not project_id:
                 raise ValueError("代码 Agent 需要已关联的本地 Git 项目")
             request = TaskRequest(project_id=project_id, room_id=room_id, member_id=member["id"], engine=engine,
-                                  prompt=prompt, timeout_seconds=RUNTIME_TIMEOUT_SECONDS)
+                                  prompt=prompt, timeout_seconds=RUNTIME_TIMEOUT_SECONDS,
+                                  kind="creative" if engine == "codex" and "lemo-opuscar" in member.get("skill_ids", []) and output_kind == "video" else "code")
         async with _step_lock((parent_id, member["id"])):
             _scope(job, member)
             if revision_of is not None:
@@ -271,13 +277,20 @@ async def run_runtime_step(job, member, prompt, *, native_allowed=False, revisio
                 if item.get("parent_prompt_sha256") != prompt_sha256:
                     raise ValueError("同一父任务的执行内容已变化；不会重复派发")
                 identifier = item["id"]
+                if engine == 'muse' and item.get('status') == 'complete' and item.get('_native_media_errors'):
+                    item = await manager.refresh_media(identifier, project_id)
             else:
                 try:
                     # Both existing managers queue a child only after their
                     # awaited preflight, with no await after queuing. Stay in
                     # this coroutine to link it before its runner can execute.
                     async with asyncio.timeout(CREATE_TIMEOUT_SECONDS):
-                        created = await manager.create(request, parent_job_id=parent_id)
+                        options = {}
+                        if reference_assets and (engine == 'muse' or request.kind == 'creative'):
+                            options['reference_assets'] = reference_assets
+                        if skill_snapshot and engine != 'muse':
+                            options['skill_snapshot'] = skill_snapshot
+                        created = await manager.create(request, parent_job_id=parent_id, **options)
                         candidate = checked_id(created["id"])
                         canonical = _get(manager, candidate, project_id, room_id, engine)
                         _check_child(created, *scope, member)

@@ -48,3 +48,21 @@ test('role recipes bind only connected models and create editable typed teams', 
   assert.equal(recipeTeam('unknown', catalog), null);
   assert.equal(recipeTeam('article', [{id: 'one'}]).members[1].model, 'one');
 });
+
+test('image roles retain exact model IDs, skills bind to saved roles, and rulers remain text models', () => {
+  const team = {name:'Creative',coordinator_model:'gpt',members:[
+    {id:'writer',name:'Writer',kind:'model',model:'gpt',role:'Write',skill_ids:['custom-writer']},
+    {id:'artist',name:'Artist',kind:'model',model:'gpt-image-2.5',role:'Draw'},
+  ]};
+  const options={allowRepeatedModels:true,allowExecutableMembers:true};
+  const connected=[...catalog,{id:'gpt-image-2.5'}];
+  assert.equal(memberKind(team.members[1]),'image');
+  const saved=teamRequest(team,'project');
+  assert.equal(saved.members[1].kind,'image'); assert.equal(saved.members[1].model,'gpt-image-2.5');
+  assert.deepEqual(saved.members[0].skill_ids,['custom-writer']);
+  assert.deepEqual(teamIssues(team,connected,options),[]);
+  assert.ok(teamIssues(team,catalog,options).some((message)=>message.includes('gpt-image-2.5')));
+  assert.ok(teamIssues({...team,coordinator_model:'gpt-image-2.5'},connected,options).some((message)=>message.includes('文字推理')));
+  assert.ok(teamIssues(team,connected).some((message)=>message.includes('Skills')));
+  assert.equal(recipeTeam('article', [{id:'gpt-image-2.5',verified:true},...catalog]).coordinator_model,'gpt');
+});

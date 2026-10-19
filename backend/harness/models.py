@@ -14,9 +14,10 @@ class TeamMember(BaseModel):
     model_config = ConfigDict(extra="forbid")
     id: str = Field(pattern=r"^[A-Za-z][A-Za-z0-9_-]{0,39}$")
     name: str = Field(min_length=1, max_length=80)
-    kind: Literal["model", "codex", "claude", "muse"] = "model"
+    kind: Literal["model", "image", "codex", "claude", "muse"] = "model"
     model: str | None = Field(default=None, max_length=200)
     role: str = Field(default="", max_length=1600)
+    skill_ids: list[str] = Field(default_factory=list, max_length=4)
 
     @field_validator("name", "model")
     @classmethod
@@ -30,7 +31,7 @@ class TeamMember(BaseModel):
     @model_validator(mode="after")
     def no_credentials(self):
         from ..attachments import secret_text
-        if not self.name or (self.kind == "model" and not self.model):
+        if not self.name or (self.kind in {"model", "image"} and not self.model):
             raise ValueError("模型成员需要名称与模型标识")
         if self.kind == "muse" and self.model:
             raise ValueError("Muse 使用自己的应用与账户，不配置底层模型")
@@ -40,13 +41,18 @@ class TeamMember(BaseModel):
             self.model = None
         if secret_text(self.name + "\n" + (self.model or "") + "\n" + self.role):
             raise ValueError("团队配置不能包含凭据；请使用现有模型连接")
+        if len(set(self.skill_ids)) != len(self.skill_ids) or any(not __import__('re').fullmatch(r'[a-z0-9][a-z0-9_-]{0,79}', value) for value in self.skill_ids):
+            raise ValueError("Skill 标识无效或重复")
+        if self.skill_ids and self.kind in {"muse", "image"}:
+            raise ValueError("Skills 绑定到 LLM 或代码 Agent；Muse 使用其自身应用能力")
         return self
 
 
 def validate_members(members, *, distinct_models=True):
     if len({member.id for member in members}) != len(members):
         raise ValueError("每位团队成员必须使用不同的成员标识")
-    if distinct_models and any(member.kind != "model" for member in members):
+    from ..member_capabilities import member_kind
+    if distinct_models and any(member_kind(member.model_dump()) != "model" for member in members):
         raise ValueError("此协作流程仅支持模型成员；包含可执行 Agent 的团队请使用项目群")
     if distinct_models and len({member.model for member in members}) != len(members):
         raise ValueError("协作流程需要不同模型；同一模型的多个角色请在项目群聊中使用")
@@ -83,7 +89,10 @@ class TeamRequest(BaseModel):
         # Group rooms dispatch by member ID; workflow engines still validate
         # their distinct-model invariant when a saved roster is used for a run.
         validate_members(self.members, distinct_models=False)
-        model_ids = {member.model for member in self.members if member.kind == "model"}
+        from ..member_capabilities import member_kind, image_model
+        model_ids = {member.model for member in self.members if member_kind(member.model_dump()) == "model"}
+        if image_model(self.coordinator_model):
+            raise ValueError("统筹者需要文字推理模型，生图模型请配置为绘图成员")
         if self.coordinator_model:
             model_ids.add(self.coordinator_model)
         if not model_ids:

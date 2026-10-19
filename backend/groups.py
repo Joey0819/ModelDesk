@@ -1,5 +1,7 @@
 """Project group rooms backed by the existing durable, real-provider job runner."""
 import asyncio
+from .member_capabilities import member_kind
+
 import copy
 import hashlib
 import json
@@ -159,7 +161,7 @@ def room_roles(room):
 def room_models(room):
     """Only actual model endpoints enter the gateway; agents keep their runtimes."""
     snapshot = room["team_snapshot"]
-    models = [member["model"] for member in snapshot["members"] if member.get("kind", "model") == "model"]
+    models = [member["model"] for member in snapshot["members"] if member_kind(member) == "model"]
     if snapshot.get("coordinator_model"):
         models.append(snapshot["coordinator_model"])
     return list(dict.fromkeys(models))
@@ -246,7 +248,7 @@ def validate_job_creation(request, metadata, authorization):
     if meta["group_broadcast"]:
         if selected != [member["id"] for member in members]:
             raise HTTPException(403, "广播成员必须来自完整的已保存群组")
-    elif any(member.get("kind", "model") != "model" for member in members if member["id"] in selected):
+    elif any(member_kind(member) not in {"model", "image"} for member in members if member["id"] in selected):
         raise HTTPException(422, "可执行 Agent 请通过派发任务操作，不能作为模型网关发言者")
 
 
@@ -324,13 +326,15 @@ async def send_message(identifier: str, request: MessageRequest, transport: Requ
     # Stable roster order defines the relay order, regardless of chip click order.
     selected = [member["id"] for member in members if member["id"] in selected]
     broadcast = not request.recipient_member_ids
-    if not broadcast and any(member.get("kind", "model") != "model" for member in members if member["id"] in selected):
+    if not broadcast and any(member_kind(member) not in {"model", "image"} for member in members if member["id"] in selected):
         raise HTTPException(422, "已选择可执行 Agent；请使用派发任务，由其实际运行时执行")
+    if request.delivery_mode == 'discussion' and any(member_kind(member) == 'image' for member in members if member['id'] in (request.recipient_member_ids or [])):
+        raise HTTPException(422, '绘图角色需要选择“自动完成”，不能通过文字讨论接口生图')
     try:
         catalog = await workbench.model_catalog()
     except Exception as error:
         raise HTTPException(503, workbench.public_error(error)) from error
-    requested_models = [member["model"] for member in members if member["id"] in selected and member.get("kind", "model") == "model"]
+    requested_models = [member["model"] for member in members if member["id"] in selected and member_kind(member) == "model"]
     if broadcast and room["team_snapshot"].get("coordinator_model"):
         requested_models.append(room["team_snapshot"]["coordinator_model"])
     missing = list(dict.fromkeys(model for model in requested_models if model not in catalog))
@@ -355,6 +359,8 @@ async def send_message(identifier: str, request: MessageRequest, transport: Requ
                 "group_output_format": request.output_format, "group_image_count": request.image_count, "group_media_provider": request.media_provider,
                 "group_runtime_allowed": request.delivery_mode == "auto",
                 "group_native_allowed": request.delivery_mode == "auto" and not transport.headers.get("x-modeldesk-remote")}
+    from .skill_library import frozen_skills
+    metadata['_skill_snapshots'] = frozen_skills(members)
     if muse_source:
         metadata["group_muse_source"] = muse_source
     job = workbench.manager.create(job_request, metadata=metadata, group_authorization=_ROOM_WRITE)

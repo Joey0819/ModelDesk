@@ -1,3 +1,4 @@
+import { memberKind } from './mission-teams.js';
 import { EMPTY_CONTEXT } from './platform-settings.js';
 import { hydrateJob } from './workbench-state.js';
 import { canUseMuseReply } from './muse-state.js';
@@ -116,14 +117,14 @@ export function groupMemberColor(identifier = '') {
 
 
 export function groupMemberKind(member) {
-  return ['codex', 'claude', 'muse'].includes(member?.kind) ? member.kind : 'model';
+  return memberKind(member);
 }
 export function groupMemberKindLabel(member) {
-  return ({ model: 'LLM', codex: 'Codex Agent', claude: 'Claude Code Agent', muse: 'Muse 原生 Agent' })[groupMemberKind(member)];
+  return ({ model: 'LLM', image: '绘图模型', codex: 'Codex Agent', claude: 'Claude Code Agent', muse: 'Muse 原生 Agent' })[groupMemberKind(member)];
 }
 export function groupSelection(members = [], recipientIds = []) {
   const selected = members.filter((member) => recipientIds.includes(member.id));
-  const runtimeMembers = selected.filter((member) => groupMemberKind(member) !== 'model');
+  const runtimeMembers = selected.filter((member) => !['model', 'image'].includes(groupMemberKind(member)));
   const selectionError = runtimeMembers.length && recipientIds.length !== 1 ? '运行时 Agent 只能单独派发。群成员类型可能已更新，请重新选择一位 Agent 或 LLM 讨论成员。' : '';
   return { runtimeMember: selectionError ? undefined : runtimeMembers[0], selectionError, discussionMembers: (recipientIds.length ? selected : members).filter((member) => groupMemberKind(member) === 'model') };
 }

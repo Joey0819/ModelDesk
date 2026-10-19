@@ -100,11 +100,11 @@ export function GroupMuseTurn({ task: rawTask, projectId, roomId, onUseReply, on
   </article>;
 }
 
-export function GroupAgentTaskTurn({ task, onOpenTaskMode, onUseAgentOutput }) {
+export function GroupAgentTaskTurn({ task, onOpenTaskMode, onUseAgentOutput, onOpenCreative }) {
   const name = task.member?.name || task.member_id || 'Agent';
   return <article className="group-room-turn group-agent-turn" aria-label={`Agent 任务记录 ${dateLabel(task.created_at)}`}>
     <GroupTaskPrompt task={task} name={name} engine={taskEngineLabel(task)} copyLabel="复制交给 Agent 的任务" />
-    <section className="group-member-message" style={{ '--member-color': '#2b7284' }}><span className="group-member-avatar" aria-hidden="true">⚙</span><div><header><strong>{name}</strong><small>{taskEngineLabel(task)}</small><small>{TASK_LABELS[task.status] || task.status}</small></header>{taskActive(task) && <p className="result-note"><span className="small-spinner" /> 正在隔离工作区执行…</p>}{task.output ? <Markdown>{task.output}</Markdown> : !taskActive(task) && <p className="result-note">暂无文本输出，可查看补丁与运行记录。</p>}{task.error && <p className="output-error">{task.error}</p>}<div className="group-message-actions">{task.output && <CopyTextButton text={task.output} label={`复制 ${name} 的执行结果`} />}{task.output && onUseAgentOutput && <button className="subtle-button" type="button" onClick={() => onUseAgentOutput(task)}>引用结果继续讨论</button>}<button className="subtle-button" type="button" onClick={() => onOpenTaskMode(task.kind === 'review' ? 'review' : 'code')}>查看补丁与审批</button></div></div></section>
+    <section className="group-member-message" style={{ '--member-color': '#2b7284' }}><span className="group-member-avatar" aria-hidden="true">⚙</span><div><header><strong>{name}</strong><small>{taskEngineLabel(task)}</small><small>{TASK_LABELS[task.status] || task.status}</small></header>{taskActive(task) && <p className="result-note"><span className="small-spinner" /> 正在隔离工作区执行…</p>}{task.skill_delivery?.assets?.length > 0 && <p className="result-note">平台已在源码完成后渲染实际视频（{task.skill_delivery.duration_seconds} 秒）。下方是 Agent 写源码时的记录，最终视频请查看本轮成果。</p>}{task.output ? <Markdown>{task.output}</Markdown> : !taskActive(task) && <p className="result-note">暂无文本输出，可查看补丁与运行记录。</p>}{task.error && <p className="output-error">{task.error}</p>}<div className="group-message-actions">{task.output && <CopyTextButton text={task.output} label={`复制 ${name} 的执行结果`} />}{task.output && onUseAgentOutput && <button className="subtle-button" type="button" onClick={() => onUseAgentOutput(task)}>引用结果继续讨论</button>}{task.kind === 'creative' ? onOpenCreative && <button className="subtle-button" type="button" onClick={onOpenCreative}>查看本轮动画成果</button> : <button className="subtle-button" type="button" onClick={() => onOpenTaskMode(task.kind === 'review' ? 'review' : 'code')}>查看补丁与审批</button>}</div></div></section>
   </article>;
 }
 
@@ -120,11 +120,12 @@ export function GroupDeliveryProgress({ job, onOpenArtifacts }) {
   const content = typeof delivery.content === 'string' && delivery.content.trim();
   const stopped = ['cancelled', 'interrupted', 'error'].includes(job.status);
   const state = stopped ? content ? 'partial' : 'blocked' : delivery.status || (active ? 'planning' : 'blocked');
-  const label = job.status === 'cancelled' ? '任务已停止' : job.status === 'interrupted' ? '任务已中断' : GROUP_DELIVERY_STATUS[state];
+  const filesAwaitReview = state === 'partial' && delivery.media?.length > 0 && delivery.validation?.mechanical_checks?.length > 0 && delivery.validation.mechanical_checks.every((check) => check.met === true) && delivery.steps?.every((step) => step.status === 'complete');
+  const label = filesAwaitReview ? '文件已生成，内容待验收' : job.status === 'cancelled' ? '任务已停止' : job.status === 'interrupted' ? '任务已中断' : GROUP_DELIVERY_STATUS[state];
   const steps = Array.isArray(delivery.steps) ? delivery.steps : [];
   const limitations = Array.isArray(delivery.limitations) ? delivery.limitations.filter((item) => typeof item === 'string') : [];
   return <section className={`group-delivery-progress group-delivery-${state}`} aria-label="自动交付进度" aria-live={active ? 'polite' : 'off'}>
-    <header>{active ? <span className="small-spinner" /> : <Icon name="file" size={16} />}<strong>{label || '正在同步交付进度'}</strong>{content && <button className="subtle-button" type="button" onClick={() => onOpenArtifacts(job, true)}><Icon name="panel" size={14} />{state === 'complete' ? '查看完整成果' : '查看部分成果'}</button>}</header>
+    <header>{active ? <span className="small-spinner" /> : <Icon name="file" size={16} />}<strong>{label || '正在同步交付进度'}</strong>{content && <button className="subtle-button" type="button" onClick={() => onOpenArtifacts(job, true)}><Icon name="panel" size={14} />{state === 'complete' ? '查看完整成果' : filesAwaitReview ? '查看文件与验收意见' : '查看部分成果'}</button>}</header>
     {delivery.title && <p className="group-delivery-title">{delivery.title}</p>}
     {steps.length > 0 && <ol>{steps.map((step, index) => <li key={step.id || index} className={`group-delivery-step-${step.status}`}><div><strong>{step.member_name || step.member_id || '协作成员'}</strong><span>{GROUP_DELIVERY_STEP_STATUS[step.status] || '状态待同步'}</span></div>{step.instruction && <p>{step.instruction}</p>}{step.error && <p className="output-error">{step.error}</p>}</li>)}</ol>}
     <DeliveryMediaProgress job={job} />
@@ -357,7 +358,7 @@ function GroupRoom({ roomId, projectId, status, models, context, onContextChange
     ...(!runtimeMember && status && selectedMembers.some((member) => !status.models?.some((model) => model.id === member.model)) ? ['指定成员的模型当前未接入，请选择可用成员或检查“Agent 与连接”。'] : []),
     ...(!runtimeMember && !recipientIds.length && coordinatorModel && status && !status.models?.some((model) => model.id === coordinatorModel) ? ['统筹 LLM 当前未连接，请检查“Agent 与连接”。'] : []),
     ...(!runtimeMember && !status ? ['正在读取模型连接状态。'] : []),
-    ...(!runtimeMember && !selectedMembers.length && !(coordinatorModel && !recipientIds.length) ? ['本群还没有 LLM 成员，请添加模型成员，或明确选择一位运行时 Agent。'] : []),
+    ...(!runtimeMember && !selectedMembers.length && !(deliveryMode === 'auto' && members.some((member) => groupMemberKind(member) === 'image' && (!recipientIds.length || recipientIds.includes(member.id)))) && !(coordinatorModel && !recipientIds.length) ? ['本群还没有 LLM 成员，请添加模型成员，或明确选择一位运行时 Agent。'] : []),
   ];
   const canSend = Boolean(room && prompt.trim() && (runtimeMember ? runtimeReady : !errors.length) && !loading && !busy && !runtimeDispatching && !activeJob && !attachmentPending && !transfers);
 
@@ -511,7 +512,7 @@ function GroupRoom({ roomId, projectId, status, models, context, onContextChange
               return <GroupMuseTurn key={`muse-${value.id}`} task={value} projectId={projectId} roomId={roomId} onUseReply={useMuseReply} onOpenMuse={openMuse} onOpenArtifacts={openTurnArtifact} onRetryMuse={(failedTask) => prepareMuseDraft(failedTask.prompt)} />;
             }
             if (type === 'agent_task') {
-              return <GroupAgentTaskTurn key={`agent-${value.id}`} task={value} onOpenTaskMode={setWorkMode} onUseAgentOutput={useAgentOutput} />;
+              return <GroupAgentTaskTurn key={`agent-${value.id}`} task={value} onOpenTaskMode={setWorkMode} onUseAgentOutput={useAgentOutput} onOpenCreative={jobs.some((job) => job.id === value.parent_job_id) ? () => onOpenArtifacts(jobs.find((job) => job.id === value.parent_job_id), true) : undefined} />;
             }
             return <GroupTurn key={value.id} job={value} room={room || { team_snapshot: { members: [] } }} onOpenArtifacts={openTurnArtifact} onSendToMuse={prepareMuseDraft} onHandOffToAgent={handOffToAgent} />;
           })}
@@ -526,9 +527,9 @@ function GroupRoom({ roomId, projectId, status, models, context, onContextChange
             <span>发送给</span>
             <button type="button" aria-pressed={!recipientIds.length} className={!recipientIds.length ? 'selected' : ''} onClick={() => setRecipientIds([])}>{deliveryMode === 'auto' ? '@协作组' : '@所有 LLM'}</button>
             {members.map((member) => {
-              const runtime = groupMemberKind(member) !== 'model';
+              const runtime = !['model', 'image'].includes(groupMemberKind(member));
               const selected = recipientIds.includes(member.id);
-              return <button type="button" key={member.id} aria-pressed={selected} className={`${selected ? 'selected' : ''} ${runtime ? 'group-agent-recipient' : ''}`} title={`${groupMemberKindLabel(member)} · ${runtime ? '选择后需点击明确派发按钮' : member.model || ''}`} onClick={() => setRecipientIds((previous) => runtime ? (selected ? [] : [member.id]) : [...previous.filter((id) => members.some((item) => item.id === id && groupMemberKind(item) === 'model') && id !== member.id), ...(selected ? [] : [member.id])])}>@{member.name}<small>{groupMemberKindLabel(member)}</small></button>;
+              return <button type="button" key={member.id} aria-pressed={selected} className={`${selected ? 'selected' : ''} ${runtime ? 'group-agent-recipient' : ''}`} title={`${groupMemberKindLabel(member)} · ${runtime ? '选择后需点击明确派发按钮' : member.model || ''}`} onClick={() => setRecipientIds((previous) => runtime ? (selected ? [] : [member.id]) : [...previous.filter((id) => members.some((item) => item.id === id && ['model', 'image'].includes(groupMemberKind(item))) && id !== member.id), ...(selected ? [] : [member.id])])}>@{member.name}<small>{groupMemberKindLabel(member)}</small></button>;
             })}
           </div>
           {!runtimeMember && (

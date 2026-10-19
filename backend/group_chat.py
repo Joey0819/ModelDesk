@@ -3,6 +3,8 @@
 Implements the local group-discussion workflow documented by MultiBot Chat;
 it does not import its cloud account system or claim provider-adapter parity.
 """
+from .member_capabilities import member_kind
+
 import asyncio
 import json
 import httpx
@@ -51,6 +53,9 @@ def discussion_messages(job, model, history, member=None, phase="reply"):
             (member.get("role") or "围绕用户目标提供独立分析与交付")) if member else job.get("roles", {}).get(model)
     if role:
         system.append("你在本次讨论中的角色与要求：" + role)
+    if member and member.get("skill_ids"):
+        from .skill_library import skill_prompt
+        system.append(skill_prompt(member["skill_ids"], snapshot=job.get("_skill_snapshots")))
     if job.get("relay_prompt"):
         system.append("接力要求：" + job["relay_prompt"])
     if phase in {"plan", "synthesis"}:
@@ -103,7 +108,7 @@ async def run_group(manager, job):
     members = (job.get("group_team_snapshot") or {}).get("members", [])
     recipients = job.get("group_recipient_member_ids")
     if members:
-        participants = [member for member in members if member.get("kind", "model") == "model" and
+        participants = [member for member in members if member_kind(member) == "model" and
                         (recipients is None or member["id"] in recipients)]
     else:
         participants = [{"model": model} for model in job["models"]] if recipients is None else []

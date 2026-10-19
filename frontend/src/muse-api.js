@@ -17,6 +17,7 @@ export const museApi = {
   list: (projectId, roomId) => request(`/tasks?${scope(projectId, roomId ? { room_id: roomId } : {})}`),
   create: (body) => request('/tasks', 'POST', body),
   cancel: (id, projectId) => request(`/tasks/${encodeURIComponent(id)}/cancel?${scope(projectId)}`, 'POST'),
+  refreshMedia: (id, projectId) => request(`/tasks/${encodeURIComponent(id)}/refresh-media?${scope(projectId)}`, 'POST'),
   observe: (id, projectId) => request(`/tasks/${encodeURIComponent(id)}/observe?${scope(projectId)}`, 'POST'),
   exportUrl: (id, projectId, format = 'md') => `${API_BASE}/api/muse/tasks/${encodeURIComponent(id)}/export?${scope(projectId, { format })}`,
 };

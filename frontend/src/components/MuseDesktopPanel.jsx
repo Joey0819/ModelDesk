@@ -19,7 +19,7 @@ import './MuseDesktopPanel.css';
 
 const dateLabel = (date) => date ? new Date(date).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : '';
 
-export function MuseTaskCard({ task: rawTask, projectId, roomId, busy, onCancel, onObserve, onUseReply }) {
+export function MuseTaskCard({ task: rawTask, projectId, roomId, busy, onCancel, onObserve, onRefreshMedia, onUseReply }) {
   const task = normalizeMuseSource(rawTask);
   const threadUrl = safeMuseThreadUrl(task.thread_url);
   const usable = canUseMuseReply(task, projectId, roomId);
@@ -37,8 +37,10 @@ export function MuseTaskCard({ task: rawTask, projectId, roomId, busy, onCancel,
         <video className="muse-inline-video" src={videoUrl} controls playsInline preload="metadata" loop />
       </div>
     )}
+    {task.media_delivery?.errors?.length > 0 && <p className="output-error" role="status">{task.media_delivery.errors.join('；')}</p>}
+    {task.media_delivery && <p>实际回收：{task.media_delivery.images} 张图片 · {task.media_delivery.videos} 个视频</p>}
     {task.response ? <div className="muse-observed-response"><div className="muse-response-heading"><strong>{usable ? 'Muse 实际回复' : '已读取的部分内容'}</strong><CopyTextButton text={task.response} label="复制 Muse 回复" /></div><Markdown>{task.response}</Markdown></div> : <p className="muse-response-empty">{task.monitoring ? '正在等待 Muse 原生窗口中的回复。' : '尚未读取到实际回复。'}</p>}
-    <div className="muse-task-actions">{task.monitoring ? <button type="button" className="subtle-button" disabled={busy} onClick={() => onCancel(task)}>停止本地观察</button> : task.sent === true && task.status !== 'complete' && threadUrl ? <button type="button" className="subtle-button" disabled={busy} onClick={() => onObserve(task)}>继续观察原会话</button> : null}<a href={museApi.exportUrl(task.id, projectId)} download>导出 Markdown</a><a href={museApi.exportUrl(task.id, projectId, 'json')} download>JSON</a>{usable && <button type="button" className="primary-button" disabled={busy} onClick={() => onUseReply(task)}><Icon name="group" size={14} />使用 Muse 回复继续讨论</button>}</div>
+    <div className="muse-task-actions">{task.monitoring ? <button type="button" className="subtle-button" disabled={busy} onClick={() => onCancel(task)}>停止本地观察</button> : task.sent === true && task.status !== 'complete' && threadUrl ? <button type="button" className="subtle-button" disabled={busy} onClick={() => onObserve(task)}>继续观察原会话</button> : null}{task.status === 'complete' && onRefreshMedia && <button type="button" className="subtle-button" disabled={busy} onClick={() => onRefreshMedia(task)}>重新回收原会话附件</button>}<a href={museApi.exportUrl(task.id, projectId)} download>导出 Markdown</a><a href={museApi.exportUrl(task.id, projectId, 'json')} download>JSON</a>{usable && <button type="button" className="primary-button" disabled={busy} onClick={() => onUseReply(task)}><Icon name="group" size={14} />使用 Muse 回复继续讨论</button>}</div>
     <p className="muse-task-boundary">{task.monitoring ? '停止本地观察不会停止 Muse 云端任务；需要停止操作时，请在 Muse 中处理。' : task.verification || '这里只记录 Muse 窗口实际返回的内容，外部操作是否成功仍需核查。'}</p>
   </section>;
 }
@@ -113,7 +115,7 @@ export default function MuseDesktopPanel({ projectId, roomId, onUseReply }) {
       {REMOTE_CLIENT && <p className="mission-form-note">Muse 原生窗口操作需要在 Mac 端派发。</p>}
       {(readError || actionError) && <p className="output-error" role="alert">{actionError || readError}{readError && <button type="button" className="subtle-button" onClick={refresh}>重新读取</button>}</p>}
       {tasks.length > 0 && <label className="muse-task-picker"><span>本群 Muse 任务</span><select aria-label="查看 Muse 任务" value={taskId || ''} onChange={(event) => setTaskId(event.target.value)}>{taskId && !task && <option value={taskId}>所选任务暂不可用</option>}{tasks.map((item) => <option key={item.id} value={item.id}>{MUSE_STATUS[item.status] || item.status} · {item.prompt?.slice(0, 60)} · {dateLabel(item.created_at)}</option>)}</select></label>}
-      {task && <MuseTaskCard task={task} projectId={projectId} roomId={roomId} busy={busy} onCancel={(selected) => mutateTask(selected, museApi.cancel)} onObserve={(selected) => mutateTask(selected, museApi.observe)} onUseReply={useReply} />}
+      {task && <MuseTaskCard task={task} projectId={projectId} roomId={roomId} busy={busy} onCancel={(selected) => mutateTask(selected, museApi.cancel)} onObserve={(selected) => mutateTask(selected, museApi.observe)} onRefreshMedia={(selected) => mutateTask(selected, museApi.refreshMedia)} onUseReply={useReply} />}
     </div>
   </details>;
 }

@@ -4,7 +4,7 @@
 
 把模型、执行 Agent、项目资料、代码审查和最终成果放在同一个工作区。你可以指定一个 LLM 担任 **统筹模型（Ruler）**，让它组织讨论、按需调用群内 Codex、Claude Code 或 Muse，以及可用的生图模型，再把真实正文、图片与视频整理成完整成果。
 
-**当前桌面版本：2.12.1** · macOS / Apple Silicon · 中文界面 · 本机服务与私有手机入口
+**当前桌面版本：2.13.0** · macOS / Apple Silicon · 中文界面 · 本机服务与私有手机入口
 
 ModelDesk 基于 [Karpathy 的 LLM Council](https://github.com/karpathy/llm-council) 扩展，保留独立回答 → 匿名互评 → 主席综合的三阶段流程，并复用 CAMEL、CrewAI 和 LangGraph 的执行能力。原项目说明见 [上游 README](docs/UPSTREAM_COUNCIL.md)。
 
@@ -67,6 +67,30 @@ ModelDesk 基于 [Karpathy 的 LLM Council](https://github.com/karpathy/llm-coun
 - **真实媒体与携带导出**：PNG / JPEG / WebP 使用 Pillow 解码，MP4 / WebM 校验容器并在可用时使用 `ffprobe` 检查视频流。媒体按任务私有保存，读取核对项目范围、大小与 SHA-256。ZIP 包含 `index.html`、`article.md`、实际 `media/` 文件和来源清单，可离线查看；不依赖临时供应商链接。
 
 操作与后端契约见 [图文、视频与媒体 Harness](docs/MULTIMODAL_DELIVERY.md)。供应商官方能力参考：[OpenAI Image generation](https://developers.openai.com/api/docs/guides/tools-image-generation)、[Gemini Image generation](https://ai.google.dev/gemini-api/docs/image-generation)。官方接口能力与本机已验证的适配路径分别记录，ModelDesk 当前不声称完整实现这些接口的全部参数或工具。
+
+## Skills 与绘图角色 / Skills and creative Agents
+
+2.13 将角色路由、实际附件交接和技能执行接入项目群：
+
+1. 在 **Agent 与连接 → Skills** 安装 [Lemo-Opuscar](https://github.com/lemomo-ai/lemo-opuscar)，或导入自己的 `SKILL.md`。
+2. 在 **项目 Agent → 成员与分工** 选定角色，勾选 Skill，保存并同步到群。
+3. 在项目群选择 **自动完成** 并向全组发送目标。例如：「先由绘图者生成一张纸船插图，再由 Lemo 动画师用它制作 6 秒动画，交付原图和 MP4。」
+
+绘图角色使用所选模型的图像接口。已保存为 LLM 类型的 `gpt-image-*` 会按绘图能力识别；它不会被用作聊天或统筹模型。本机已实测用户网关的 `gpt-image-2.5` 标识返回真实 PNG，此标识是否可用取决于实际连接，不能据此推断官方公共 API 型号。绘图失败不会偷偷换成其他模型。图片与视频步骤建立依赖，真实图片校验后交给 Muse 的原生附件入口或 Codex 的隔离 `film/inputs/`。
+
+**Lemo 执行范围**：绑定到 Codex Agent 时，读取固定版本的导演与风格资料，编写自包含 Canvas/HTML 动画，平台用 Chromium + FFmpeg 渲染 1–120 秒、1280×720、24fps MP4。支持画面字幕和可选 macOS 中文系统旁白。它不是通用写实视频模型，也不继承 Muse 的云端工具。LLM 角色仅使用技能指令；Claude Code 可读取指令，但当前自动动画渲染只支持 Codex。Skills 当前用于项目群和独立代码任务；自定义流程模板遇到 Skills 会明确提示切换到项目群。
+
+安装不运行第三方 setup/hooks。每轮冻结技能指令和风格参考文件；继续任务复用原版本。自定义导入仅包含 `SKILL.md`，依赖额外脚本或服务的技能需要相应执行适配。新机器的动画依赖：
+
+```bash
+uv sync
+.venv/bin/python -m playwright install chromium
+brew install ffmpeg
+```
+
+Muse 回复完成和附件交付分别显示。遇到 `Video not found` 时，保留原始回复和已取得的图片，明确标为视频未交付；可在 Muse 面板点击 **重新回收原会话附件**，不会重新发送创作请求。需要先在 Muse 打开该任务的原会话。
+
+验收记录与已知边界见 [2.13 检查记录](docs/MODELDESK_213_AUDIT.md)。
 
 ## 模型连接 / Model connections
 

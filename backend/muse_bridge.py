@@ -44,6 +44,7 @@ NATIVE_FAILURES = {
     "composer_has_draft": "输入框已有草稿，为避免覆盖而停止。",
     "draft_not_verified": "未能核对输入框中的完整任务，未确认发送。",
     "send_outcome_unknown": "已尝试发送但没有取得匹配回执，请先在 Muse 核对。",
+    "reference_upload_unconfirmed": "上游图片未能确认附加到 Muse 输入框，任务未发送；图片仍保存在 ModelDesk 成果中。",
     "thread_changed": "Muse 当前会话已变化，无法继续核对原任务。",
     "request_not_visible": "当前会话中未找到本任务的请求标记。",
 }
@@ -207,7 +208,10 @@ def public_task(task):
             return re.sub(r"https://[^\s<>\[\]{}\"']+", redact, value)
         return value
 
-    return clean(task)
+    result = clean(task)
+    result['media_delivery'] = {'images': sum(a.get('kind') == 'image' for a in task.get('_native_media', [])),
+        'videos': sum(a.get('kind') == 'video' for a in task.get('_native_media', [])), 'errors': task.get('_native_media_errors', [])}
+    return result
 
 
 def native_stage(identifier, *, create=False):
@@ -245,8 +249,14 @@ def import_native_files(task, result):
     files = result.get("downloaded_files")
     if not isinstance(files, list):
         files = []
+    diagnostics = {
+        'native_video_unavailable': 'Muse 原生附件显示 Video not found：视频资源不可用，文字回复不代表已交付。',
+        'native_download_save_panel_unavailable': 'Muse 下载按钮未打开保存窗口，尚未取得附件。',
+        'native_download_focus_unconfirmed': '附件下载时 Muse 窗口焦点未确认，请保持 Mac 解锁并打开对应会话。',
+        'native_gallery_preview_unconfirmed': 'Muse 图片预览未就绪，尚未取得原图。',
+    }
     if result.get("download_errors"):
-        errors.append("Muse 附件下载未全部确认；未取得的文件不能作为已完成媒体。")
+        errors.extend(dict.fromkeys(diagnostics.get(code, 'Muse 附件下载未确认，实际文件尚未回收。') for code in result['download_errors'] if isinstance(code, str)))
     if not files:
         return assets, errors
     try:
@@ -393,7 +403,7 @@ class MuseManager:
                 str(self.helper), command, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
                 env={key: os.environ[key] for key in ["HOME", "PATH", "LANG", "TMPDIR"] if key in os.environ})
             try:
-                timeout = 30 if command == "submit" else 120 if (payload or {}).get("download_directory") else 20
+                timeout = (90 if (payload or {}).get("attachment_names") else 30) if command == "submit" else 120 if (payload or {}).get("download_directory") else 20
                 output, _ = await asyncio.wait_for(process.communicate(json.dumps(payload or {}, ensure_ascii=False).encode()), timeout=timeout)
                 if process.returncode != 0 or len(output) > 1500000:
                     raise RuntimeError("Muse 原生桥接未返回有效结果，请查看 Muse 窗口。")
@@ -454,7 +464,28 @@ class MuseManager:
         self.validate_member(task)
         return result
 
-    async def create(self, request, *, parent_job_id=None):
+    async def refresh_media(self, identifier, project_id):
+        task = self.get(identifier, project_id)
+        canonical = self.records[identifier]
+        if task.get('sent') is not True or task.get('status') != 'complete' or task.get('monitoring'):
+            return task
+        # Observe the same visible conversation; never submit a new generation.
+        path, descriptor = native_stage(identifier, create=True)
+        os.close(descriptor)
+        result = await self.task_helper_call(canonical, 'observe', {'request_id': task['request_id'], 'thread_url': task['thread_url'], 'download_directory': str(path)})
+        if result.get('ok') and result.get('thread_url') == task['thread_url'] and result.get('request_id') == task['request_id']:
+            media, errors = await asyncio.to_thread(import_native_files, canonical, result)
+            existing = canonical.setdefault('_native_media', [])
+            for asset in media:
+                if not any(saved['sha256'] == asset['sha256'] for saved in existing):
+                    existing.append(asset)
+            canonical['_native_media_errors'] = errors
+            self.save(canonical, 'attachments_refreshed_without_send')
+        else:
+            raise HTTPException(409, '未确认原会话。请在 Muse 打开此任务的原会话，再重新回收附件；没有重新发送。')
+        return self.get(identifier, project_id)
+
+    async def create(self, request, *, parent_job_id=None, reference_assets=None):
         parent_link = {"parent_job_id": checked_id(parent_job_id)} if parent_job_id is not None else {}
         body = request.model_dump(mode="json")
         if body["project_id"]:
@@ -469,6 +500,24 @@ class MuseManager:
                 "created_at": timestamp, "updated_at": timestamp, "submitted_at": None, "finished_at": None, "events": [],
                 "monitoring": True, "verification": VERIFICATION, "completion_evidence": None,
                 "source_kind": "native_muse", "member": member, "team_revision": revision}
+        if reference_assets:
+            if not parent_job_id or len(reference_assets) > 4:
+                raise HTTPException(422, '图片交接必须关联当前父任务，最多四张')
+            from .delivery_media import store as media_store
+            folder, descriptor = native_stage(identifier, create=True)
+            os.close(descriptor)
+            names = []
+            for value in reference_assets:
+                asset, raw = media_store.read({'id': parent_job_id, 'project_id': body['project_id']}, value['id'])
+                if asset['kind'] != 'image' or asset['sha256'] != value['sha256']:
+                    raise HTTPException(409, '交接图片不匹配当前任务')
+                target = folder / asset['name']
+                descriptor = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+                with os.fdopen(descriptor, 'wb') as handle:
+                    handle.write(raw)
+                names.append(asset['name'])
+            task['_reference_names'] = names
+            task['reference_images'] = [{'id': value['id'], 'sha256': value['sha256']} for value in reference_assets]
         self.records[identifier] = task
         self.save(task, "queued")
         self.tasks[identifier] = asyncio.create_task(self.execute(task))
@@ -497,7 +546,12 @@ class MuseManager:
                     # distinguish 'not delivered' from 'delivered but no receipt'.
                     task.update(status="dispatching", sent=None, uncertain=True, remote_state="unknown")
                     self.save(task, "dispatch_started")
-                    receipt = await self.task_helper_call(task, "submit", {"prompt": framed_prompt(task), "request_id": task["request_id"], "thread_url": None})
+                    submit_payload = {"prompt": framed_prompt(task), "request_id": task["request_id"], "thread_url": None}
+                    if task.get('_reference_names'):
+                        folder, descriptor = native_stage(task['id'])
+                        os.close(descriptor)
+                        submit_payload.update(download_directory=str(folder), attachment_names=task['_reference_names'])
+                    receipt = await self.task_helper_call(task, "submit", submit_payload)
                     if receipt.get("request_id") != task["request_id"]:
                         raise RuntimeError("Muse 发送回执与当前任务不匹配；请在 Muse 核对，不能自动重发。")
                     if receipt.get("sent") is True and valid_thread(receipt.get("thread_url")):
@@ -673,6 +727,11 @@ async def cancel_task(identifier: str, project_id: str | None = None):
 @router.post("/tasks/{identifier}/observe", status_code=202, dependencies=[Depends(local_mutation)])
 async def resume_observing(identifier: str, project_id: str | None = None):
     return public_task(await manager.resume_observing(identifier, project_id))
+
+
+@router.post('/tasks/{identifier}/refresh-media', dependencies=[Depends(local_mutation)])
+async def refresh_task_media(identifier: str, project_id: str | None = None):
+    return public_task(await manager.refresh_media(identifier, project_id))
 
 
 @router.get("/tasks/{identifier}/export")

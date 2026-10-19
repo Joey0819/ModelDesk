@@ -83,7 +83,7 @@ func key(_ code: CGKeyCode, flags: CGEventFlags = []) -> Bool {
     down?.flags = flags; up?.flags = flags; down?.postToPid(app.processIdentifier); up?.postToPid(app.processIdentifier); settle(); return foreground()
 }
 func panelKey(_ code: CGKeyCode, flags: CGEventFlags = []) -> Bool {
-    guard foreground(), snapshot().contains(where: { ["save-panel", "GoToWindow"].contains(string($0, kAXIdentifierAttribute)) }) else { return false }
+    guard foreground(), snapshot().contains(where: { ["save-panel", "open-panel", "GoToWindow"].contains(string($0, kAXIdentifierAttribute)) }) else { return false }
     let down = CGEvent(keyboardEventSource: nil, virtualKey: code, keyDown: true)
     let up = CGEvent(keyboardEventSource: nil, virtualKey: code, keyDown: false)
     // The native save panel can be hosted by AppKit's XPC service. Posting to
@@ -328,6 +328,36 @@ func downloadGalleryImage(_ button: AXUIElement, caption: String, directory: URL
     return file
 }
 
+func attachReference(_ filename: String, directory: URL) -> Bool {
+    guard filename.range(of: #"^[a-f0-9-]{36}\.(png|jpg|jpeg|webp)$"#, options: .regularExpression) != nil else { return false }
+    let file = directory.appendingPathComponent(filename)
+    guard file.resolvingSymlinksInPath().path == file.path,
+          let info = try? FileManager.default.attributesOfItem(atPath: file.path),
+          info[.type] as? FileAttributeType == .typeRegular,
+          (info[.referenceCount] as? NSNumber)?.intValue == 1,
+          ((info[.size] as? NSNumber)?.intValue ?? 0) <= 25000000 else { return false }
+    guard let box = composer(snapshot()).flatMap(rect), click(CGPoint(x: box.minX + 30, y: box.maxY - 30)) else { return false }
+    defer {
+        if snapshot().contains(where: { string($0, kAXIdentifierAttribute) == "open-panel" }), let cancel = snapshot().first(where: { string($0, kAXIdentifierAttribute) == "CancelButton" }) { _ = press(cancel) }
+    }
+    settle(0.2)
+    let menu = snapshot().first { [kAXMenuItemRole, kAXButtonRole].contains(string($0, kAXRoleAttribute)) && ["Upload file", "Upload files", "Attach file", "Choose file", "From computer"].contains(label($0)) }
+    if let menu = menu { _ = press(menu); settle(0.3) }
+    guard snapshot().contains(where: { string($0, kAXIdentifierAttribute) == "open-panel" }), panelKey(5, flags: [.maskCommand, .maskShift]) else { return false }
+    settle(0.2)
+    guard let field = snapshot().first(where: { string($0, kAXIdentifierAttribute) == "PathTextField" }) else { return false }
+    _ = AXUIElementSetAttributeValue(field, kAXValueAttribute as CFString, file.path as CFString)
+    guard string(field, kAXValueAttribute) == file.path, panelKey(36) else { return false }
+    settle(0.3)
+    guard let open = snapshot().first(where: { string($0, kAXIdentifierAttribute) == "OpenButton" || string($0, kAXRoleAttribute) == kAXButtonRole && label($0) == "Open" }), press(open) else { return false }
+    for _ in 0..<30 {
+        settle(0.2)
+        let tree = snapshot()
+        if !tree.contains(where: { string($0, kAXIdentifierAttribute) == "open-panel" }), tree.contains(where: { label($0).contains(filename) || string($0, kAXValueAttribute).contains(filename) }) { return true }
+    }
+    return false
+}
+
 let initial = snapshot()
 if command == "probe" {
     let ready = (emptyNewThread(initial) || newChatButton(initial) != nil || chatMenuButton(initial) != nil || backToMainButton(initial) != nil) && mainWindowFocused()
@@ -369,6 +399,13 @@ if command == "submit" {
     let copied = clipboard.read()
     if copied.hasPrefix(requestTag) { clipboard.owned.insert(copied) }
     guard copied == payload, threadURL(snapshot()) == "https://muse.ai/thread/new", foreground(), mainWindowFocused() else { clipboard.restore(); fail("draft_not_verified") }
+    if let names = input["attachment_names"] as? [String], !names.isEmpty {
+        guard names.count <= 4, let directory = stagingDirectory() else { clipboard.restore(); fail("reference_upload_unconfirmed") }
+        for name in names {
+            guard attachReference(name, directory: directory) else { clipboard.restore(); fail("reference_upload_unconfirmed") }
+        }
+        guard let editor = composer(snapshot()).flatMap(rect), click(CGPoint(x: editor.minX + editor.width * 0.35, y: editor.midY)) else { clipboard.restore(); fail("reference_upload_unconfirmed") }
+    }
     guard key(124), key(36) else { clipboard.restore(); fail("send_outcome_unknown", uncertain: true) }
     clipboard.restore()
     for _ in 0..<40 {
@@ -387,6 +424,7 @@ if command == "observe" {
     var resources: [[String: String]] = []
     var replyRoots: [AXUIElement] = []
     var replyParts: [String] = []
+    var unavailableVideo = false
     var attachments: [(button: AXUIElement, filename: String, gallery: Bool)] = []
     var sawRequest = false
     var sawAssistantText = false
@@ -404,6 +442,7 @@ if command == "observe" {
         // Assistant containers expose their own Copy response control; dates,
         // user messages, suggested prompts and tool approval cards do not.
         let controls = nodes(item)
+        if controls.contains(where: { label($0).contains("Video not found") || string($0, kAXValueAttribute).contains("Video not found") }) { unavailableVideo = true }
         let legacyAssistant = controls.contains { label($0) == "Copy response" }
         // New Muse versions expose reply actions via a popup rather than a
         // permanent Copy response button. Accept this shape only with the
@@ -444,7 +483,7 @@ if command == "observe" {
     if !replyParts.isEmpty { messages.append(["role": "assistant", "text": String(replyParts.joined(separator: "\n\n").prefix(120000))]) }
     guard threadURL(snapshot()) == expected else { fail("thread_changed") }
     let finished = completedReply && !isBusy(initial) && !hasApproval(initial)
-    var downloaded: [[String: String]] = []; var downloadErrors: [String] = []
+    var downloaded: [[String: String]] = []; var downloadErrors: [String] = unavailableVideo ? ["native_video_unavailable"] : []
     if finished {
         var seen = Set<String>()
         for root in replyRoots {

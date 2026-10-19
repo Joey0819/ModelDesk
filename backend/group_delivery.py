@@ -117,6 +117,10 @@ def execution_evidence(steps, output_limit=5000):
                                for command in step.get("commands", [])[-4:]])
         if type(step.get("commands_observed")) is int:
             entry["commands_omitted"] = max(0, step["commands_observed"] - len(entry["commands"]))
+        if step.get('skill_delivery'):
+            rendered = step['skill_delivery']
+            entry['platform_render'] = {key: rendered.get(key) for key in ['duration_seconds', 'fps', 'decoding', 'has_narration', 'source_sha256', 'renderer']}
+            entry['platform_render']['asset_ids'] = [asset['id'] for asset in rendered.get('assets', [])]
         items.append(entry)
     return items
 

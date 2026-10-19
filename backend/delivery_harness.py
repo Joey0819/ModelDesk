@@ -155,14 +155,18 @@ async def produce_media(manager, job, result, delivery, contract, *, steps=None)
     from .group_delivery import json_document, model_output, execution_evidence
     delivery["media_requirements"] = {key: contract[key] for key in ("images", "videos")}
     delivery.setdefault("media", [])
-    delivery["media_tasks"] = []
+    delivery["media_tasks"] = [task for task in delivery.get("media_tasks", []) if task.get("member_id")]
     if not contract["images"] and not contract["videos"]:
         return
     if not job.get("group_runtime_allowed"):
         delivery["limitations"].append("生成图片和视频需要从已授权的自动完成入口发起。")
         return
     video_provider = contract.get("video_provider", contract["provider"])
-    if contract["videos"] and video_provider not in {"auto", "muse"}:
+    if any(step.get('skill_delivery') for step in (steps or delivery.get('steps', []))):
+        video_provider = 'skill'
+        matched = [asset['id'] for asset in delivery['media'] if asset['kind'] == 'video' and asset['provider'] == 'skill']
+        delivery['media_tasks'].append({'id': 'skill-video', 'kind': 'video', 'provider': 'skill', 'model': 'Lemo-Opuscar / Codex', 'asset_ids': matched, 'asset_id': matched[0] if matched else None, 'status': 'complete' if matched else 'error', 'error': None if matched else '尚未取得 Skill 的实际视频'})
+    if contract["videos"] and video_provider not in {"auto", "muse", "skill"}:
         delivery["limitations"].append("所选提供商尚未接入视频生成能力；保留你的提供商选择，未改派其他服务。")
     delivery["status"] = "working"
     media_progress(manager, job, result, delivery)
@@ -190,7 +194,7 @@ async def produce_media(manager, job, result, delivery, contract, *, steps=None)
                 delivery["media_tasks"].append({"id": f"native-{kind}", "kind": kind, "provider": "muse", "model": "Muse native",
                     "asset_id": matched[0] if matched else None, "asset_ids": matched,
                     "status": "complete" if count >= needed else "error", "error": None if count >= needed else "尚未取得足够的真实 Muse 媒体文件"})
-    direct_count = min(4, contract["images"]) if contract["provider"] != "muse" else 0
+    direct_count = min(4, contract["images"]) if contract["provider"] != "muse" and not contract.get("image_member_ids") else 0
     saved_images = {asset.get("slot_id"): asset for asset in delivery["media"] if asset.get("kind") == "image"}
     if direct_count:
         briefs = []

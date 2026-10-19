@@ -25,7 +25,10 @@ from .model_connections import router as model_connections_router, runtime_route
 from .delivery_media import router as delivery_media_router
 from .council import run_full_council, generate_conversation_title, stage1_collect_responses, stage2_collect_rankings, stage3_synthesize_final, calculate_aggregate_rankings
 
+from .skill_library import router as skills_router
+
 app = FastAPI(title="ModelDesk API")
+app.include_router(skills_router)
 app.include_router(workbench_router)
 app.include_router(projects_router)
 app.include_router(original_apps_router)

@@ -63,6 +63,9 @@ test('group routing uses explicit member IDs and never text or model-generated m
   assert.deepEqual(body.attachment_ids, ['image']); assert.deepEqual(body.tools, ['math']); assert.equal(body.context_turns, 4);
   assert.equal(body.rounds, 1);
   assert.equal(body.delivery_mode, 'auto');
+  assert.equal(body.context_mode, 'continue');
+  assert.equal(groupMessageRequest({ prompt: 'New story', contextMode: 'fresh' }).context_mode, 'fresh');
+  assert.equal(groupMessageRequest({ prompt: 'Continue', contextMode: 'invalid' }).context_mode, 'continue');
   assert.equal(groupMessageRequest({ prompt: 'Discuss', recipientIds: [], context: {}, deliveryMode: 'discussion' }).delivery_mode, 'discussion');
   assert.equal(groupMessageRequest({ prompt: 'Work', recipientIds: [], context: {}, deliveryMode: 'unknown' }).delivery_mode, 'auto');
   assert.equal(groupMessageRequest({ prompt: 'Two rounds', recipientIds: [], context: {}, rounds: 2 }).rounds, 2);

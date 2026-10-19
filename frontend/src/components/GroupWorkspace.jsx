@@ -46,6 +46,8 @@ import { CopyTextButton } from './ConversationActions';
 import MissionTeamPicker from './MissionTeamPicker';
 import AttachmentComposer from './AttachmentComposer';
 import ContextAttachments from './ContextAttachments';
+import TaskContextControl from './TaskContextControl';
+import './TaskContextControl.css';
 import JobAttachments from './JobAttachments';
 import GroupAgentTasks from './GroupAgentTasks';
 import DeliveryOutputOptions from './DeliveryOutputOptions';
@@ -187,6 +189,7 @@ function GroupRoom({ roomId, projectId, status, models, context, onContextChange
   const [deliveryMode, setDeliveryMode] = useState(saved.deliveryMode);
   const [outputOptions, setOutputOptions] = useState({ outputFormat: saved.outputFormat, imageCount: saved.imageCount, mediaProvider: saved.mediaProvider });
   const [contextTurns, setContextTurns] = useState(saved.contextTurns);
+  const [contextMode, setContextMode] = useState('continue');
   const [attachmentPending, setAttachmentPending] = useState(false);
   const [settings, setSettings] = useState(false);
   const [showLatest, setShowLatest] = useState(false);
@@ -376,11 +379,13 @@ function GroupRoom({ roomId, projectId, status, models, context, onContextChange
       recipientIds,
       context,
       contextTurns,
+      contextMode,
       rounds: deliveryMode === 'discussion' ? activeHarness.rounds || 1 : 1,
       deliveryMode,
       ...outputOptions,
     }));
     if (job) {
+      setContextMode('continue');
       if (deliveryMode === 'auto') {
         pendingDeliveryRevealRef.current = job.id;
         setHarnessNotice('任务已启动。系统会按要求安排群内成员，执行后整理完整成果；请在本轮进度中查看实际状态。');
@@ -540,6 +545,7 @@ function GroupRoom({ roomId, projectId, status, models, context, onContextChange
         </div>
         {!runtimeMember && deliveryMode === 'auto' && <DeliveryOutputOptions value={outputOptions} onChange={setOutputOptions} disabled={busy || Boolean(activeJob)} />}
         <form className="composer group-composer" onSubmit={send} onDragOver={(event) => { if (event.dataTransfer.types.includes('Files')) event.preventDefault(); }} onDrop={(event) => attachmentRef.current?.handleDrop(event)}>
+          {!runtimeMember && <TaskContextControl value={contextMode} onChange={setContextMode} disabled={busy || Boolean(activeJob)} jobs={jobs} />}
           {!runtimeMember && <AttachmentComposer ref={attachmentRef} attachmentIds={context.attachment_ids} onChange={(ids) => onContextChange({ ...context, attachment_ids: ids })} includeShared={context.include_project_assets} onIncludeShared={(include) => onContextChange({ ...context, include_project_assets: include })} disabled={busy || Boolean(activeJob)} onPendingChange={setAttachmentPending} />}
           <textarea
             aria-label="群聊消息"

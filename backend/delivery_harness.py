@@ -21,6 +21,20 @@ class ImagePlan(BaseModel):
     images: list[ImageBrief] = Field(min_length=1, max_length=4)
 
 
+def explicit_video_constraints(goal):
+    constraints = {}
+    match = re.search(r"(\d{1,4})\s*[-–—~～至到]\s*(\d{1,4})\s*(秒|分钟|seconds?|minutes?)", goal, re.I)
+    if match:
+        scale = 60 if match[3].lower() in {"分钟", "minute", "minutes"} else 1
+        low, high = int(match[1]) * scale, int(match[2]) * scale
+        if 0 < low <= high <= 3600:
+            constraints.update(min_duration_seconds=low, max_duration_seconds=high)
+    for key, term in [("audio_required", r"旁白|配音|narration|voiceover"), ("captions_required", r"字幕|subtitles?|captions?")]:
+        if re.search(term, goal, re.I):
+            constraints[key] = not bool(re.search(r"(?:不要|无需|不需要|without|no)\s*(?:中文|Chinese)?\s*(?:" + term + ")", goal, re.I))
+    return constraints
+
+
 def media_contract(job, goal):
     mode = job.get("group_output_format", "auto")
     count = job.get("group_image_count", 2)

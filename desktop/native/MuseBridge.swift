@@ -303,6 +303,31 @@ func downloadAttachment(_ button: AXUIElement, filename expectedFilename: String
     cancelSave(); return downloadFailed("native_download_file_unconfirmed")
 }
 
+func downloadGalleryImage(_ button: AXUIElement, caption: String, directory: URL, expected: String) -> [String: String]? {
+    guard threadURL(snapshot()) == expected, activate(), mainWindowFocused() else { return downloadFailed("native_gallery_focus_changed") }
+    // Never dismiss an existing user preview or save dialog. Only the modal
+    // opened by this exact current-task attachment belongs to this operation.
+    let before = snapshot()
+    guard !before.contains(where: { label($0) == "Download" || string($0, kAXIdentifierAttribute) == "save-panel" }) else { return downloadFailed("native_gallery_existing_dialog") }
+    _ = press(button)
+    var preview: [AXUIElement] = []
+    for _ in 0..<20 {
+        preview = snapshot()
+        if preview.contains(where: { label($0) == "Download" }) { break }; settle(0.1)
+    }
+    let downloads = preview.filter { string($0, kAXRoleAttribute) == kAXButtonRole && label($0) == "Download" }
+    let closes = preview.filter { string($0, kAXRoleAttribute) == kAXButtonRole && label($0) == "Close" }
+    guard threadURL(preview) == expected, downloads.count == 1, closes.count == 1 else { return downloadFailed("native_gallery_preview_unconfirmed") }
+    var file = downloadAttachment(downloads[0], filename: caption, directory: directory, expected: expected)
+    let after = snapshot()
+    if threadURL(after) == expected, !after.contains(where: { string($0, kAXIdentifierAttribute) == "save-panel" }) {
+        _ = press(closes[0])
+        settle(0.2)
+    }
+    file?["label"] = String(caption.prefix(200))
+    return file
+}
+
 let initial = snapshot()
 if command == "probe" {
     let ready = (emptyNewThread(initial) || newChatButton(initial) != nil || chatMenuButton(initial) != nil || backToMainButton(initial) != nil) && mainWindowFocused()
@@ -362,7 +387,7 @@ if command == "observe" {
     var resources: [[String: String]] = []
     var replyRoots: [AXUIElement] = []
     var replyParts: [String] = []
-    var attachments: [(button: AXUIElement, filename: String)] = []
+    var attachments: [(button: AXUIElement, filename: String, gallery: Bool)] = []
     var sawRequest = false
     var sawAssistantText = false
     var completedReply = false
@@ -387,6 +412,15 @@ if command == "observe" {
         let downloadButtons = controls.filter { string($0, kAXRoleAttribute) == kAXButtonRole && ["Download video", "Download image", "Download picture"].contains(label($0)) }
         let mediaOpen = controls.first { label($0).hasPrefix("Open animated video ") || label($0).hasPrefix("Open image ") || label($0).hasPrefix("Open picture ") }
         let mediaAttachment = !downloadButtons.isEmpty && mediaOpen != nil
+        // Generated images now download from a preview modal, not inline.
+        // Exclude explicitly labelled sampled video frames from keyframe output.
+        for image in controls where string(image, kAXRoleAttribute) == kAXButtonRole && label(image).hasPrefix("Open generated image ") {
+            let caption = string(image, kAXHelpAttribute).isEmpty ? String(label(image).dropFirst("Open generated image ".count)) : string(image, kAXHelpAttribute)
+            if caption.range(of: #"^t\s*=\s*\d+(?:\.\d+)?s(?:\s|$)"#, options: .regularExpression) == nil,
+               !attachments.contains(where: { $0.gallery && $0.filename == caption }) {
+                attachments.append((button: image, filename: caption, gallery: true))
+            }
+        }
         let framedReply = text.trimmingCharacters(in: .whitespacesAndNewlines).hasSuffix(closingTag) && assistantActions
         if legacyAssistant || assistantActions || (mediaAttachment && sawAssistantText) {
             // Restore only the marker boundary lost by rendered soft breaks;
@@ -399,7 +433,7 @@ if command == "observe" {
             if mediaAttachment && sawAssistantText, let opened = mediaOpen {
                 let openedLabel = label(opened)
                 let prefix = ["Open animated video ", "Open image ", "Open picture "].first { openedLabel.hasPrefix($0) } ?? ""
-                attachments.append(contentsOf: downloadButtons.map { (button: $0, filename: String(openedLabel.dropFirst(prefix.count))) })
+                attachments.append(contentsOf: downloadButtons.map { (button: $0, filename: String(openedLabel.dropFirst(prefix.count)), gallery: false) })
             }
             if trimmed.hasSuffix(closingTag) {
                 completedReply = true
@@ -419,8 +453,11 @@ if command == "observe" {
             }
         }
         if let directory = stagingDirectory() {
-            for attachment in attachments.prefix(4) {
-                if let file = downloadAttachment(attachment.button, filename: attachment.filename, directory: directory, expected: expected) { downloaded.append(file) }
+            for attachment in attachments.prefix(5) {
+                let file = attachment.gallery
+                    ? downloadGalleryImage(attachment.button, caption: attachment.filename, directory: directory, expected: expected)
+                    : downloadAttachment(attachment.button, filename: attachment.filename, directory: directory, expected: expected)
+                if let file = file { downloaded.append(file) }
                 else { downloadErrors.append(downloadDiagnostic) }
             }
         } else if !attachments.isEmpty { downloadErrors.append("native_private_staging_unavailable") }

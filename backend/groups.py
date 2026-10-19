@@ -44,6 +44,7 @@ class MessageRequest(BaseModel):
     muse_task_id: uuid.UUID | None = None
     rounds: int = Field(default=1, ge=1, le=6)
     context_turns: int = Field(default=12, ge=1, le=40)
+    context_mode: Literal["continue", "fresh"] = "continue"
     attachment_ids: list[uuid.UUID] = Field(default_factory=list, max_length=30)
     include_project_assets: bool = True
     snapshot_id: uuid.UUID | None = None
@@ -335,7 +336,7 @@ async def send_message(identifier: str, request: MessageRequest, transport: Requ
     missing = list(dict.fromkeys(model for model in requested_models if model not in catalog))
     if missing:
         raise HTTPException(422, "这些接收成员的模型尚未连接：" + "、".join(missing))
-    body = request.model_dump(mode="json", exclude={"recipient_member_ids", "muse_task_id", "delivery_mode", "output_format", "image_count", "media_provider"})
+    body = request.model_dump(mode="json", exclude={"recipient_member_ids", "muse_task_id", "delivery_mode", "output_format", "image_count", "media_provider", "context_mode"})
     try:
         job_request = workbench.JobRequest(**body, mode="group", project_id=room["project_id"], conversation_id=room["id"],
                                            models=room_models(room), roles=room_roles(room))
@@ -346,6 +347,7 @@ async def send_message(identifier: str, request: MessageRequest, transport: Requ
     if store.get(room["id"], room["project_id"])["team_revision"] != room["team_revision"]:
         raise HTTPException(409, "群成员在发送期间发生变化，请确认新成员后重新发送")
     metadata = {"group_room_id": room["id"], "group_title": room["title"],
+                "group_context_mode": request.context_mode,
                 "group_team_snapshot": room["team_snapshot"], "group_recipient_member_ids": selected,
                 "group_broadcast": broadcast, "group_coordinator_model": room["team_snapshot"].get("coordinator_model"),
                 "group_agent_sources": freeze_agent_sources(room), "group_delivery_mode": request.delivery_mode,

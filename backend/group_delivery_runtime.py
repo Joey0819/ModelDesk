@@ -16,11 +16,13 @@ from .harness.store import checked_id
 
 
 MAX_PROMPT = 12000
+MAX_MUSE_PROMPT = 22000
 MAX_OUTPUT = 16000
 MAX_COMMAND_RECORDS = 20
 MAX_COMMAND_PACKET_CHARS = 12000
 CREATE_TIMEOUT_SECONDS = 30
 RUNTIME_TIMEOUT_SECONDS = 600
+MUSE_TIMEOUT_SECONDS = 1800
 POLL_SECONDS = .25
 _locks = {}
 
@@ -205,13 +207,15 @@ async def run_runtime_step(job, member, prompt, *, native_allowed=False, revisio
         if engine == "muse" and native_allowed is not True:
             return {"status": "blocked", "task_id": None, "engine": engine, "output": "", "sources": [],
                     "error": "Muse 原生任务只能由本机入口授权执行；请在 Mac 上继续"}
-        if not isinstance(prompt, str) or not prompt.strip() or len(prompt) > MAX_PROMPT:
-            raise ValueError("执行任务需包含 1–12000 字符的完整需求和引用材料")
+        limit = MAX_MUSE_PROMPT if engine == "muse" else MAX_PROMPT
+        if not isinstance(prompt, str) or not prompt.strip() or len(prompt) > limit:
+            raise ValueError(f"执行任务需包含 1–{limit} 字符的完整需求和引用材料")
         prompt_sha256 = hashlib.sha256(prompt.encode()).hexdigest()
+        runtime_seconds = MUSE_TIMEOUT_SECONDS if engine == "muse" else RUNTIME_TIMEOUT_SECONDS
         if engine == "muse":
             from .muse_bridge import manager, MuseTaskRequest
             request = MuseTaskRequest(project_id=project_id, room_id=room_id, member_id=member["id"], prompt=prompt,
-                                      timeout_seconds=RUNTIME_TIMEOUT_SECONDS)
+                                      timeout_seconds=runtime_seconds)
         else:
             from .group_tasks import manager, TaskRequest
             if not project_id:
@@ -257,7 +261,7 @@ async def run_runtime_step(job, member, prompt, *, native_allowed=False, revisio
                         identifier = _link(manager, created, scope, member, prompt_sha256, revision_of)
                 except asyncio.TimeoutError:
                     raise ValueError("创建执行任务超时；没有自动重试")
-            deadline = time.monotonic() + RUNTIME_TIMEOUT_SECONDS + CREATE_TIMEOUT_SECONDS
+            deadline = time.monotonic() + runtime_seconds + CREATE_TIMEOUT_SECONDS
             while True:
                 _scope(job, member)
                 item = _get(manager, identifier, project_id, room_id, engine)

@@ -99,7 +99,7 @@ def evidence(result):
     return list(reversed(items))
 
 
-def execution_evidence(steps):
+def execution_evidence(steps, output_limit=5000):
     """Fit actual outputs from every executor, before any discussion transcript."""
     items = []
     for step in steps:
@@ -107,8 +107,8 @@ def execution_evidence(steps):
                  "output_sha256", "patch_sha256", "exit_code", "thread_url", "commands_observed", "commands_omitted")}
         raw = str(step.get("output") or "")
         files = step.get("changed_files") or []
-        entry.update(instruction=str(step.get("instruction") or "")[:1000], output=raw[:5000],
-                     output_truncated=bool(step.get("truncated")) or len(raw) > 5000,
+        entry.update(instruction=str(step.get("instruction") or "")[:1000], output=raw if output_limit is None else raw[:output_limit],
+                     output_truncated=bool(step.get("truncated")) or output_limit is not None and len(raw) > output_limit,
                      changed_files=[{"path": str(item.get("path") or "")[:300], "status": item.get("status")} for item in files[:20]],
                      changed_files_omitted=max(0, len(files) - 20),
                      commands=[{**command, "command": str(command.get("command") or "")[:300],

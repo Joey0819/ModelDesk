@@ -61,7 +61,7 @@ class MuseTaskRequest(BaseModel):
     project_id: uuid.UUID | None = None
     room_id: uuid.UUID | None = None
     member_id: str | None = Field(default=None, pattern=r"^[A-Za-z][A-Za-z0-9_-]{0,39}$")
-    prompt: str = Field(min_length=1, max_length=12000)
+    prompt: str = Field(min_length=1, max_length=22000)
     timeout_seconds: int = Field(default=600, ge=30, le=1800)
 
     @field_validator("prompt")
@@ -254,7 +254,7 @@ def import_native_files(task, result):
     except (OSError, ValueError):
         return [], ["Muse 私有附件目录无法安全读取，未导入媒体。"]
     try:
-        for item in files[:4]:
+        for item in files[:5]:
             filename = item.get("name") if isinstance(item, dict) else None
             if not isinstance(filename, str) or not re.fullmatch(r"[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}\.(?:mp4|webm|png|jpe?g|webp)", filename):
                 errors.append("Muse 附件标识无效，未读取该文件。")
@@ -393,7 +393,7 @@ class MuseManager:
                 str(self.helper), command, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
                 env={key: os.environ[key] for key in ["HOME", "PATH", "LANG", "TMPDIR"] if key in os.environ})
             try:
-                timeout = 30 if command == "submit" else 60 if (payload or {}).get("download_directory") else 20
+                timeout = 30 if command == "submit" else 120 if (payload or {}).get("download_directory") else 20
                 output, _ = await asyncio.wait_for(process.communicate(json.dumps(payload or {}, ensure_ascii=False).encode()), timeout=timeout)
                 if process.returncode != 0 or len(output) > 1500000:
                     raise RuntimeError("Muse 原生桥接未返回有效结果，请查看 Muse 窗口。")

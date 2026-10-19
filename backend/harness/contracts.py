@@ -1,6 +1,6 @@
 """Typed planning and review contracts, independent of model providers."""
 from typing import Literal
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class Requirement(BaseModel):
@@ -9,6 +9,18 @@ class Requirement(BaseModel):
     description: str = Field(min_length=1, max_length=500)
     kind: Literal["text", "image", "video", "code", "tests"] = "text"
     count: int = Field(default=1, ge=1, le=20)
+    min_duration_seconds: float | None = Field(default=None, gt=0, le=3600)
+    max_duration_seconds: float | None = Field(default=None, gt=0, le=3600)
+    audio_required: bool = False
+    captions_required: bool = False
+
+    @model_validator(mode="after")
+    def video_constraints(self):
+        if self.min_duration_seconds and self.max_duration_seconds and self.min_duration_seconds > self.max_duration_seconds:
+            raise ValueError("视频时长范围无效")
+        if self.kind != "video" and (self.min_duration_seconds or self.max_duration_seconds or self.audio_required or self.captions_required):
+            raise ValueError("只有视频验收项可指定视频约束")
+        return self
 
 
 class Step(BaseModel):

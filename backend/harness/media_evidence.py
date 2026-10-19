@@ -38,12 +38,13 @@ def _video(raw):
         source = Path(folder) / 'media'
         source.write_bytes(raw)
         policy = ['-protocol_whitelist', 'file,pipe', '-format_whitelist', 'mov,matroska,webm']
-        probe = subprocess.run([ffprobe, '-v', 'error', *policy, '-select_streams', 'v:0',
-            '-show_entries', 'stream=width,height:format=duration', '-of', 'json', str(source)],
+        probe = subprocess.run([ffprobe, '-v', 'error', *policy,
+            '-show_entries', 'stream=codec_type,width,height:format=duration', '-of', 'json', str(source)],
             capture_output=True, timeout=10, check=True)
         data = json.loads(probe.stdout)
         duration = float(data['format']['duration'])
-        stream = data['streams'][0]
+        stream = next(item for item in data['streams'] if item.get('codec_type') == 'video')
+        audio_streams = sum(item.get('codec_type') == 'audio' for item in data['streams'])
         width, height = int(stream['width']), int(stream['height'])
         if not math.isfinite(duration) or not 0 < duration <= 3600 or not 0 < width * height <= 40_000_000:
             raise ValueError('视频超出画面检查范围')
@@ -56,7 +57,7 @@ def _video(raw):
                 '-f', 'image2pipe', '-c:v', 'mjpeg', 'pipe:1'], capture_output=True, timeout=15, check=True)
             image, _ = _image(frame.stdout)
             frames.append((timestamp, image))
-    return {'duration_seconds': round(duration, 3), 'width': width, 'height': height}, frames
+    return {'duration_seconds': round(duration, 3), 'width': width, 'height': height, 'audio_streams': audio_streams}, frames
 
 
 def inspect_media(job, assets):

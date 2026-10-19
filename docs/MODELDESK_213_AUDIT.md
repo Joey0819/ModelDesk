@@ -15,6 +15,8 @@ This inspection covers role routing, task context, native Muse handoff, actual m
 | Verification frames appeared as unrequested deliverable images. | Store frame samples as evidence separately from requested outputs. | Media collection excludes skill-frame slots from delivery counts and the final gallery. |
 | Runtime workers could re-read unrelated recent group context. | Automatic children use the parent's frozen task and explicit upstream handoffs; selected Skills are frozen before execution. | Separate fresh-task context and resume behavior remain intact; no automatic memory deletion. |
 
+The artifact panel leads with the actual document, images, and video. Detailed validation and execution evidence are expandable below it; a partial-result banner remains visible.
+
 ## Configuring Skills
 
 Open **Agent 与连接 → Skills 能力库**, install Lemo or import `SKILL.md`, then open **项目 Agent → 成员与分工**, check the desired Skill, save, and sync the group. Use **自动完成** in the project group. The Ruler remains a reasoning LLM; the image role and executable Agent have distinct capabilities.

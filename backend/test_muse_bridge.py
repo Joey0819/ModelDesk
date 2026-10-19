@@ -528,11 +528,15 @@ class MuseTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_timeout_preserves_reply_without_remote_cancel(self):
         driver = self.driver([{ "messages": [{"role": "assistant", "text": "still working"}], "busy": True, "waiting_user": False}])
-        with patch.object(self.manager, "helper_call", driver), patch.object(muse, "time", SimpleNamespace(monotonic=iter([0, 0, 1801]).__next__)):
+        with patch.object(self.manager, "helper_call", driver), patch.object(muse, "time", SimpleNamespace(monotonic=iter([0, 0, 1801]).__next__, time=lambda: 1234)):
             result = await self.settle(await self.manager.create(self.request(timeout_seconds=30)))
         self.assertEqual(result["status"], "interrupted")
         self.assertEqual(result["response"], "still working")
         self.assertEqual(result["remote_state"], "unknown")
+        self.assertEqual(result["_last_native_observation"], {
+            "at": 1234, "busy": True, "waiting_user": False,
+            "thread_url": result["thread_url"], "request_id": result["request_id"],
+        })
 
     def test_thread_urls_are_exact_public_muse_threads(self):
         self.assertTrue(valid_thread("https://muse.ai/thread/" + str(uuid.uuid4())))

@@ -23,6 +23,7 @@ MAX_COMMAND_PACKET_CHARS = 12000
 CREATE_TIMEOUT_SECONDS = 30
 RUNTIME_TIMEOUT_SECONDS = 600
 MUSE_TIMEOUT_SECONDS = 1800
+MAX_AUTOMATIC_OBSERVE_RENEWALS = 1
 POLL_SECONDS = .25
 _locks = {}
 
@@ -192,6 +193,30 @@ def _finished(manager, item, engine, project_id, room_id):
     return None
 
 
+def _can_renew_muse_observation(item):
+    """Only a fresh matched busy receipt permits another local observation.
+
+    This never retries submission, permissions, unknown dispatch, user stops,
+    changed conversations or unverified legacy records.
+    """
+    from .muse_bridge import unverified_generation, valid_thread
+    observation = item.get("_last_native_observation") or {}
+    events = item.get("events") or []
+    observed_at = observation.get("at")
+    return (
+        item.get("status") == "interrupted" and item.get("sent") is True
+        and not item.get("monitoring") and not unverified_generation(item)
+        and item.get("source_kind") == "native_muse"
+        and valid_thread(item.get("thread_url"))
+        and bool(events) and events[-1].get("type") == "observation_timeout"
+        and observation.get("busy") is True and observation.get("waiting_user") is False
+        and observation.get("thread_url") == item.get("thread_url")
+        and observation.get("request_id") == item.get("request_id")
+        and isinstance(observed_at, (int, float)) and 0 <= time.time() - observed_at <= 30
+        and item.get("automatic_observe_renewals", 0) < MAX_AUTOMATIC_OBSERVE_RENEWALS
+    )
+
+
 async def run_runtime_step(job, member, prompt, *, native_allowed=False, revision_of=None):
     """Run one saved typed member and return actual output with provenance.
 
@@ -261,11 +286,18 @@ async def run_runtime_step(job, member, prompt, *, native_allowed=False, revisio
                         identifier = _link(manager, created, scope, member, prompt_sha256, revision_of)
                 except asyncio.TimeoutError:
                     raise ValueError("创建执行任务超时；没有自动重试")
-            deadline = time.monotonic() + runtime_seconds + CREATE_TIMEOUT_SECONDS
+            observation_windows = 1 + MAX_AUTOMATIC_OBSERVE_RENEWALS if engine == "muse" else 1
+            deadline = time.monotonic() + runtime_seconds * observation_windows + CREATE_TIMEOUT_SECONDS
             while True:
                 _scope(job, member)
                 item = _get(manager, identifier, project_id, room_id, engine)
                 _check_child(item, *scope, member)
+                if engine == "muse" and time.monotonic() < deadline and _can_renew_muse_observation(item):
+                    canonical = manager.records[identifier]
+                    canonical["automatic_observe_renewals"] = canonical.get("automatic_observe_renewals", 0) + 1
+                    manager.save(canonical, "automatic_observation_renewed_without_send")
+                    await manager.resume_observing(identifier, project_id)
+                    continue
                 finished = _finished(manager, item, engine, project_id, room_id)
                 if finished is not None:
                     if engine == "muse" and finished["status"] == "blocked" and item.get("monitoring"):

@@ -241,6 +241,59 @@ class RuntimeDeliveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn(child["id"], self.muse.tasks)
         resume.assert_not_called()
 
+    async def test_busy_muse_timeout_renews_observation_once_without_resubmitting(self):
+        original_observe = self.muse.observe
+        observations, submits = [], []
+
+        async def helper(command, payload=None):
+            if command == "submit":
+                submits.append(payload["request_id"])
+            return await self.muse_helper(command, payload)
+
+        async def observe(task):
+            observations.append(task["id"])
+            if len(observations) == 1:
+                task.update(status="interrupted", uncertain=True,
+                            _last_native_observation={"at": runtime.time.time(), "busy": True, "waiting_user": False,
+                                                      "thread_url": task["thread_url"], "request_id": task["request_id"]})
+                self.muse.save(task, "observation_timeout")
+            else:
+                await original_observe(task)
+
+        with patch.object(self.muse, "helper_call", helper), patch.object(self.muse, "observe", observe):
+            result = await runtime.run_runtime_step(self.job, self.designer, "Produce images", native_allowed=True)
+        self.assertEqual(result["status"], "complete", result)
+        self.assertEqual(observations, [result["task_id"], result["task_id"]])
+        self.assertEqual(len(submits), 1)
+        child = self.muse.records[result["task_id"]]
+        self.assertEqual(child["automatic_observe_renewals"], 1)
+        self.assertNotIn("_last_native_observation", muse_bridge.public_task(child))
+
+    async def test_observation_renewal_is_bounded_and_requires_fresh_matching_busy_receipt(self):
+        async def observe(task):
+            task.update(status="interrupted", uncertain=True,
+                        _last_native_observation={"at": runtime.time.time(), "busy": True, "waiting_user": False,
+                                                  "thread_url": task["thread_url"], "request_id": task["request_id"]})
+            self.muse.save(task, "observation_timeout")
+
+        with patch.object(self.muse, "helper_call", self.muse_helper), patch.object(self.muse, "observe", observe), \
+                patch.object(self.muse, "resume_observing", wraps=self.muse.resume_observing) as resume:
+            result = await runtime.run_runtime_step(self.job, self.designer, "Produce images", native_allowed=True)
+        self.assertEqual(result["status"], "blocked")
+        self.assertEqual(resume.await_count, 1)
+        child = self.muse.get(result["task_id"], self.project["id"])
+        self.assertFalse(runtime._can_renew_muse_observation(child))
+        child["automatic_observe_renewals"] = 0
+        self.assertTrue(runtime._can_renew_muse_observation(child))
+        for changes in [{"busy": False}, {"waiting_user": True}, {"at": runtime.time.time() - 60},
+                        {"request_id": str(uuid.uuid4())}, {"thread_url": "https://muse.ai/thread/another"}]:
+            changed = copy.deepcopy(child)
+            changed["_last_native_observation"].update(changes)
+            self.assertFalse(runtime._can_renew_muse_observation(changed), changes)
+        for changes in [{"status": "stopped_monitoring"}, {"sent": None}, {"monitoring": True},
+                        {"events": [{"type": "native_observation_failed"}]}, {"source_unverified": True}]:
+            self.assertFalse(runtime._can_renew_muse_observation({**child, **changes}), changes)
+
     async def test_roster_change_during_execution_stops_child(self):
         async def worker(item):
             room = self.rooms.get(self.room["id"], self.project["id"])

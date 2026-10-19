@@ -557,6 +557,13 @@ class MuseManager:
             busy, waiting = result.get("busy"), result.get("waiting_user")
             if type(busy) is not bool or type(waiting) is not bool:
                 raise RuntimeError("Muse progress could not be determined")
+            # Keep the matched native receipt, not an inference from task prose.
+            # The coordinator may renew observation of this same request when
+            # its local window expires while Muse is demonstrably still busy.
+            task["_last_native_observation"] = {
+                "at": time.time(), "busy": busy, "waiting_user": waiting,
+                "thread_url": result["thread_url"], "request_id": result["request_id"],
+            }
             if messages:
                 task["messages"] = messages
             observed_reply = (completed[-1] if completed else "\n\n".join(replies))[:60000].replace(closing, "").strip()

@@ -275,6 +275,39 @@ class ImageProviderTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaisesRegex(media.MediaProviderError, "大小限制"):
                 await media._request({"url": media.GATEWAY + "/images/generations", "json": {}})
 
+    async def test_service_failure_does_not_misdiagnose_authentication(self):
+        request = httpx.Request("POST", "https://api.example/v1/images/generations")
+        for status, expected in [(500, "上游连接或服务异常"), (429, "配额"), (401, "登录"), (400, "参数")]:
+            response = httpx.Response(status, request=request)
+            message = media._safe_error(httpx.HTTPStatusError(KEY, request=request, response=response))
+            self.assertIn(expected, message)
+            self.assertNotIn(KEY, message)
+            if status == 500:
+                self.assertNotIn("登录", message)
+
+    async def test_policy_rejection_is_safe_and_never_falls_back_to_another_provider(self):
+        def handler(request):
+            return httpx.Response(400, json={"error": {"code": "moderation_blocked", "message": KEY}})
+        with self.wire(handler):
+            with self.assertRaises(media.MediaProviderError) as failure:
+                await media._request({"url": media.GATEWAY + "/images/generations", "json": {}})
+        self.assertIn("内容审核拒绝", str(failure.exception))
+        self.assertNotIn(KEY, str(failure.exception))
+        self.assertEqual(failure.exception.code, "content_policy")
+        entries = [candidate(), candidate("gpt-image-fixture", "openai")]
+        request = AsyncMock(side_effect=failure.exception)
+        with patch.object(media, "capabilities", AsyncMock(return_value=entries)), patch.object(media, "_request", request):
+            with self.assertRaises(media.MediaProviderError):
+                await media.generate_image({"id": "job"}, "Draw")
+        self.assertEqual(request.await_count, 1)
+
+    async def test_large_non_json_error_is_bounded_and_remains_http_failure(self):
+        def handler(request):
+            return httpx.Response(502, content=b"x" * 9000)
+        with self.wire(handler):
+            with self.assertRaises(httpx.HTTPStatusError):
+                await media._request({"url": media.GATEWAY + "/images/generations", "json": {}})
+
     async def test_changed_connection_invalidates_prior_image_receipt(self):
         connection = self.connection("gpt-image-fixture")
         def handler(request):

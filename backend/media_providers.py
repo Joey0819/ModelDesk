@@ -26,10 +26,15 @@ EVIDENCE_PATH = Path(__file__).resolve().parents[1] / "data/media-provider-statu
 MAX_RESPONSE_BYTES = 48 * 1024 * 1024
 MAX_IMAGE_BYTES = 24 * 1024 * 1024
 MAX_IMAGES = 4
+MAX_PROMPT_CHARS = 16000
 
 
 class MediaProviderError(RuntimeError):
     """A safe public error; never include the upstream body or auth headers."""
+
+    def __init__(self, message, *, code=None):
+        super().__init__(message)
+        self.code = code
 
 
 def _family(model: str) -> str | None:
@@ -253,13 +258,26 @@ async def _request(options: dict) -> dict:
     async with httpx.AsyncClient(timeout=httpx.Timeout(240, connect=8), trust_env=False,
                                  follow_redirects=False) as client:
         async with client.stream("POST", **options) as response:
-            response.raise_for_status()
             chunks, length = [], 0
             async for chunk in response.aiter_bytes():
                 length += len(chunk)
+                if response.is_error and length > 8192:
+                    break
                 if length > MAX_RESPONSE_BYTES:
                     raise MediaProviderError("图像响应超过大小限制，本次生成未完成。")
                 chunks.append(chunk)
+            if response.is_error:
+                # Whitelist machine-readable codes only. Provider messages may
+                # contain credentials, reflected prompts or private URLs.
+                try:
+                    body = json.loads(b"".join(chunks))
+                    error = body.get("error") if isinstance(body, dict) else None
+                    code = error.get("code") if isinstance(error, dict) else None
+                except (ValueError, UnicodeError):
+                    code = None
+                if isinstance(code, str) and code in {"moderation_blocked", "content_policy_violation", "safety_violation"}:
+                    raise MediaProviderError("图片请求被提供商的内容审核拒绝，未生成图片；可核对请求内容或联系提供商。", code="content_policy")
+                response.raise_for_status()
     return json.loads(b"".join(chunks))
 
 
@@ -267,7 +285,14 @@ def _safe_error(error: Exception) -> str:
     if isinstance(error, MediaProviderError):
         return str(error)
     if isinstance(error, httpx.HTTPStatusError):
-        return f"图像服务返回 HTTP {error.response.status_code}；请检查该图像模型的登录、权限和配额。"
+        status = error.response.status_code
+        if status >= 500:
+            return f"图像上游连接或服务异常（HTTP {status}），尚未取得图片；请稍后重试。"
+        if status == 429:
+            return "图像服务请求过于频繁或配额不足（HTTP 429）；请稍后重试或检查配额。"
+        if status in {401, 403}:
+            return f"图像服务拒绝访问（HTTP {status}）；请检查该图像模型的登录与权限。"
+        return f"图像服务拒绝了请求（HTTP {status}）；请检查所选模型与图片生成参数。"
     if isinstance(error, (httpx.TimeoutException, TimeoutError)):
         return "图像生成超时，本次图像任务未完成。"
     if isinstance(error, httpx.RequestError):
@@ -284,8 +309,10 @@ async def generate_image(job: dict, prompt: str, *, provider="auto", model=None,
     automatic selection without an explicit model may try one different
     provider after failure. Every attempt must produce verified image bytes.
     """
-    if not isinstance(prompt, str) or not prompt.strip() or len(prompt) > 16000:
-        raise MediaProviderError("图片提示词为空或过长。")
+    if not isinstance(prompt, str) or not prompt.strip():
+        raise MediaProviderError("图片提示词为空，尚未向绘图模型发出请求。")
+    if len(prompt) > MAX_PROMPT_CHARS:
+        raise MediaProviderError(f"图片提示词为 {len(prompt)} 字符，超过 {MAX_PROMPT_CHARS} 字符上限；尚未向绘图模型发出请求。")
     provider = {"chatgpt": "openai", "google": "gemini"}.get(provider, provider)
     if provider not in {"auto", "openai", "gemini", "xai"}:
         raise MediaProviderError("未找到所选图像服务，请先在模型连接中配置图像模型。")
@@ -324,5 +351,7 @@ async def generate_image(job: dict, prompt: str, *, provider="auto", model=None,
             # Keep only safe diagnostics, never bodies, headers or credential
             # material. CancelledError is a BaseException and propagates.
             final_error = _safe_error(error)
+            if isinstance(error, MediaProviderError) and error.code == "content_policy":
+                raise
     prefix = "已尝试两个不同提供商，仍未取得真实图片；" if len(attempts) > 1 else ""
     raise MediaProviderError(prefix + final_error) from None

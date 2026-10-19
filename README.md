@@ -4,7 +4,7 @@
 
 把模型、执行 Agent、项目资料、代码审查和最终成果放在同一个工作区。你可以指定一个 LLM 担任 **统筹模型（Ruler）**，让它组织讨论、按需调用群内 Codex、Claude Code 或 Muse，以及可用的生图模型，再把真实正文、图片与视频整理成完整成果。
 
-**当前桌面版本：2.13.0** · macOS / Apple Silicon · 中文界面 · 本机服务与私有手机入口
+**当前桌面版本：2.13.1** · macOS / Apple Silicon · 中文界面 · 本机服务与私有手机入口
 
 ModelDesk 基于 [Karpathy 的 LLM Council](https://github.com/karpathy/llm-council) 扩展，保留独立回答 → 匿名互评 → 主席综合的三阶段流程，并复用 CAMEL、CrewAI 和 LangGraph 的执行能力。原项目说明见 [上游 README](docs/UPSTREAM_COUNCIL.md)。
 

@@ -4,6 +4,7 @@ import json
 import tempfile
 import unittest
 import uuid
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -293,6 +294,35 @@ class CoordinationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(saved["steps"][1]["attempts"][-1]["status"], "interrupted")
         self.assertEqual(saved["workflow"]["elapsed_seconds"], 1200)
         self.assertEqual(saved["artifact"], delivery["artifact"])
+
+    async def test_restart_keeps_media_budget_and_does_not_reset_spent_time(self):
+        await self.run_delivery()
+        recent = (datetime.now(timezone.utc) - timedelta(seconds=30)).isoformat()
+        cases = [
+            ({"images": 9, "videos": 0}, 1600, recent, 2220, False),
+            ({"images": 0, "videos": 1}, 2500, recent, 3600, False),
+            ({"images": 9, "videos": 0}, 1600, "2020-01-01T00:00:00+00:00", 2220, True),
+            ({"images": 9, "videos": 0}, 1600, None, 2220, True),
+        ]
+        for media, spent, last_active, budget, exhausted in cases:
+            with self.subTest(media=media, last_active=last_active):
+                job = copy.deepcopy(self.job)
+                job["status"] = "running"
+                delivery = job["result"]["delivery"]
+                delivery["status"] = "working"
+                delivery["task_spec"]["media"] = media
+                delivery["workflow"].update(elapsed_seconds=spent, last_active_at=last_active)
+                self.manager.save(job)
+                restored = workbench.JobManager(Path(self.tmp.name))
+                restored.recover()
+                saved = restored.jobs[job["id"]]["result"]["delivery"]
+                self.assertEqual(saved["workflow"]["budget_seconds"], budget)
+                self.assertGreaterEqual(saved["workflow"]["elapsed_seconds"], spent)
+                if exhausted:
+                    self.assertEqual(saved["workflow"]["elapsed_seconds"], budget)
+                else:
+                    self.assertLess(saved["workflow"]["elapsed_seconds"], budget)
+                self.assertEqual(saved["steps"][0]["output"], "INITIAL_OUTPUT")
 
     async def test_continue_scope_stale_revision_budget_and_roster_guards(self):
         await self.run_delivery()

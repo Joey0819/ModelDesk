@@ -221,12 +221,15 @@ class JobManager:
                                 if attempt.get("status") == "running":
                                     attempt.update(status="interrupted", finished_at=now())
                         if delivery.get("workflow"):
+                            from .coordination import run_budget
                             workflow = delivery["workflow"]
+                            budget = run_budget(delivery)
+                            workflow["budget_seconds"] = budget
                             try:
                                 unobserved = max(0, (datetime.now(timezone.utc) - datetime.fromisoformat(workflow["last_active_at"])).total_seconds())
-                                workflow["elapsed_seconds"] = min(1200, workflow.get("elapsed_seconds", 0) + unobserved)
+                                workflow["elapsed_seconds"] = min(budget, workflow.get("elapsed_seconds", 0) + unobserved)
                             except (ValueError, KeyError, TypeError):
-                                workflow["elapsed_seconds"] = 1200
+                                workflow["elapsed_seconds"] = budget
                             workflow["revision"] += 1
                     self.emit(job, "error", message=job["error"])
             except (ValueError, KeyError, TypeError, OSError):

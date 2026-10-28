@@ -1,5 +1,7 @@
 import { isValidElement, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
+import './Markdown.css';
 import { workflowFormatDiagnostics } from '../workflow-failure';
 import { deriveArtifacts } from '../artifacts';
 import ConversationActions, { CopyTextButton } from './ConversationActions';
@@ -54,7 +56,7 @@ function MarkdownCodeBlock({ children }) {
 const markdownComponents = { pre: MarkdownCodeBlock };
 
 export function Markdown({ children, components, urlTransform }) {
-  return <div className="markdown"><ReactMarkdown components={{ ...markdownComponents, ...components }} urlTransform={urlTransform} skipHtml>{asText(children)}</ReactMarkdown></div>;
+  return <div className="markdown"><ReactMarkdown remarkPlugins={[remarkGfm]} components={{ ...markdownComponents, ...components }} urlTransform={urlTransform} skipHtml>{asText(children)}</ReactMarkdown></div>;
 }
 
 export function ResultProvenance({ job }) {

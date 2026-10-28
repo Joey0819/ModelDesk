@@ -1,0 +1,20 @@
+.markdown table {
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+  border-collapse: collapse;
+  margin: 1rem 0;
+  font-size: .92em;
+}
+.markdown th, .markdown td {
+  border: 1px solid var(--line, #dce1ea);
+  padding: .65rem .8rem;
+  text-align: left;
+  vertical-align: top;
+  min-width: 5rem;
+}
+.markdown th {
+  background: var(--shell-wash, #f3f5f8);
+  color: inherit;
+  font-weight: 600;
+}

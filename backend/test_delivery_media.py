@@ -224,6 +224,23 @@ class DeliveryMediaTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(manifest["media"][0]["sha256"], entry["sha256"])
             self.assertNotIn(extra["id"], str(manifest))
 
+    def test_offline_inventory_keeps_links_in_tables_without_duplicate_images(self):
+        entry = self.save(caption="章节图")
+        local = "media/" + entry["name"]
+        content = (f"## 第一章\n\n![章节图]({local})\n\n"
+                   f"| 位置 | 文件 |\n| --- | --- |\n| 第一章 | [下载 PNG]({local}) |\n\n"
+                   f"```markdown\n![代码示例]({local})\n```\n\n"
+                   "![外部](https://bad.example/track.png)\n\n<script>alert(1)</script>")
+        document = media._offline_html("文章", content, [entry], "complete", []).decode()
+        self.assertIn("<table>", document)
+        self.assertIn("<td>第一章</td>", document)
+        self.assertIn(f'<a href="{local}" download>下载 PNG</a>', document)
+        self.assertEqual(document.count('<img src="media/'), 1)
+        self.assertIn("![代码示例]", document)
+        self.assertIn("&lt;script&gt;", document)
+        self.assertNotIn('<script>', document)
+        self.assertNotIn('src="https://', document)
+
     async def test_scoped_media_ranges_for_phone_playback_retain_integrity_and_etag(self):
         entry = self.save()
         with patch.object(media, "store", self.store), patch.object(workbench, "manager", self.manager):

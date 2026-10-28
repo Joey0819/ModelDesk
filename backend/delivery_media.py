@@ -434,49 +434,45 @@ def _portable_markdown(content, assets):
 
 
 def _article_preview(content, assets):
-    by_name = {entry["name"]: entry for entry in assets}
+    from markdown_it import MarkdownIt
+
+    by_path = {"media/" + entry["name"]: entry for entry in assets}
     used = set()
 
-    def figure(entry):
+    def media_element(entry):
         path = "media/" + entry["name"]
         caption = html.escape(entry["caption"] or entry["name"], quote=True)
-        media = (f'<img src="{path}" alt="{caption}" loading="lazy">' if entry["kind"] == "image"
+        return (f'<img src="{path}" alt="{caption}" loading="lazy">' if entry["kind"] == "image"
                  else f'<video src="{path}" controls preload="metadata"></video>')
-        return f'<figure>{media}<figcaption>{caption}</figcaption></figure>'
 
-    def paragraph(text):
-        text = text.strip()
-        if not text:
-            return ""
-        escaped = html.escape(text)
-        heading = re.fullmatch(r"(#{1,6}) ([^\n]+)", escaped)
-        if heading:
-            level = len(heading[1])
-            return f"<h{level}>{heading[2]}</h{level}>"
-        # Provider HTML and external URLs remain escaped text. This deliberately
-        # small Markdown renderer only adds formatting to already escaped text.
-        escaped = re.sub(r"\*\*([^*\n]+)\*\*", r"<strong>\1</strong>", escaped)
-        escaped = re.sub(r"`([^`\n]+)`", r"<code>\1</code>", escaped)
-        return "<p>" + escaped.replace("\n", "<br>") + "</p>"
+    def render_image(renderer, tokens, index, options, env):
+        token = tokens[index]
+        entry = by_path.get(token.attrGet("src"))
+        if not entry:
+            return html.escape(token.content)
+        used.add(entry["id"])
+        return media_element(entry)
 
-    rendered = []
-    # Fenced code is never scanned for media or interpreted as markup.
-    for index, section in enumerate(re.split(r"```[^\n]*\n(.*?)```", content, flags=re.S)):
-        if index % 2:
-            rendered.append("<pre><code>" + html.escape(section) + "</code></pre>")
-            continue
-        for block in re.split(r"\n\s*\n", section):
-            offset = 0
-            for match in re.finditer(r"!?\[[^\]\n]*\]\(media/([a-f0-9-]{36}\.(?:png|jpg|webp|mp4|webm))\)", block):
-                entry = by_name.get(match[1])
-                if not entry:
-                    continue
-                rendered.append(paragraph(block[offset:match.start()]))
-                rendered.append(figure(entry))
-                used.add(entry["id"])
-                offset = match.end()
-            rendered.append(paragraph(block[offset:]))
-    rendered.extend(figure(entry) for entry in assets if entry["id"] not in used)
+    def render_link_open(renderer, tokens, index, options, env):
+        path = tokens[index].attrGet("href")
+        entry = by_path.get(path)
+        env.setdefault("local_links", []).append(bool(entry))
+        # Offline documents only link to verified files in their own bundle.
+        return f'<a href="{html.escape(path, quote=True)}" download>' if entry else "<span>"
+
+    def render_link_close(renderer, tokens, index, options, env):
+        return "</a>" if env["local_links"].pop() else "</span>"
+
+    # Use the maintained parser for tables/lists/code, with HTML disabled.
+    # Links are downloads, not another copy of the image they point to.
+    parser = MarkdownIt("commonmark", {"html": False}).enable(["table", "strikethrough"])
+    parser.add_render_rule("image", render_image)
+    parser.add_render_rule("link_open", render_link_open)
+    parser.add_render_rule("link_close", render_link_close)
+    rendered = [parser.render(content)]
+    rendered.extend('<figure>' + media_element(entry) + '<figcaption>'
+                    + html.escape(entry["caption"] or entry["name"]) + '</figcaption></figure>'
+                    for entry in assets if entry["id"] not in used)
     return "".join(rendered)
 
 
@@ -489,7 +485,10 @@ def _offline_html(title, content, assets, status, limitations):
             "<title>" + html.escape(title) + "</title><style>body{font:17px/1.8 system-ui,sans-serif;color:#20252c;background:#f7f8fa;margin:0}"
             "main{max-width:900px;margin:40px auto;padding:32px;background:white;border-radius:16px}h1{line-height:1.3}"
             "pre{white-space:pre-wrap;overflow-wrap:anywhere;font:inherit}figure{margin:30px 0}img,video{max-width:100%;height:auto;border-radius:12px}"
-            "figcaption,.status{color:#667085;font-size:14px}ul{padding-left:24px}</style><main><h1>" + html.escape(title) + "</h1>"
+            "figcaption,.status{color:#667085;font-size:14px}ul,ol{padding-left:24px}"
+            "table{display:block;max-width:100%;overflow-x:auto;border-collapse:collapse;font-size:15px}"
+            "th,td{border:1px solid #dce1ea;padding:10px;text-align:left}th{background:#f3f5f8}"
+            "a{color:#4957c9}blockquote{border-left:3px solid #adb5c7;margin-left:0;padding-left:20px}</style><main><h1>" + html.escape(title) + "</h1>"
             '<p class="status">ModelDesk · ' + html.escape(status) + "</p>" + article
             + ("<ul>" + notes + "</ul>" if notes else "") + "</main></html>").encode()
 

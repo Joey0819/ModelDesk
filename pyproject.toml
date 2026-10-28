@@ -22,4 +22,5 @@ dependencies = [
     "langgraph>=1.2.15,<1.3",
     "psutil>=7,<8",
     "playwright>=1.63,<1.64",
+    "markdown-it-py>=4,<5",
 ]

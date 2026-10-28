@@ -36,9 +36,9 @@ export default function DeliveryOutputOptions({ value, onChange, disabled = fals
   return <div className="group-output-options">
     <label>成果形式<select aria-label="成果形式" disabled={disabled} value={options.outputFormat} onChange={(event) => update({ outputFormat: event.target.value })}><option value="auto">按要求自动</option><option value="text">仅文字</option><option value="illustrated">图文并茂</option><option value="video">视频成果</option></select></label>
     {options.outputFormat !== 'text' && <details className="group-output-settings" onToggle={(event) => { if (event.currentTarget.open) refreshCapabilities(); }}><summary>生成设置</summary><div>
-      {options.outputFormat !== 'video' && <label>配图数量<select aria-label="配图数量" disabled={disabled} value={options.imageCount} onChange={(event) => update({ imageCount: Number(event.target.value) })}>{[1, 2, 3, 4].map((count) => <option key={count} value={count}>{count} 张</option>)}</select></label>}
+      {options.outputFormat !== 'video' && <label>{options.outputFormat === 'auto' ? '未指定时的配图数量' : '配图数量'}<select aria-label="配图数量" disabled={disabled} value={options.imageCount} onChange={(event) => update({ imageCount: Number(event.target.value) })}>{[1, 2, 3, 4].map((count) => <option key={count} value={count}>{count} 张</option>)}</select></label>}
       <label>生成工具<select aria-label="图片与视频生成工具" disabled={disabled} value={options.mediaProvider} onChange={(event) => update({ mediaProvider: event.target.value })}>{providers.map(([id, name]) => <option key={id} value={id}>{name}</option>)}</select></label>
-      <p>{options.outputFormat === 'auto' ? '按描述判断是否需要图片或视频。' : options.outputFormat === 'video' ? '视频需由可用的 Muse 生成并回传实际文件。' : '正文与实际配图将一起呈现在成果栏。'} 复用当前登录网关或已添加的 API 连接；实际能力以调用结果为准。Muse 需要 Mac 原生应用。</p>
+      <p>{options.outputFormat === 'auto' ? '按任务描述确定实际数量；例如“每章一图”会逐章配图，单轮最多 12 份媒体。上方数量只在未指定时使用。' : options.outputFormat === 'video' ? '视频需由可用的 Muse 生成并回传实际文件。' : '正文与实际配图将一起呈现在成果栏。'} 复用当前登录网关或已添加的 API 连接；实际能力以调用结果为准。Muse 需要 Mac 原生应用。</p>
       <MediaCapabilityStatus state={capabilities} onRefresh={refreshCapabilities} />
     </div></details>}
   </div>;

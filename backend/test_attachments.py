@@ -102,6 +102,26 @@ class AttachmentTests(unittest.TestCase):
         isolated = self.assets.inherit_images(foreign, history, jobs, [], self.inputs)
         self.assertEqual(isolated["items"], [])
 
+    def test_failed_task_keeps_frozen_document_and_image_for_followup(self):
+        from backend.task_context import build_task_context, include_task_attachments
+        document = self.assets.add(self.project['id'], 'brief.md', b'USER_ATTACHMENT_CONSTRAINT')
+        image = self.assets.add(self.project['id'], 'reference.png', self.image())
+        old = self.freeze(self.job(ids=[document['id'], image['id']]))
+        old.update(mode='group', conversation_id='room', group_room_id='room', status='error',
+                   group_context_mode='fresh', prompt='Follow the attached brief', created_at='2026-10-28T00:00:00Z')
+        self.assets.remove(self.project['id'], document['id'])
+        self.assets.remove(self.project['id'], image['id'])
+        new = self.freeze(self.job())
+        new.update(mode='group', conversation_id='room', group_room_id='room', prompt='Continue', created_at='2026-10-28T01:00:00Z')
+        context = build_task_context({old['id']: old}, new)
+        with patch.object(attachments, 'store', self.assets):
+            include_task_attachments(context, {old['id']: old}, new, self.inputs)
+        self.assertIn('USER_ATTACHMENT_CONSTRAINT', context['reference_documents'][0]['content'])
+        images = []
+        result = self.assets.inherit_images(new, {'metadata': {'references': [{'job_id': old['id']}]}}, {old['id']: old}, images, self.inputs)
+        self.assertEqual(len(result['items']), 1)
+        self.assertEqual(len(attachment_io.image_content_parts({'_attachments': images})), 1)
+
     def test_folder_inventory_and_reads_exclude_links_credentials_caches_and_escape(self):
         folder = self.root / "local"; folder.mkdir()
         (folder / "safe.txt").write_text("safe")

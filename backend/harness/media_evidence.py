@@ -15,7 +15,7 @@ import subprocess
 import tempfile
 
 MAX_PARTS = 12
-MAX_ASSETS = 8
+MAX_ASSETS = 12
 
 
 def _image(raw):

@@ -41,6 +41,15 @@ test('managed media resolves on the paired phone API origin and retains exact jo
   assert.equal(managedDeliveryMedia(job([standalone], { project_id: null }), base).length, 1);
 });
 
+test('in-progress harness media counts keep the full requirement while files arrive', () => {
+  const current = job([asset()]);
+  current.result.delivery.task_spec = { media: { images: 9, videos: 0 } };
+  current.result.delivery.status = 'working';
+  const html = render(DeliveryMediaProgress, { job: current });
+  assert.match(html, /配图 1\/9/);
+  assert.doesNotMatch(html, /配图 1\/1/);
+});
+
 test('media URLs reject foreign jobs, projects, external hosts, credentials and executable protocols', () => {
   const image = asset();
   for (const value of [`https://evil.example${image.url}`, `http://localhost:5173${image.url}`, `//evil.example${image.url}`, 'data:image/png;base64,AAAA', 'file:///tmp/image.png', 'javascript:alert(1)', `${image.url}#fragment`, `${image.url}&x=1`, `${image.url}&download=true`, `${image.url}&project_id=${projectId}`, image.url.replace(jobId, videoId), image.url.replace(projectId, videoId), `http://user:password@localhost:8001${image.url}`]) {

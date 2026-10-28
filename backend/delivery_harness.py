@@ -18,7 +18,21 @@ class ImageBrief(BaseModel):
 
 class ImagePlan(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    images: list[ImageBrief] = Field(min_length=1, max_length=4)
+    images: list[ImageBrief] = Field(min_length=1, max_length=12)
+
+
+def explicit_image_count(goal):
+    # "每章一张" / "one image per chapter" describes coverage, not a total.
+    # Let the planner count the actual sections instead of collapsing the work.
+    if re.search(r"(?:每|各).{0,8}(?:章|节).{0,8}(?:图|画)|(?:image|picture|illustration)s?\s+(?:for\s+each|per)\s+(?:chapter|section)|each\s+(?:chapter|section)", goal, re.I):
+        return None
+    match = re.search(r"(\d{1,2}|一|二|两|三|四|五|六|七|八|九|十)\s*(?:张|幅)\s*(?:(?:原创|新的|真实|说明|不同的|配套|统一风格的)\s*){0,2}(?:图|配图|插图|图片)", goal) or re.search(r"\b(\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten)\s+(?:(?:original|new|matching|distinct|generated|conceptual)\s+){0,2}(?:images?|pictures?|illustrations?)\b", goal, re.I)
+    if not match:
+        return None
+    value = match[1].lower()
+    names = {**dict(zip("一二三四五六七八九十", range(1, 11))), "两": 2,
+             **dict(zip("one two three four five six seven eight nine ten".split(), range(1, 11)))}
+    return int(value) if value.isdigit() else names[value]
 
 
 def explicit_video_constraints(goal):
@@ -44,10 +58,9 @@ def media_contract(job, goal):
         cleaned = re.sub(r"(?:不要|不需要|无需|不生成|不制作|no\s+|without\s+)(?:任何)?(?:图片|配图|插图|图像|视频|images?|pictures?|videos?)", "", goal, flags=re.I)
         image = bool(re.search(r"图文并茂|图文|生图|配图|插图|(?:图片|图像)\s*(?:用|由|交给|使用)|(?:生成|附|带|添加|包含|加上).{0,15}(?:图片|图像)|(?:with|generate|create|include|add|use|using|for).{0,30}(?:images?|pictures?|illustrations?)|illustrated", cleaned, re.I))
         video = bool(re.search(r"视频\s*(?:用|由|交给|使用)|(?:生成|制作|做|创建).{0,16}视频|(?:generate|create|make).{0,16}video", cleaned, re.I))
-        match = re.search(r"(\d{1,2}|一|二|两|三|四)\s*(?:张|幅)\s*(?:(?:原创|新的|真实|说明|不同的|配套|统一风格的)\s*){0,2}(?:图|配图|插图|图片)", cleaned) or re.search(r"\b(\d{1,2}|one|two|three|four)\s+(?:(?:original|new|matching|distinct|generated|conceptual)\s+){0,2}(?:images?|pictures?|illustrations?)\b", cleaned, re.I)
-        if match and image:
-            value = match[1]
-            count = int(value) if value.isdigit() else {"一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "one": 1, "two": 2, "three": 3, "four": 4}[value.lower()]
+        explicit = explicit_image_count(cleaned)
+        if explicit is not None and image:
+            count = explicit
     provider = job.get("group_media_provider", "auto")
     if provider == "auto":
         provider_goal = re.sub(r"(?:不要|不必|不需要|无需|不)(?:用|让|调用|交给|使用)\s*(?:Muse|ChatGPT|GPT|Gemini)|(?:do not|don't|without)\s+(?:use|using|call)?\s*(?:Muse|ChatGPT|GPT|Gemini)", "", goal, flags=re.I)
@@ -83,7 +96,7 @@ def media_contract(job, goal):
 def native_media_instruction(contract):
     targets = []
     if contract["images"] and contract["provider"] == "muse":
-        targets.append(f"{min(4, contract['images'])} 张真实生成的图片")
+        targets.append(f"{contract['images']} 张真实生成的图片")
     if contract["videos"] and contract.get("video_provider", contract["provider"]) in {"auto", "muse"}:
         targets.append("1 个真实视频文件")
     return ("完成用户要求的" + "和".join(targets) + "。请实际创作，不只写脚本、提示词或声称已经完成。"
@@ -194,7 +207,10 @@ async def produce_media(manager, job, result, delivery, contract, *, steps=None)
                 delivery["media_tasks"].append({"id": f"native-{kind}", "kind": kind, "provider": "muse", "model": "Muse native",
                     "asset_id": matched[0] if matched else None, "asset_ids": matched,
                     "status": "complete" if count >= needed else "error", "error": None if count >= needed else "尚未取得足够的真实 Muse 媒体文件"})
-    direct_count = min(4, contract["images"]) if contract["provider"] != "muse" and not contract.get("image_member_ids") else 0
+    reused_count = sum(asset.get("kind") == "image" for asset in delivery.get("reused_media", []))
+    direct_count = max(0, contract["images"] - reused_count) if contract["provider"] != "muse" and not contract.get("image_member_ids") else 0
+    if direct_count > 12:
+        raise ValueError("单轮最多 12 张图片，未减少用户所需数量")
     saved_images = {asset.get("slot_id"): asset for asset in delivery["media"] if asset.get("kind") == "image"}
     if direct_count:
         briefs = []
@@ -210,7 +226,7 @@ async def produce_media(manager, job, result, delivery, contract, *, steps=None)
                 "图片数量必须匹配要求，每张应承担不同表达目的；画面风格统一，避免重复。不得输出 URL 或声称图片已生成。",
                 f"需要 {direct_count} 张配图。用户本次需求：\n{manager.jobs.get(job['id'], job)['prompt']}"
                 + "\n团队已完成的实际内容（配图必须与正文一致）：\n"
-                + json.dumps(execution_evidence(delivery.get("steps", [])), ensure_ascii=False), max_tokens=3000)
+                + json.dumps(execution_evidence(delivery.get("steps", [])), ensure_ascii=False), max_tokens=6000)
                 plan = ImagePlan.model_validate(json_document(body))
             if incomplete or len(plan.images) != direct_count:
                 raise ValueError("配图分工不完整")

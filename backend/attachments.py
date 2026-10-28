@@ -406,7 +406,7 @@ class AssetStore:
         total = sum(len(verified_image_bytes(item)) for item in images)
         for reference in reversed(history["metadata"]["references"]):
             previous = jobs.get(reference["job_id"])
-            if not previous or previous.get("status") != "complete" or previous.get("project_id") != job.get("project_id"):
+            if not previous or previous.get("project_id") != job.get("project_id"):
                 continue
             path = inputs_root / previous["id"] / "context.json"
             if not path.exists():

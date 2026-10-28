@@ -72,7 +72,7 @@ export function embeddedMediaIds(content, media) {
 }
 
 export function deliveryMediaProgress(delivery = {}) {
-  const requirements = delivery.media_requirements || {};
+  const requirements = delivery.task_spec?.media || delivery.media_requirements || {};
   const assets = Array.isArray(delivery.media) ? delivery.media : [];
   const tasks = Array.isArray(delivery.media_tasks) ? delivery.media_tasks : [];
   return ['image', 'video'].map((kind) => ({

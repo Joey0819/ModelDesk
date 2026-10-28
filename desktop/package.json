@@ -1,7 +1,7 @@
 {
   "name": "modeldesk-desktop",
   "productName": "ModelDesk",
-  "version": "2.13.3",
+  "version": "2.14.0",
   "description": "A local desktop window for the ModelDesk multi-model workbench.",
   "private": true,
   "main": "main.cjs",

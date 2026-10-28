@@ -38,6 +38,7 @@ class Plan(BaseModel):
     title: str = Field(min_length=1, max_length=100)
     requirements: list[Requirement] = Field(min_length=1, max_length=10)
     steps: list[Step] = Field(min_length=1, max_length=8)
+    reuse_media_ids: list[str] = Field(default_factory=list, max_length=12)
 
 
 class ReviewItem(BaseModel):

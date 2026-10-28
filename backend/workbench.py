@@ -363,7 +363,26 @@ class JobManager:
             job["context_history"] = history["metadata"]
             self.emit(job, "stage", stage="conversational_context", data=history["metadata"])
             historical_material = quoted_history(history)
-            history_manifest = await asyncio.to_thread(assets.inherit_images, job, history, self.jobs, images, self.directory / "attachment-inputs")
+            from .task_context import build_task_context, context_summary, quote_task_context, include_task_attachments
+            task_context = build_task_context(self.jobs, job)
+            if task_context:
+                await asyncio.to_thread(include_task_attachments, task_context, self.jobs, job, self.directory / "attachment-inputs")
+                job["task_context"] = context_summary(task_context)
+                self.emit(job, "stage", stage="task_context", data=job["task_context"])
+                # The bounded discussion window must not evict the original
+                # request or the last document after several failed edits.
+                historical_material = quote_task_context(task_context)
+                if not task_context.get("artifact") or job.get("group_delivery_mode") != "auto":
+                    historical_material += "\n\n" + quoted_history(history)
+            image_history = copy.deepcopy(history)
+            if task_context:
+                known = {item["job_id"] for item in image_history["metadata"]["references"]}
+                for item in task_context["requests"]:
+                    for identifier in item["job_ids"]:
+                        if identifier != job["id"] and identifier not in known:
+                            image_history["metadata"]["references"].append({"job_id": identifier})
+                            known.add(identifier)
+            history_manifest = await asyncio.to_thread(assets.inherit_images, job, image_history, self.jobs, images, self.directory / "attachment-inputs")
             references.extend({**item, "kind": "attachment", "asset_kind": item["kind"]} for item in history_manifest["items"])
             truncated = truncated or history_manifest["coverage"]["truncated"]
             if job.get("attachment_manifest") or history_manifest["items"]:
@@ -375,6 +394,7 @@ class JobManager:
             execution["_runtime"] = runtime
             execution["_attachments"] = images
             execution["_conversation_history"] = history
+            execution["_task_context"] = task_context
             execution["_conversation_context_prepared"] = True
             execution["_context"] = "\n\n".join(part for part in [material, historical_material] if part)
             if (images or any(model.startswith("connection:") for model in job["models"])) and not execution.get("workflow") and job["mode"] in {"camel", "crewai"}:

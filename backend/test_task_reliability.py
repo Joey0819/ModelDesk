@@ -108,6 +108,18 @@ class DeliveryReliabilityTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('FINAL_SCENE_SENTINEL', sent[0])
         self.assertTrue(delivery['steps'][1]['handoff']['complete'])
 
+    async def test_native_handoff_and_review_receive_durable_task_context(self):
+        from backend.task_context import quote_task_context
+        memory = {'sha256': 'frozen-memory', 'requests': [{'prompt': 'ROOT_PAPER_BOAT'}, {'prompt': 'CORRECTION_SILENT_60S'}]}
+        self.job['_task_context'] = memory
+        self.job['prompt'] = '继续\n' + quote_task_context(memory)
+        delivery, sent = await self.native_case('APPROVED_SCRIPT_END')
+        self.assertIn('ROOT_PAPER_BOAT', sent[0])
+        self.assertIn('CORRECTION_SILENT_60S', sent[0])
+        self.assertIn('APPROVED_SCRIPT_END', sent[0])
+        self.assertEqual(delivery['steps'][1]['handoff']['context_sha256'], 'frozen-memory')
+        self.assertIn('ROOT_PAPER_BOAT', next(prompt for _, system, prompt in self.calls if '最终交付编辑' in system))
+
     async def test_oversize_script_never_dispatches_a_truncated_task(self):
         delivery, sent = await self.native_case('x' * 23000 + 'FINAL_SCENE_SENTINEL')
         self.assertEqual(sent, [])

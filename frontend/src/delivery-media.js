@@ -49,6 +49,19 @@ export function managedDeliveryMedia(job, apiBase) {
   });
 }
 
+/** Reused files have new IDs; old source links must open this job's verified copy. */
+export function resolveReusedMediaLink(value, asset, job, apiBase) {
+  const current = resolveManagedMediaUrl(asset?.url, asset, job, apiBase);
+  const sourceId = /^reused-([0-9a-f-]+)$/i.exec(asset?.slot_id || '')?.[1];
+  if (!current || !UUID.test(sourceId || '') || !UUID.test(asset.source_task_id || '')) return null;
+  const source = resolveManagedMediaUrl(value,
+    { ...asset, id: sourceId, job_id: asset.source_task_id },
+    { ...job, id: asset.source_task_id }, apiBase);
+  if (!source) return null;
+  return new URL(source).searchParams.has('download')
+    ? resolveManagedMediaUrl(asset.download_url, asset, job, apiBase) : current;
+}
+
 export function mediaBundleUrl(job, apiBase) {
   if (!UUID.test(job?.id || '') || job.mode !== 'group' || !job.result?.delivery) return null;
   try {

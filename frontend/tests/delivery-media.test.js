@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { buildSync } from 'esbuild';
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { managedDeliveryMedia, mediaBundleUrl, resolveManagedMediaUrl, embeddedMediaIds, normalizeMediaCapabilities, loadMediaCapabilities, deliveryMediaWarnings } from '../src/delivery-media.js';
+import { managedDeliveryMedia, mediaBundleUrl, resolveManagedMediaUrl, resolveReusedMediaLink, embeddedMediaIds, normalizeMediaCapabilities, loadMediaCapabilities, deliveryMediaWarnings } from '../src/delivery-media.js';
 import { deriveArtifacts } from '../src/artifacts.js';
 import { groupMessageRequest, groupOutputOptions, readGroupDraft } from '../src/group-state.js';
 
@@ -111,6 +111,36 @@ test('unverified Markdown media never fetches external, data, file, or another j
   const html = render(MediaDelivery, { job: current, content, apiBase: base });
   assert.doesNotMatch(html, /<img|<video|<iframe|<script|src=|evil\.example|file:\/\//);
   assert.match(html, /尚未保存/);
+});
+
+test('reused video source links open the verified current copy on desktop and phone', () => {
+  const oldJob = '33333333-4444-5555-6666-777777777777';
+  for (const scope of [projectId, null]) {
+    const suffix = scope ? `?project_id=${scope}` : '';
+    const source = `/api/media/jobs/${oldJob}/assets/${imageId}/content${suffix}`;
+    const current = `/api/media/jobs/${jobId}/assets/${videoId}/content${suffix}`;
+    const download = `${current}${scope ? '&' : '?'}download=1`;
+    const video = asset(videoId, 'video', { project_id: scope, url: current, download_url: download, source_task_id: oldJob, slot_id: `reused-${imageId}` });
+    const content = `[查看原视频](${source})\n\n[下载原视频](${source}${scope ? '&' : '?'}download=1)`;
+    for (const apiBase of [base, phone]) {
+      const html = render(MediaDelivery, { job: job([video], { project_id: scope }), content, apiBase });
+      assert.ok(html.includes(`<a href="${apiBase}${current}">查看原视频</a>`));
+      assert.ok(html.includes(`<a href="${apiBase}${download.replace('&', '&amp;')}">下载原视频</a>`));
+      assert.doesNotMatch(html, new RegExp(oldJob));
+      assert.equal((html.match(/<video /g) || []).length, 1);
+    }
+  }
+});
+
+test('reused links require exact provenance, project scope and safe API origin', () => {
+  const oldJob = '33333333-4444-5555-6666-777777777777';
+  const source = `/api/media/jobs/${oldJob}/assets/${imageId}/content?project_id=${projectId}`;
+  const video = asset(videoId, 'video', { source_task_id: oldJob, slot_id: `reused-${imageId}` });
+  for (const url of [source.replace(oldJob, videoId), source.replace(imageId, videoId), source.replace(projectId, jobId), source.split('?')[0], `https://other.test${source}`, `${source}&redirect=1`, `${source}&download=0`, `${source}#fragment`]) {
+    assert.equal(resolveReusedMediaLink(url, video, job([video]), base), null, url);
+  }
+  assert.equal(resolveReusedMediaLink(source, { ...video, slot_id: 'cover' }, job([video]), base), null);
+  assert.equal(resolveReusedMediaLink(source, { ...video, job_id: oldJob }, job([video]), base), null);
 });
 
 test('bundle and artifact links preserve project scope, work on phone, and accompany Markdown', () => {

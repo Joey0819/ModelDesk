@@ -1,6 +1,6 @@
 import { defaultUrlTransform } from 'react-markdown';
 import { API_BASE } from '../api-base';
-import { deliveryMediaProgress, deliveryMediaWarnings, embeddedMediaIds, managedDeliveryMedia, resolveManagedMediaUrl } from '../delivery-media';
+import { deliveryMediaProgress, deliveryMediaWarnings, embeddedMediaIds, managedDeliveryMedia, resolveManagedMediaUrl, resolveReusedMediaLink } from '../delivery-media';
 import { Icon, Markdown } from './WorkbenchResults';
 import './MediaDelivery.css';
 import CoordinationProgress from './CoordinationProgress';
@@ -42,7 +42,9 @@ export function MediaDelivery({ job, content, apiBase = API_BASE }) {
   const transform = (url, key) => {
     const asset = imageAsset(url);
     if (key === 'src') return asset?.url || '';
-    return asset ? resolveManagedMediaUrl(url, asset, job, apiBase) : defaultUrlTransform(url);
+    if (asset) return resolveManagedMediaUrl(url, asset, job, apiBase);
+    const reused = media.map((item) => resolveReusedMediaLink(url, item, job, apiBase)).find(Boolean);
+    return reused || defaultUrlTransform(url);
   };
   const renderImage = ({ src, alt }) => {
     const asset = imageAsset(src);

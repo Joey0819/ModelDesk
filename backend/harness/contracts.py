@@ -46,6 +46,15 @@ class ReviewItem(BaseModel):
     requirement_id: str
     met: bool
     reason: str = Field(min_length=1, max_length=600)
+    evidence_status: Literal["verified", "limited", "unverified"]
+
+    @model_validator(mode="after")
+    def evidence_boundary(self):
+        # Coverage is required, not guessed from keywords in the prose: an
+        # honest disclosure can itself be a fully verified requirement.
+        if self.evidence_status in {"limited", "unverified"}:
+            self.met = False
+        return self
 
 
 class RuntimeRevision(BaseModel):
@@ -61,5 +70,11 @@ class Review(BaseModel):
     checks: list[ReviewItem] = Field(min_length=1, max_length=12)
     revision_instructions: str = Field(default="", max_length=2500)
     runtime_revision: RuntimeRevision | None = None
+
+    @model_validator(mode="after")
+    def all_requirements_verified(self):
+        if any(not item.met for item in self.checks):
+            self.goal_met = False
+        return self
 
 

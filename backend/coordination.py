@@ -389,7 +389,12 @@ async def run(manager, job, *, continuing=False):
                 delivery["reused_media"] = reuse_media(job, plan["reuse_media_ids"], memory, manager.jobs, delivery)
                 delivery.update(title=plan["title"], steps=plan["steps"])
                 delivery["task_spec"]["requirements"] = plan["requirements"]
-                native_instruction = native_media_instruction(contract)
+                # Reusing a verified file does not require its original
+                # executor to be selected, or permission to create it again.
+                remaining_media = {**contract, **{key: max(0, contract[key] - sum(
+                    asset["kind"] == kind for asset in delivery["reused_media"]))
+                    for key, kind in [("images", "image"), ("videos", "video")]}}
+                native_instruction = native_media_instruction(remaining_media)
                 if native_instruction and not any(step["kind"] == "codex" and step.get("output_kind") == "video" for step in delivery["steps"]):
                     native = next((member for member in members if member.get("kind") == "muse"), None)
                     if native:
@@ -546,12 +551,14 @@ async def run(manager, job, *, continuing=False):
                     return review
                 review = await structured_output(job, review_model,
                     "你是交付审查者，逐项比对用户原始要求与实际正文、执行证据。只返回 JSON："
-                    "{\"goal_met\":true,\"missing_requirements\":[],\"checks\":[{\"requirement_id\":\"验收项ID\",\"met\":true,\"reason\":\"具体依据\"}],\"revision_instructions\":\"可通过修改正文解决的问题\"}。"
+                    "{\"goal_met\":true,\"missing_requirements\":[],\"checks\":[{\"requirement_id\":\"验收项ID\",\"met\":true,\"evidence_status\":\"verified\",\"reason\":\"具体依据\"}],\"revision_instructions\":\"可通过修改正文解决的问题\"}。"
                     "goal_met 必须对照完整原始目标；规划遗漏的要求也要列入 missing_requirements 并判为未完成。"
                     "必须包含每个要求且仅一次。机械检查失败不能改成通过。tests 要确认实际命令对应所需测试且成功，"
                     "普通命令退出0不代表测试通过。visual_evidence 给出实际文件的画面输入编号及视频抽帧时间和时长。"
                     "只检查确实随本请求提供的画面；图片为缩略图，视频仅三个抽帧，没有音轨或连续动作证据。"
                     "不得声称已验证配音、全片连续性、外部事实。若用户要求无法用现有证据验证，明确尚未验证。"
+                    "每项 evidence_status 填 verified/limited/unverified；只有该项要求已被证据完整支持才能 met=true。"
+                    "仅部分画面支持全程动作要求时填 limited 或 unverified，met=false、goal_met=false；不能以免责声明配合通过结论。"
                     "不要把平台已取得的真实媒体说成缺失。"
                     "编辑待查项可能早于本次画面检查；请对照实际证据逐项判断是否已解决，不应仅因编辑曾提出就重复判缺失。"
                     "若需要修正 Muse 已完成的创作，可另外返回 runtime_revision:{\"step_id\":\"原Muse步骤id\",\"instruction\":\"具体内容修订要求\"}；"
@@ -579,6 +586,12 @@ async def run(manager, job, *, continuing=False):
                                    "保留音轨、全片连续性等本次未检查范围，不编造新的执行事实。")
                     continue
                 if passed or index == 1:
+                    break
+                pending_checks = [item for item in review.checks if not item.met]
+                if (pending_checks and all(item.evidence_status in {"limited", "unverified"} for item in pending_checks)
+                        and all(item["met"] for item in checks)):
+                    # A new video or rewritten prose cannot supply an absent
+                    # inspection. Keep the actual file without replaying Muse.
                     break
                 revision = review.runtime_revision
                 replacement_kinds = None

@@ -94,7 +94,7 @@ class CoordinationTests(unittest.IsolatedAsyncioTestCase):
         if "最终交付编辑" in system:
             return json.dumps({"title": "文章", "content": "# 最终文章\n\n真实正文，已经采用审阅意见。", "missing_outputs": []}), False
         if "你是交付审查者" in system:
-            return json.dumps({"goal_met": True, "missing_requirements": [], "checks": [{"requirement_id": "body", "met": True, "reason": "正文完整"}], "revision_instructions": ""}), False
+            return json.dumps({"goal_met": True, "missing_requirements": [], "checks": [{"requirement_id": "body", "met": True, "evidence_status": "verified", "reason": "正文完整"}], "revision_instructions": ""}), False
         if "核查初稿" in prompt:
             self.assertIn("INITIAL_OUTPUT", prompt)
             return "REVIEWED_OUTPUT", False
@@ -123,7 +123,7 @@ class CoordinationTests(unittest.IsolatedAsyncioTestCase):
             nonlocal reviews
             if "你是交付审查者" in system:
                 reviews += 1
-                return json.dumps({"goal_met": True, "missing_requirements": [], "checks": [{"requirement_id": "body", "met": reviews > 1, "reason": "补充结尾"}],
+                return json.dumps({"goal_met": True, "missing_requirements": [], "checks": [{"requirement_id": "body", "met": reviews > 1, "evidence_status": "verified", "reason": "补充结尾"}],
                                    "revision_instructions": "补充结尾"}), False
             return await self.provider(job, model, system, prompt, **kwargs)
         delivery = (await self.run_delivery(provider))["delivery"]
@@ -157,7 +157,7 @@ class CoordinationTests(unittest.IsolatedAsyncioTestCase):
             if "你是交付审查者" in system:
                 reviewed += 1
                 return json.dumps({"goal_met": reviewed > 1, "missing_requirements": [] if reviewed > 1 else ["颜色不符合要求"],
-                    "checks": [{"requirement_id": "body", "met": reviewed > 1, "reason": "Color"}],
+                    "checks": [{"requirement_id": "body", "met": reviewed > 1, "evidence_status": "verified", "reason": "Color"}],
                     "runtime_revision": {"step_id": "creative", "instruction": "Change to requested colors"}}), False
             return await self.provider(job, model, system, prompt, **kwargs)
         dispatched = []
@@ -188,11 +188,93 @@ class CoordinationTests(unittest.IsolatedAsyncioTestCase):
         delivery["media"] = [{"id": str(uuid.uuid4()), "sha256": "a" * 64, "kind": "image"}]
         self.assertFalse(coordination.actual_checks(self.job, delivery)[-1]["met"])
 
+    async def test_unverified_evidence_retains_artifact_without_replaying_native(self):
+        self.job["group_team_snapshot"]["members"].append(
+            {"id": "creator", "kind": "muse", "name": "Creator", "model": None, "role": "Make the requested video"})
+        self.job["group_recipient_member_ids"].append("creator")
+        async def provider(job, model, system, prompt, **kwargs):
+            if "你是项目统筹者" in system:
+                return json.dumps(plan([{"id": "creative", "member_id": "creator", "instruction": "Create", "expected_output": "Actual result"}])), False
+            if "你是交付审查者" in system:
+                return json.dumps({"goal_met": True, "missing_requirements": ["全片动作未核验"],
+                    "checks": [{"requirement_id": "body", "met": True, "evidence_status": "unverified",
+                                "reason": "三处抽帧符合要求，尚未验证全片连续动作。"}],
+                    "revision_instructions": "再检查全片", "runtime_revision": {"step_id": "creative", "instruction": "Try again"}}), False
+            return await self.provider(job, model, system, prompt, **kwargs)
+        runtime = AsyncMock(return_value={"status": "complete", "task_id": str(uuid.uuid4()), "output": "Actual result", "sources": []})
+        with patch("backend.group_delivery_runtime.run_runtime_step", runtime):
+            delivery = (await self.run_delivery(provider))["delivery"]
+        runtime.assert_awaited_once()
+        self.assertEqual(delivery["status"], "partial")
+        self.assertEqual(delivery["validation"]["status"], "needs_revision")
+        self.assertFalse(delivery["reviews"][-1]["goal_met"])
+        self.assertFalse(delivery["reviews"][-1]["checks"][0]["met"])
+        self.assertEqual(len(delivery["versions"]), 1)
+        self.assertTrue(delivery["content"])
+        self.assertTrue(any("尚未验证" in item for item in delivery["limitations"]))
+
+    def test_review_requires_coverage_and_preserves_honest_disclosure(self):
+        from backend.harness.contracts import ReviewItem
+        from pydantic import ValidationError
+        for reason in ["尚未验证全片每一帧", "无法核实旁白", "Continuous motion has not been verified."]:
+            with self.assertRaises(ValidationError):
+                ReviewItem(requirement_id="motion", met=True, reason=reason)
+        for status in ["limited", "unverified"]:
+            self.assertFalse(ReviewItem(requirement_id="motion", met=True, reason="Sampled frames only", evidence_status=status).met)
+        for reason in ["元数据确认时长6秒，无音频流", "No unverified items remain.", "报告如实说明全程匀速尚未验证"]:
+            self.assertTrue(ReviewItem(requirement_id="report", met=True, reason=reason, evidence_status="verified").met)
+
+    async def test_missing_review_coverage_requires_a_structured_repair(self):
+        attempts = 0
+        async def provider(job, model, system, prompt, **kwargs):
+            nonlocal attempts
+            raw, truncated = await self.provider(job, model, system, prompt, **kwargs)
+            if "你是交付审查者" in system:
+                attempts += 1
+                if attempts == 1:
+                    value = json.loads(raw)
+                    for item in value["checks"]:
+                        item.pop("evidence_status")
+                    return json.dumps(value), False
+                self.assertIn("evidence_status", prompt)
+            return raw, truncated
+        delivery = (await self.run_delivery(provider))["delivery"]
+        self.assertEqual(attempts, 2)
+        self.assertEqual(delivery["status"], "complete")
+        self.assertEqual(delivery["format_diagnostics"][0]["stage"], "review")
+
+    async def test_reused_video_needs_no_native_member_or_repeat_dispatch(self):
+        self.job.update(group_output_format="auto", group_media_provider="muse")
+        asset = {"id": str(uuid.uuid4()), "kind": "video", "sha256": "a" * 64}
+        self.job["_task_context"] = {"reference_media": [asset]}
+        async def provider(job, model, system, prompt, **kwargs):
+            if "你是项目统筹者" in system:
+                return json.dumps({**plan(requirements=[{"id": "video", "kind": "video", "count": 1, "description": "复用已有视频"}]),
+                                   "reuse_media_ids": [asset["id"]]}), False
+            if "你是交付审查者" in system:
+                return json.dumps({"goal_met": True, "missing_requirements": [], "checks": [
+                    {"requirement_id": "media-video", "met": True, "evidence_status": "verified", "reason": "已有视频已校验复用"}]}), False
+            return await self.provider(job, model, system, prompt, **kwargs)
+        for with_muse in [False, True]:
+            with self.subTest(with_muse=with_muse):
+                if with_muse:
+                    self.job["group_team_snapshot"]["members"].append(
+                        {"id": "creator", "kind": "muse", "name": "Creator", "model": None, "role": "Create when requested"})
+                    self.job["group_recipient_member_ids"].append("creator")
+                with patch("backend.task_context.reuse_media", return_value=[asset]), \
+                     patch("backend.delivery_harness.produce_media", AsyncMock()), \
+                     patch.object(coordination, "actual_checks", return_value=[{"requirement_id": "media-video", "met": True, "reason": "Verified"}]), \
+                     patch("backend.group_delivery_runtime.run_runtime_step", AsyncMock()) as runtime:
+                    delivery = (await self.run_delivery(provider))["delivery"]
+                runtime.assert_not_awaited()
+                self.assertEqual(delivery["status"], "complete", delivery["limitations"])
+                self.assertFalse(any(step["kind"] == "muse" for step in delivery["steps"]))
+
     async def test_original_goal_omission_cannot_pass_all_planned_checks(self):
         async def provider(job, model, system, prompt, **kwargs):
             if "你是交付审查者" in system:
                 return json.dumps({"goal_met": False, "missing_requirements": ["用户要求的对照案例未在计划中覆盖"],
-                    "checks": [{"requirement_id": "body", "met": True, "reason": "正文存在"}], "revision_instructions": ""}), False
+                    "checks": [{"requirement_id": "body", "met": True, "evidence_status": "verified", "reason": "正文存在"}], "revision_instructions": ""}), False
             return await self.provider(job, model, system, prompt, **kwargs)
         delivery = (await self.run_delivery(provider))["delivery"]
         self.assertEqual(delivery["status"], "partial")
@@ -223,7 +305,7 @@ class CoordinationTests(unittest.IsolatedAsyncioTestCase):
             if "你是交付审查者" in system:
                 calls["review"] += 1
                 if calls["review"] == 1:
-                    return json.dumps({"goal_met": True, "missing_requirements": [], "checks": [{"requirement_id": "invented", "met": True, "reason": "ok"}]}), False
+                    return json.dumps({"goal_met": True, "missing_requirements": [], "checks": [{"requirement_id": "invented", "met": True, "evidence_status": "verified", "reason": "ok"}]}), False
                 self.assertIn('checks 必须覆盖且只包含', prompt)
             return await self.provider(job, model, system, prompt, **kwargs)
         delivery = (await self.run_delivery(provider))["delivery"]

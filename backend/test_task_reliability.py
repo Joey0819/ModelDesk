@@ -93,7 +93,7 @@ class DeliveryReliabilityTests(unittest.IsolatedAsyncioTestCase):
                 return draft, False
             if '你是交付审查者' in system and missing_images:
                 return json.dumps({'goal_met': False, 'missing_requirements': ['2 actual images missing'],
-                    'checks': [{'requirement_id': 'media-image', 'met': False, 'reason': 'Missing'}], 'revision_instructions': 'Return real images'}), False
+                    'checks': [{'requirement_id': 'media-image', 'met': False, 'evidence_status': 'verified', 'reason': 'Missing'}], 'revision_instructions': 'Return real images'}), False
             return await self.provider(job, model, system, prompt, **kwargs)
         sent = []
         async def runtime(job, member, prompt, **kwargs):

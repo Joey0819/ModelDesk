@@ -8,7 +8,7 @@ import unittest
 from unittest.mock import AsyncMock, patch
 import uuid
 
-from mcp.types import CallToolResult, TextContent, ImageContent, Tool
+from mcp.types import CallToolResult, TextContent, ImageContent, Tool, ListToolsResult
 from pydantic import ValidationError
 
 from backend import mcp_agent
@@ -63,6 +63,54 @@ class McpAgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('upstream final draft', sent[1]['prompt'])
         with self.assertRaisesRegex(ValueError, '交接不一致'):
             await self.run_step('silently changed task')
+
+    async def test_page_two_agent_preserves_text_structured_evidence_and_provenance(self):
+        self.tool.outputSchema = {'type': 'object', 'properties': {'count': {'type': 'integer'}}, 'required': ['count']}
+        self.session.list_tools.side_effect = [ListToolsResult(tools=[], nextCursor='second'), ListToolsResult(tools=[self.tool])] * 2
+        await mcp_agent.freeze_mcp_members(self.job)
+        self.session.call_tool.return_value = CallToolResult(content=[TextContent(type='text', text='Analysis complete')], structuredContent={'count': 42})
+        result = await self.run_step()
+        self.assertEqual(result['status'], 'complete')
+        self.assertIn('Analysis complete', result['output'])
+        self.assertIn('"count":42', result['output'])
+        self.assertTrue(result['mcp_receipt']['result_provenance']['structured_content_sha256'])
+        self.assertTrue(result['mcp_receipt']['output_schema_sha256'])
+        self.assertEqual((await self.run_step())['output'], result['output'])
+        self.session.call_tool.assert_awaited_once()
+
+    async def test_output_schema_changes_block_before_dispatch(self):
+        self.tool.outputSchema = {'type': 'object'}
+        result = await self.run_step()
+        self.assertEqual(result['status'], 'error')
+        self.assertIn('输出结构已变化', result['error'])
+        self.session.call_tool.assert_not_awaited()
+
+    async def test_invalid_structured_result_is_not_completed_or_replayed(self):
+        self.tool.outputSchema = {'type': 'object', 'required': ['count']}
+        await mcp_agent.freeze_mcp_members(self.job)
+        self.session.call_tool.return_value = CallToolResult(content=[TextContent(type='text', text='Done')], structuredContent={})
+        result = await self.run_step()
+        self.assertEqual(result['status'], 'error')
+        self.assertIn('结构化成果未通过', result['error'])
+        await self.run_step()
+        self.session.call_tool.assert_awaited_once()
+
+    async def test_legacy_snapshot_reuses_completed_result_but_does_not_authorize_new_schema(self):
+        frozen = self.job['_mcp_agent_snapshots'][self.member['id']]
+        frozen.pop('output_schema')
+        frozen.pop('output_schema_sha256')
+        result = await self.run_step()
+        self.assertEqual(result['status'], 'complete')
+        self.tool.outputSchema = {'type': 'object'}
+        self.assertEqual((await self.run_step())['output'], result['output'])
+        self.session.call_tool.assert_awaited_once()
+        # A second unstarted legacy task cannot inherit this new contract.
+        self.scope = str(uuid.uuid4()), self.scope[1], self.scope[2]
+        self.job['id'] = self.scope[0]
+        result = await self.run_step()
+        self.assertEqual(result['status'], 'error')
+        self.assertIn('输出结构已变化', result['error'])
+        self.session.call_tool.assert_awaited_once()
 
     async def test_timeout_never_replays_after_recovery(self):
         self.session.call_tool.side_effect = TimeoutError('contains secret provider URL')
@@ -154,6 +202,11 @@ class McpAgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn('ZmFrZQ', json.dumps(result))
         with self.assertRaisesRegex(ValueError, '超过 80000'):
             mcp_agent.actual_text(CallToolResult(content=[TextContent(type='text', text='a' * 80001)]))
+        with self.assertRaisesRegex(ValueError, '超过 80000'):
+            mcp_agent.actual_text(CallToolResult(content=[TextContent(type='text', text='Summary')], structuredContent={'data': 'a' * 80000}))
+        with self.assertRaisesRegex(ValueError, '超过 80000'):
+            mcp_agent.actual_text(CallToolResult(content=[TextContent(type='text', text='a' * 79999),
+                ImageContent(type='image', data='ZmFrZQ==', mimeType='image/png')]))
         with self.assertRaisesRegex(ValueError, '没有返回文本成果'):
             mcp_agent.actual_text(CallToolResult(content=[ImageContent(type='image', data='ZmFrZQ==', mimeType='image/png')]))
 

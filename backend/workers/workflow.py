@@ -75,6 +75,17 @@ def runtime_functions(data):
                 value = json.loads(body)
         except urllib.error.HTTPError as error:
             status = error.code
+            if name == "mcp_call" and status == 502:
+                # Only this fixed platform code is public. Never copy arbitrary
+                # upstream error bodies (URLs, tokens, tool arguments) to a model.
+                try:
+                    detail = json.loads(error.read(4097)).get("detail")
+                except (ValueError, OSError, AttributeError):
+                    detail = None
+                if isinstance(detail, dict) and detail.get("code") == "MCP_RESULT_TOO_LARGE":
+                    raise RuntimeError("MCP 工具已执行，但完整成果超出读取上限，未截断或标为完成；请在原服务读取成果，不要重复派发") from None
+                if isinstance(detail, dict) and detail.get("code") == "MCP_RESULT_UNCONFIRMED":
+                    raise RuntimeError("MCP 工具已派发，但未取得通过校验的完整成果；请核对原服务，不要重复派发") from None
             if status == 403:
                 reason = "当前任务未获此工具或资源权限，请检查所选资源与授权"
             elif status == 404:

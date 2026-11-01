@@ -507,10 +507,12 @@ class JobManager:
 
     async def tool_response(self, job, model, messages):
         from .super_platform import TOOLS as catalog, invoke_tool, runtime_context
+        from .mcp_protocol import canonical_json
         context = runtime_context(job["_runtime"]["token"])
         definitions = [{"type": "function", "function": {"name": item["id"], "description": item["description"], "parameters": item["parameters"]}}
                        for item in catalog if item["id"] in job.get("tools", [])]
         history = copy.deepcopy(messages)
+        non_retryable_mcp_errors = {}
         async with httpx.AsyncClient(timeout=httpx.Timeout(180, connect=5), trust_env=False) as client:
             for _ in range(6):
                 response = await client.post(**request_options({"model": model, "messages": history, "tools": definitions, "max_tokens": 2048}, GATEWAY + "/chat/completions"))
@@ -531,14 +533,41 @@ class JobManager:
                     if name not in context["tools"]:
                         result = {"error": "工具不在此次授权范围内"}
                     else:
+                        mcp_call_key = None
                         try:
                             arguments = json.loads(call["function"]["arguments"])
+                            if name == "mcp_call":
+                                # Includes server/tool identity and exact arguments;
+                                # ordering JSON object keys must not redispatch a
+                                # completed call whose result cannot be retried.
+                                mcp_call_key = canonical_json(arguments)
+                                if mcp_call_key in non_retryable_mcp_errors:
+                                    raise HTTPException(502, copy.deepcopy(non_retryable_mcp_errors[mcp_call_key]))
                             result = await invoke_tool(name, arguments, context)
-                            self.emit(job, "tool_result", tool=name, model=model, output=json.dumps(result["result"], ensure_ascii=False)[:16000])
+                            if name in {"mcp_call", "memory_read"}:
+                                # These boundaries return complete bounded JSON.
+                                # Slicing here corrupts structured artifacts or
+                                # removes the memory's partial-state limitations.
+                                tool_output = canonical_json(result["result"])
+                                if name == "memory_read" and len(tool_output) > 32000:
+                                    raise HTTPException(413, {
+                                        "code": "MEMORY_RESULT_TOO_LARGE", "retryable": False, "omitted": True,
+                                        "message": "记忆检索结果超过 32000 字符，未截断或写入上下文；请缩小查询范围或减少条数后重试。",
+                                    })
+                            else:
+                                tool_output = json.dumps(result["result"], ensure_ascii=False)[:16000]
+                            self.emit(job, "tool_result", tool=name, model=model, output=tool_output)
                         except Exception as error:
                             result = {"error": error.detail if isinstance(error, HTTPException) else public_error(error)}
+                            if (name == "mcp_call" and mcp_call_key is not None
+                                    and isinstance(result["error"], dict) and result["error"].get("retryable") is False):
+                                non_retryable_mcp_errors[mcp_call_key] = copy.deepcopy(result["error"])
                             self.emit(job, "tool_result", tool=name, model=model, error=result["error"])
-                    history.append({"role": "tool", "tool_call_id": call["id"], "content": json.dumps(result, ensure_ascii=False)[:20000]})
+                    if name in {"mcp_call", "memory_read"}:
+                        tool_content = canonical_json(result)
+                    else:
+                        tool_content = json.dumps(result, ensure_ascii=False)[:20000]
+                    history.append({"role": "tool", "tool_call_id": call["id"], "content": tool_content})
         raise RuntimeError("工具调用超过六轮，任务已停止并保留运行记录")
 
     async def council(self, job):

@@ -84,6 +84,54 @@ class TaskMemoryTests(unittest.TestCase):
         self.assertEqual(context['baseline_artifact']['content'], 'FULL_BODY')
         self.assertNotIn('content', task_context.context_summary(context)['baseline_artifact'])
 
+    def test_same_35k_body_after_failed_export_uses_lossless_baseline_reference(self):
+        body = "已完成的正文。" * 5000
+        self.assertEqual(len(body), 35000)
+        first = turn(0, "完成报告", group_context_mode="fresh", result={"delivery": {
+            "title": "原始报告", "status": "complete", "content": body,
+            "task_spec": {"requirements": [{"id": "body", "description": "完整正文"}]}}})
+        retry = turn(1, "补 PDF", result={"delivery": {"title": "报告与 PDF", "status": "partial", "content": body,
+            "limitations": ["PDF 文件未生成"], "task_spec": {"documents": {"formats": ["pdf"], "layout": "report"}}}})
+        current = turn(2, "继续完成")
+        jobs = {item["id"]: item for item in (first, retry)}
+        context = task_context.build_task_context(jobs, current)
+        latest, baseline = context["artifact"], context["baseline_artifact"]
+        self.assertEqual(latest["content"], body)
+        self.assertEqual(latest["status"], "partial")
+        self.assertEqual(latest["missing_outputs"], ["PDF 文件未生成"])
+        self.assertEqual(baseline["job_id"], first["id"])
+        self.assertEqual(baseline["title"], "原始报告")
+        self.assertEqual(baseline["status"], "complete")
+        self.assertEqual(baseline["requirements"][0]["id"], "body")
+        self.assertNotIn("content", baseline)
+        self.assertEqual(baseline["content_ref"], {"artifact": "artifact", "job_id": retry["id"], "content_sha256": latest["content_sha256"]})
+        self.assertEqual(baseline["content_sha256"], latest["content_sha256"])
+        self.assertLess(len(task_context.encoded(context)), task_context.MAX_CONTEXT_CHARS)
+        self.assertEqual(task_context.quote_task_context(context).count(body), 1)
+        self.assertIn("旧稿完成不代表新任务", task_context.quote_task_context(context))
+        summary = task_context.context_summary(context)
+        self.assertEqual(summary["baseline_artifact"], baseline)
+        self.assertNotIn("content", summary["artifact"])
+        # Durable JSON round-trip retains the binding and full source bytes.
+        restored = json.loads(json.dumps(context, ensure_ascii=False))
+        self.assertEqual(restored, context)
+        self.assertEqual(jobs[retry["id"]]["result"]["delivery"]["content"], body)
+
+    def test_baseline_dedup_is_exact_and_never_borrows_from_another_task(self):
+        body = "完整底稿。" * 4000
+        original = turn(0, "写文章", group_context_mode="fresh", result={"delivery": {"status": "complete", "content": body}})
+        changed = turn(1, "改一字", result={"delivery": {"status": "partial", "content": body + "改"}})
+        foreign = turn(2, "他人项目", result={"delivery": {"status": "complete", "content": body + "改"}})
+        foreign["project_id"] = "another-project"
+        context = task_context.build_task_context({item["id"]: item for item in (original, changed, foreign)}, turn(3, "继续"))
+        self.assertEqual(context["baseline_artifact"]["content"], body)
+        self.assertNotIn("content_ref", context["baseline_artifact"])
+        self.assertEqual(context["baseline_artifact"]["job_id"], original["id"])
+        fresh = turn(4, "新任务", group_context_mode="fresh")
+        fresh_context = task_context.build_task_context({item["id"]: item for item in (original, changed)}, fresh)
+        self.assertNotIn("baseline_artifact", fresh_context)
+        self.assertIsNone(fresh_context["artifact"])
+
     def test_media_survives_failed_summary_and_later_text_only_edits(self):
         with tempfile.TemporaryDirectory() as tmp:
             store = delivery_media.DeliveryMediaStore(Path(tmp).resolve() / "media")

@@ -20,6 +20,8 @@ from referencing import Registry
 from .harness.context import revision
 from .harness.store import RunStore, checked_id
 from .platform_store import store as resources
+from .mcp_protocol import (list_all_tools, validate_output_schema, complete_result_text,
+                           result_provenance)
 
 MAX_OUTPUT = 80000
 TIMEOUT_SECONDS = 120
@@ -71,15 +73,18 @@ def validate_schema(schema, field, prompt=None):
 async def discover_snapshot(job, member):
     config = configured_server(job, member)
     async with asyncio.timeout(25), agent_session(config) as session:
-        result = await session.list_tools()
-    tool = next((item for item in result.tools if item.name == member["mcp_tool"]), None)
+        tools = await list_all_tools(session)
+    tool = next((item for item in tools if item.name == member["mcp_tool"]), None)
     if tool is None:
         raise ValueError("MCP 服务未发布所选工具，请重新检查连接")
     field = member.get("mcp_prompt_field", "prompt")
     validate_schema(tool.inputSchema, field)
+    validate_output_schema(tool.outputSchema)
     return {"server_id": config["id"], "server_revision": revision(config), "tool": tool.name,
             "prompt_field": field, "input_schema": copy.deepcopy(tool.inputSchema),
-            "schema_sha256": revision(tool.inputSchema), "output_kind": "text", "timeout_seconds": TIMEOUT_SECONDS}
+            "schema_sha256": revision(tool.inputSchema), "output_schema": copy.deepcopy(tool.outputSchema),
+            "output_schema_sha256": revision(tool.outputSchema),
+            "output_kind": "text", "timeout_seconds": TIMEOUT_SECONDS}
 
 
 async def freeze_mcp_members(job, members=None):
@@ -96,23 +101,20 @@ def actual_text(result):
     value = result.model_dump(mode="json")
     if value.get("isError"):
         raise ValueError("MCP Agent 返回工具执行错误；没有标记为完成，也没有自动重发")
-    texts = [item["text"] for item in value.get("content", [])
-             if item.get("type") == "text" and isinstance(item.get("text"), str)]
-    # Structured content is actual server output, not a model's interpretation.
-    if value.get("structuredContent") is not None and not texts:
-        texts.append(json.dumps(value["structuredContent"], ensure_ascii=False, indent=2))
+    # Both channels are server output; a human-readable summary is not a substitute
+    # for the returned rows, measurements or other structured evidence.
     unsupported = sorted({item.get("type", "unknown") for item in value.get("content", []) if item.get("type") != "text"})
-    output = "\n\n".join(texts).strip()
+    output = complete_result_text(value)
     if not output:
         raise ValueError("MCP Agent 没有返回文本成果；图片、文件或外部资源链接尚未作为实际文件导入")
+    warning = ("MCP 返回了尚未导入的非文本资源（" + "、".join(unsupported) + "）；不作为已验证文件交付。") if unsupported else None
+    if warning:
+        output += "\n\n" + warning
     if len(output) > MAX_OUTPUT:
         raise ValueError("MCP Agent 成果超过 80000 字符，原任务未重发；请在服务端提供可分段读取的输出")
     from .attachments import secret_text
     if secret_text(output):
         raise ValueError("MCP Agent 返回内容含疑似凭据，未传入群聊或文档")
-    warning = ("MCP 返回了尚未导入的非文本资源（" + "、".join(unsupported) + "）；不作为已验证文件交付。") if unsupported else None
-    if warning:
-        output += "\n\n" + warning
     return output, warning
 
 
@@ -125,7 +127,8 @@ def public_record(record):
             "output_sha256": record.get("output_sha256"), "error": record.get("error") or
             ("MCP 调用结果未确认；请检查原服务，不会重复派发。" if status == "uncertain" else None),
             "remote_state": status, "dispatch_count": record.get("dispatch_count", 0),
-            "mcp_receipt": {key: record.get(key) for key in ["server_id", "tool", "schema_sha256", "prompt_sha256", "warning"]},
+            "mcp_receipt": {key: record.get(key) for key in ["server_id", "tool", "schema_sha256", "output_schema_sha256",
+                                                          "prompt_sha256", "warning", "result_provenance"]},
             "skill_application": record.get("skill_application")}
 
 
@@ -142,7 +145,8 @@ async def run_mcp_step(job, member, prompt, *, scope, skill_snapshot=None):
     if (frozen.get("server_id") != str(member["mcp_server_id"]) or frozen.get("tool") != member["mcp_tool"]
             or frozen.get("prompt_field") != member.get("mcp_prompt_field", "prompt")
             or frozen.get("server_revision") != revision(config)
-            or frozen.get("schema_sha256") != revision(frozen.get("input_schema"))):
+            or frozen.get("schema_sha256") != revision(frozen.get("input_schema"))
+            or ("output_schema_sha256" in frozen and frozen["output_schema_sha256"] != revision(frozen.get("output_schema")))):
         raise ValueError("MCP Agent 连接或能力已变化，请确认后新建任务")
     skills = freeze_native_skills(member, skill_snapshot)
     guidance = skill_prompt(list(skills), snapshot=skills)
@@ -154,6 +158,8 @@ async def run_mcp_step(job, member, prompt, *, scope, skill_snapshot=None):
     expected = {"id": identifier, "parent_job_id": parent_id, "project_id": project_id, "room_id": room_id,
                 "member": member, "server_id": frozen["server_id"], "tool": frozen["tool"],
                 "schema_sha256": frozen["schema_sha256"], "prompt_sha256": hashlib.sha256(actual_prompt.encode()).hexdigest()}
+    if "output_schema_sha256" in frozen:
+        expected["output_schema_sha256"] = frozen["output_schema_sha256"]
     async with _step_lock((parent_id, member["id"])):
         _scope(job, member)
         path = STORE.directory / (identifier + ".json")
@@ -175,10 +181,17 @@ async def run_mcp_step(job, member, prompt, *, scope, skill_snapshot=None):
                       "native_plugin_installed": False} if skills else None}
         try:
             async with asyncio.timeout(TIMEOUT_SECONDS), agent_session(config) as session:
-                tools = await session.list_tools()
-                tool = next((item for item in tools.tools if item.name == frozen["tool"]), None)
+                tools = await list_all_tools(session)
+                tool = next((item for item in tools if item.name == frozen["tool"]), None)
                 if tool is None or revision(tool.inputSchema) != frozen["schema_sha256"]:
                     raise ValueError("MCP Agent 工具结构已变化，任务未发送")
+                # Old completed records were returned above without replay. Old
+                # undispatched snapshots cannot authorize a newly declared schema.
+                if (("output_schema_sha256" not in frozen and tool.outputSchema is not None)
+                        or ("output_schema_sha256" in frozen
+                            and revision(tool.outputSchema) != frozen["output_schema_sha256"])):
+                    raise ValueError("MCP Agent 输出结构已变化，请新建任务；任务未发送")
+                validate_output_schema(tool.outputSchema)
                 _scope(job, member)
                 if revision(configured_server(job, member)) != frozen["server_revision"]:
                     raise ValueError("MCP Agent 连接已变化，任务未发送")
@@ -186,8 +199,11 @@ async def run_mcp_step(job, member, prompt, *, scope, skill_snapshot=None):
                 STORE.save(record)
                 result = await session.call_tool(frozen["tool"], {frozen["prompt_field"]: actual_prompt})
                 _scope(job, member)
+                if not result.isError:
+                    validate_output_schema(tool.outputSchema, result)
                 output, warning = actual_text(result)
-                record.update(status="complete", output=output, output_sha256=hashlib.sha256(output.encode()).hexdigest(), warning=warning)
+                record.update(status="complete", output=output, output_sha256=hashlib.sha256(output.encode()).hexdigest(), warning=warning,
+                              result_provenance=result_provenance(result.model_dump(mode="json")))
                 STORE.save(record)
         except asyncio.CancelledError:
             record.update(status="uncertain" if record["dispatch_count"] else "error", error="MCP 本地等待已停止；远端执行状态请核对原服务，不会自动重发")

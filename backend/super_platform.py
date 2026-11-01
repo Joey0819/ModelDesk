@@ -150,50 +150,51 @@ def context_material(job):
 
 def _context_material(job):
     from .projects import store as projects
-    pieces, references = [], []
+    from .memory_context import memory_source, pack_context
+    sources = []
+    # Explicitly selected memory has priority over automatic retrieval.
+    selected = set()
+    for identifier in job.get("memory_ids") or []:
+        item = store.get("memories", identifier)
+        if item.get("project_id") not in {None, job.get("project_id")}:
+            raise HTTPException(403, "所选记忆已移至其他项目，请重新选择资料")
+        if identifier not in selected:
+            sources.append(memory_source(item))
+            selected.add(identifier)
     if job.get("knowledge_ids"):
         found = store.search("knowledge", job["prompt"], job["knowledge_ids"], limit=6, project_id=job.get("project_id"))
         for item in found:
-            pieces.append(f"[知识文档 {item['name']}，第 {item['start_line']}–{item['end_line']} 行]\n{item['content']}")
-            references.append({"kind": "knowledge", **item})
-    if job.get("memory_ids"):
-        for identifier in job["memory_ids"]:
-            item = store.get("memories", identifier)
-            if item.get("project_id") not in {None, job.get("project_id")}:
-                raise HTTPException(403, "所选记忆已移至其他项目，请重新选择资料")
-            pieces.append(f"[用户选择的记忆 {item['name']}]\n{item['content'][:3000]}")
-            references.append({"kind": "memory", "id": item["id"], "name": item["name"], "scope": item["scope"]})
+            source = store.get("knowledge", item["id"])
+            sources.append({"text": item["content"], "reference": {"kind": "knowledge", **item,
+                "source_sha256": item["sha256"], "source_characters": len(source["content"])}})
     if isinstance(job.get("workflow"), dict) and job["workflow"].get("memory"):
         found = store.search("memories", job["prompt"], scope=job.get("memory_scope") or "global", limit=5, project_id=job.get("project_id"))
         for item in found:
-            pieces.append(f"[记忆空间 {item['scope']}：{item['name']}]\n{item['content']}")
-            references.append({"kind": "memory", **item})
+            if item["id"] in selected:
+                continue
+            source = memory_source(store.get("memories", item["id"]), item["content"])
+            source["reference"].update({key: item[key] for key in ("start_line", "end_line", "chunk")})
+            sources.append(source)
     if job.get("project_id") and job.get("snapshot_id") and job["mode"] != "review":
         snapshot = projects.snapshot(job["project_id"], job["snapshot_id"], True)
         for item in snapshot["files"]:
             current = item.get("current") or item.get("base")
             if current:
-                pieces.append(f"[项目 {snapshot['project_name']}：{item['path']}，第 {current['start_line']}–{current['end_line']} 行]\n{current['text']}")
-        references.append({"kind": "project", "project_id": job["project_id"], "snapshot_id": snapshot["id"], "digest": snapshot["digest"], "coverage": snapshot["coverage"]})
-    content = "\n\n".join(pieces)
-    truncated = len(content) > 8000
-    return content[:8000], references, truncated
+                sources.append({"text": current["text"], "reference": {"kind": "project",
+                    "name": item["path"], "project_id": job["project_id"], "snapshot_id": snapshot["id"],
+                    "digest": snapshot["digest"], "coverage": snapshot["coverage"],
+                    "start_line": current["start_line"], "end_line": current["end_line"]}})
+    return pack_context(sources)
 
 
 def remember_result(job):
     if not job.get("remember"):
         return None
-    result = job.get("result") or {}
-    delivery = result.get("delivery") if job.get("mode") == "group" else None
-    if delivery:
-        # Put the final work ahead of a potentially long discussion. Partial
-        # delivery is retained with its explicit status, never remembered as done.
-        text = json.dumps({key: delivery.get(key) for key in ("status", "title", "content", "limitations", "sources")}, ensure_ascii=False)[:12000]
-    else:
-        text = json.dumps(result, ensure_ascii=False)[:12000]
-    return store.put("memories", {"name": job["prompt"][:100], "content": "任务：" + job["prompt"][:2000] + "\n结果：" + text,
+    from .memory_context import result_memory
+    content, provenance = result_memory(job)
+    return store.put("memories", {"name": job["prompt"][:100], "content": content,
                                   "scope": job.get("memory_scope") or "global", "project_id": job.get("project_id"), "tags": [job["mode"]]},
-                     metadata={"job_id": job["id"], "models": job["models"], "source": "explicit_remember"})
+                     metadata=provenance)
 
 
 FAKE_DNS_NETWORK = ipaddress.ip_network("198.18.0.0/15")
@@ -317,17 +318,20 @@ async def mcp_session(config):
 
 
 async def mcp_discover(identifier):
+    from .mcp_protocol import list_all_tools
     config = store.get("mcp", identifier)
     if not config["enabled"]:
         raise HTTPException(409, "MCP 连接已停用")
     async with asyncio.timeout(25), mcp_session(config) as session:
-        result = await session.list_tools()
+        catalog = await list_all_tools(session)
         tools = [{"name": item.name, "description": item.description or "", "inputSchema": item.inputSchema,
-                  "allowed": item.name in config["allowed_tools"]} for item in result.tools]
+                  "outputSchema": item.outputSchema,
+                  "allowed": item.name in config["allowed_tools"]} for item in catalog]
     return {"id": identifier, "online": True, "tools": tools}
 
 
 async def mcp_call(identifier, name, arguments, selected=None, context=None):
+    from .mcp_protocol import list_all_tools, validate_output_schema, canonical_json
     if selected is not None and identifier not in selected:
         raise HTTPException(403, "此任务未选择该 MCP 服务器")
     with store.lock:
@@ -338,13 +342,33 @@ async def mcp_call(identifier, name, arguments, selected=None, context=None):
             raise HTTPException(403, "此 MCP 服务不属于当前项目")
     if not config["enabled"] or name not in config["allowed_tools"]:
         raise HTTPException(403, "该 MCP 工具未明确授权")
-    async with asyncio.timeout(30), mcp_session(config) as session:
-        result = await session.call_tool(name, arguments)
+    dispatched = False
+    try:
+        async with asyncio.timeout(30), mcp_session(config) as session:
+            catalog = await list_all_tools(session)
+            tool = next((item for item in catalog if item.name == name), None)
+            if tool is None:
+                raise HTTPException(409, "MCP 服务未发布所选工具；任务未发送")
+            validate_output_schema(tool.outputSchema)
+            dispatched = True
+            result = await session.call_tool(name, arguments)
+        if not result.isError:
+            validate_output_schema(tool.outputSchema, result)
+        value = result.model_dump(mode="json")
+        encoded = canonical_json(value)
+    except Exception as error:
+        if not dispatched:
+            raise
+        # Once tools/call may have left this process, a transport/SDK/schema
+        # failure cannot prove that its side effects did not happen. Keep a
+        # typed terminal outcome for both native and direct model tool loops.
+        raise HTTPException(502, {"code": "MCP_RESULT_UNCONFIRMED", "retryable": False,
+                                  "message": "MCP 工具已派发，但未取得通过校验的完整成果；请核对原服务，不要重复派发"}) from error
     if result.isError:
         raise HTTPException(502, "MCP 工具返回错误；请查看服务器状态")
-    value = result.model_dump(mode="json")
-    if len(json.dumps(value)) > 32000:
-        return {"content": json.dumps(value, ensure_ascii=False)[:16000], "truncated": True}
+    if len(encoded) > 32000:
+        raise HTTPException(502, {"code": "MCP_RESULT_TOO_LARGE", "retryable": False,
+                                  "message": "MCP 已执行，但返回成果超过 32000 字符，未截断或标为完成；请在原服务读取完整成果，不要重复派发"})
     return value
 
 
@@ -365,7 +389,15 @@ async def invoke_tool(name, arguments, context):
     def search_resources(kind, query, identifiers, scope, limit):
         with store.lock:
             validate_resource_revisions(context.get("resource_revisions"), context.get("project_id"))
-            return store.search(kind, query, identifiers, scope, limit, context.get("project_id"))
+            found = store.search(kind, query, identifiers, scope, limit, context.get("project_id"))
+            if kind == "memories":
+                from .memory_context import memory_source
+                for item in found:
+                    metadata = memory_source(store.get("memories", item["id"]))["reference"]
+                    item.update({key: metadata[key] for key in ("source_sha256", "source_characters", "result_state") if key in metadata})
+                if len(json.dumps(found, ensure_ascii=False)) > 14000:
+                    raise HTTPException(422, "记忆检索超过 14000 字符；请缩小关键词范围或减少 limit，原始记忆未被截断")
+            return found
     if name == "math":
         a, b = float(arguments["a"]), float(arguments["b"])
         try:

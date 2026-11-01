@@ -1,0 +1,16 @@
+.context-resource-row { margin-bottom: 10px; }
+.context-source-refresh { border: 0; background: transparent; color: var(--shell-muted, #7b899b); font-size: 11px; padding: 0 0 9px; cursor: pointer; }
+.context-source-refresh:hover { color: var(--shell-accent, #4658c8); }
+.context-resource-row > label { display: flex; align-items: center; gap: 7px; font-size: 12px; }
+.context-resource-row > label small { margin-left: auto; color: var(--shell-muted, #7b899b); }
+.context-resource-row > details { margin: 5px 0 0 20px; font-size: 11px; }
+.context-resource-row > details summary { cursor: pointer; color: var(--shell-muted, #7b899b); }
+.context-resource-row pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 180px; overflow: auto; padding: 9px; border: 1px solid var(--shell-border, #e3e7ef); border-radius: 6px; font-size: 11px; line-height: 1.7; }
+.context-resource-row details > small { display: block; overflow-wrap: anywhere; }
+.context-source-error { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; font-size: 12px; color: var(--shell-muted, #7b899b); padding: 8px 0; }
+.context-source-error > span { flex: 1 1 180px; overflow-wrap: anywhere; }
+.context-missing-selections { padding: 0; margin: 8px 0; list-style: none; }
+.context-missing-selections li { display: flex; align-items: center; gap: 8px; padding: 8px; border: 1px dashed var(--shell-border, #e3e7ef); border-radius: 6px; margin: 6px 0; }
+.context-missing-selections li > div { flex: 1; min-width: 0; }
+.context-missing-selections code { display: block; overflow-wrap: anywhere; font-size: 10px; }
+.context-missing-selections small { display: block; color: var(--shell-muted, #7b899b); font-size: 11px; margin-top: 4px; }

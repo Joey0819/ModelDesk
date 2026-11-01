@@ -84,7 +84,15 @@ def build_task_context(jobs, job):
                 if delivery.get("status") == "complete":
                     break
             elif delivery.get("status") == "complete":
-                # A failed edit must not replace the last usable full document.
+                # A failed export/media retry can retain the exact prior body.
+                # Keep both records' status and provenance, but pay for those
+                # bytes once. This is exact deduplication, never a summary or
+                # an assertion that the newer task has completed.
+                latest = context["artifact"]
+                if artifact["content"] == latest["content"]:
+                    artifact.pop("content")
+                    artifact["content_ref"] = {"artifact": "artifact", "job_id": latest["job_id"],
+                                               "content_sha256": latest["content_sha256"]}
                 context["baseline_artifact"] = artifact
                 break
     # Media survives independently of prose, but reuse copies are not new
@@ -128,6 +136,8 @@ def quote_task_context(context):
             "本轮未提及的原有约束仍有效；历史验收条件只是参考，不可当作新增用户要求。"
             "artifact 是最近实际底稿，失败或补图任务不清空它；partial 不代表验收通过。"
             "若存在 baseline_artifact，它是修改失败前最近完整交付，请在此基础上合并新的修改，不能用失败说明替换正文。"
+            "若 baseline_artifact 有 content_ref，其正文与引用的 artifact.content 逐字相同，只保存一次；"
+            "引用绑定 job_id 和 content_sha256。两个记录仍保留各自来源和状态，旧稿完成不代表新任务已经通过验收。"
             "reference_media 是本任务历次保存的媒体清单，包含正文汇总失败前已取得的素材；"
             "仅说明可以尝试读取，不代表其仍可用、符合最新要求或本轮验收通过。只有明确选择复用并校验成功后才算本轮成果。"
             "相同内容的多轮副本已合并；reference_media_aliases 仅用于保留底稿里的旧链接，不是额外素材或可选ID。"

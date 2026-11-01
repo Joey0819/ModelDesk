@@ -17,12 +17,13 @@ const memory = { task_id: 'task-a', revision: 3, sha256: 'a'.repeat(64), request
 
 test('memory-only media stays discoverable and a fresh task clearly excludes previous memory', () => {
   const continued = render(TaskContextControl, { value: 'continue', jobs: [{ task_context: memory }] });
-  assert.match(continued, /任务记忆 · 2 条要求 · 1 份素材/);
+  assert.match(continued, /上次执行记忆 · 2 条要求 · 1 份素材/);
   assert.match(continued, /1 份历史文本资料/);
   assert.match(continued, /仅保留已读取的部分/);
-  assert.match(continued, /发送后会追加本轮要求/);
+  assert.match(continued, /不包含该次执行后才生成的成果/);
+  assert.match(continued, /下一轮发送时会重新整理最新成果/);
   const fresh = render(TaskContextControl, { value: 'fresh', jobs: [{ task_context: memory }] });
-  assert.match(fresh, /查看旧任务记忆（本轮不带入）/);
+  assert.match(fresh, /查看上次执行记忆（本轮不带入）/);
   assert.match(fresh, /不会作为本轮任务记忆带入/);
   assert.doesNotMatch(fresh, /已保留底稿/);
 });

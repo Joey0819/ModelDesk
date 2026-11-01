@@ -43,6 +43,14 @@ NATIVE_FAILURES = {
     "new_chat_not_confirmed": "未能确认新建的空白会话和输入框。",
     "composer_has_draft": "输入框已有草稿，为避免覆盖而停止。",
     "draft_not_verified": "未能核对输入框中的完整任务，未确认发送。",
+    "draft_copy_unconfirmed": "未读取到输入框的实际复制内容；草稿保留，任务未发送。请保持 Muse 输入框焦点后检查。",
+    "draft_content_mismatch": "输入框实际内容与完整任务不一致；未覆盖现有草稿，也未发送。请在 Muse 核对草稿。",
+    "draft_thread_changed": "核对草稿时 Muse 已离开本次空白会话，任务未发送。",
+    "draft_focus_lost": "核对草稿时 Muse 窗口焦点已改变，任务未发送。请将主窗口置于前台并关闭弹窗。",
+    "draft_activation_failed": "macOS 未在等待时间内将 Muse 切到可操作前台，任务未发送。请手动打开 Muse 主窗口后再检查。",
+    "draft_busy_or_waiting_user": "Muse 正在运行或等待用户确认，未操作现有草稿。",
+    "draft_composer_unavailable": "已切到 Muse，但未找到可核对的输入框，任务未发送。",
+    "draft_composer_focus_failed": "未能聚焦已找到的 Muse 输入区域，任务未发送。",
     "send_outcome_unknown": "已尝试发送但没有取得匹配回执，请先在 Muse 核对。",
     "reference_upload_unconfirmed": "上游图片未能确认附加到 Muse 输入框，任务未发送；图片仍保存在 ModelDesk 成果中。",
     "thread_changed": "Muse 当前会话已变化，无法继续核对原任务。",
@@ -54,7 +62,26 @@ def native_failure(result):
     code = result.get("error") if isinstance(result, dict) else None
     if not isinstance(code, str) or code not in NATIVE_FAILURES:
         return "", {}
-    return " " + NATIVE_FAILURES[code], {"native_error_code": code}
+    diagnostic = {"native_error_code": code}
+    raw = result.get("draft_verification")
+    if code.startswith("draft_") and isinstance(raw, dict):
+        checked = {}
+        for key in ["clipboard_changed", "request_marker_present", "text_matches", "new_thread", "app_focused", "window_focused",
+                    "frontmost_is_muse", "activation_requested", "busy", "waiting_user", "composer_found", "composer_focused",
+                    "request_marker_found", "expected_payload_found", "outer_whitespace_only"]:
+            if type(raw.get(key)) is bool:
+                checked[key] = raw[key]
+        for key, limit in [("attempts", 6), ("expected_characters", 32000), ("copied_characters", 32000)]:
+            if type(raw.get(key)) is int and 0 <= raw[key] <= limit:
+                checked[key] = raw[key]
+        for key in ["expected_sha256", "copied_sha256"]:
+            if isinstance(raw.get(key), str) and re.fullmatch(r"[a-f0-9]{64}", raw[key]):
+                checked[key] = raw[key]
+        if raw.get("focused_role") in {"AXTextArea", "AXTextField", "AXComboBox", "AXGroup", "AXWebArea", "AXButton", "AXWindow", "other", "unavailable"}:
+            checked["focused_role"] = raw["focused_role"]
+        if checked:
+            diagnostic["draft_verification"] = checked
+    return " " + NATIVE_FAILURES[code], diagnostic
 
 
 class MuseTaskRequest(BaseModel):
@@ -395,7 +422,7 @@ class MuseManager:
                 continue
 
     async def helper_call(self, command, payload=None):
-        if command not in {"probe", "submit", "observe"}:
+        if command not in {"probe", "submit", "observe", "check_draft"}:
             raise ValueError("unsupported helper command")
         async with self.helper_lock:
             if not self.helper.is_file() or self.helper.is_symlink():

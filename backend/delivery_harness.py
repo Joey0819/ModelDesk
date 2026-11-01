@@ -43,9 +43,40 @@ def explicit_video_constraints(goal):
         low, high = int(match[1]) * scale, int(match[2]) * scale
         if 0 < low <= high <= 3600:
             constraints.update(min_duration_seconds=low, max_duration_seconds=high)
-    for key, term in [("audio_required", r"旁白|配音|narration|voiceover"), ("captions_required", r"字幕|subtitles?|captions?")]:
-        if re.search(term, goal, re.I):
-            constraints[key] = not bool(re.search(r"(?:不要|无需|不需要|without|no)\s*(?:中文|Chinese)?\s*(?:" + term + ")", goal, re.I))
+    # A term's mere presence is not a requirement. In particular,
+    # "不需要字幕或旁白" negates both coordinated features, and a later explicit
+    # correction must override an earlier positive/negative instruction.
+    audio = r"旁白|配音|\bnarration\b|\bvoice[ -]?over\b"
+    captions = r"字幕|\bsubtitles?\b|\bcaptions?\b"
+    feature = r"(?:(?:中文|英文|中英双语|同步|完整|全程|全片|Chinese\b|English\b)\s*)*(?:" + audio + "|" + captions + ")"
+    sequence = feature + r"(?:\s*(?:、|和|或|及|以及|\band\b|\bor\b)\s*" + feature + ")*"
+    wrapper = r"(?:(?:再|额外|继续)\s*)?(?:(?:添加|加入|加上|包含|保留|提供|配上|带有|使用|要求|需要|有|带)\s*){0,2}"
+    negative = (r"(?:不需要|不要求|不希望|不要|无需|不必|不用|不)\s*" + wrapper +
+                r"|取消|去掉|移除|删去|删除|没有|不带|无|"
+                r"\b(?:(?:do\s+not|don't)\s+(?:add|include|use|require|keep)|no\s+need\s+for|without|no)\b")
+    positive = (r"需要|要求|必须(?:有|提供)?|添加|加入|加上|包含|保留|提供|配上|带有|有|"
+                r"\b(?:add|include|use|with|keep|require)\b")
+    pattern = re.compile(r"(?:(?P<negative>" + negative + r")|(?P<positive>" + positive + r"))\s*(?P<features>" + sequence + ")", re.I)
+    declarations = []
+    for match in pattern.finditer(goal):
+        features = match["features"]
+        value = match["negative"] is None
+        for key, term in [("audio_required", audio), ("captions_required", captions)]:
+            if re.search(term, features, re.I):
+                declarations.append((match.end(), key, value))
+    # Only an explicit silent-video instruction, not an arbitrary "silent"
+    # occurrence (e.g. a work title), removes the audio requirement.
+    silent = (r"(?:无声|静音)(?:(?:的|抽象|短|小型)\s*)*(?:视频|短片|片段|动画)|"
+              r"(?:视频|短片|片段|动画)(?:保持|设为|改为|做成)?(?:无声|静音)|"
+              r"\bsilent\s+(?:(?:short|abstract)\s+)*(?:video|clip|animation)\b|"
+              r"\b(?:make|keep)\s+(?:it|the\s+video)\s+silent\b")
+    for match in re.finditer(silent, goal, re.I):
+        prefix = goal[max(0, match.start() - 35):match.start()]
+        if re.search(r"(?:不要|不需要|无需|不是|不是要)(?:(?:制作|生成|做成|做)?(?:一个|一段)?)?\s*$|\b(?:not|don't\s+make|do\s+not\s+make)\s+(?:a\s+)?$", prefix, re.I):
+            continue
+        declarations.append((match.end(), "audio_required", False))
+    for _, key, value in sorted(declarations):
+        constraints[key] = value
     return constraints
 
 

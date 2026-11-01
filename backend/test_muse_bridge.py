@@ -345,6 +345,14 @@ class MuseTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_known_native_send_failures_preserve_safe_diagnostics_without_resending(self):
         for code, sent, uncertain in [("new_chat_not_confirmed", False, False),
+                                      ("draft_copy_unconfirmed", False, False),
+                                      ("draft_content_mismatch", False, False),
+                                      ("draft_thread_changed", False, False),
+                                      ("draft_focus_lost", False, False),
+                                      ("draft_activation_failed", False, False),
+                                      ("draft_busy_or_waiting_user", False, False),
+                                      ("draft_composer_unavailable", False, False),
+                                      ("draft_composer_focus_failed", False, False),
                                       ("send_outcome_unknown", None, True)]:
             original = self.driver()
 
@@ -363,6 +371,29 @@ class MuseTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(result["sent"], sent)
             self.assertEqual([call.args[0] for call in helper.await_args_list], ["probe", "submit"])
             self.assertNotIn("unrelated draft text", json.dumps(result))
+
+    def test_native_draft_diagnostics_are_bounded_and_never_expose_clipboard_text(self):
+        detail, fields = muse.native_failure({"error": "draft_content_mismatch", "draft_verification": {
+            "attempts": 6, "expected_characters": 4500, "copied_characters": 4400,
+            "clipboard_changed": True, "request_marker_present": True, "text_matches": False,
+            "new_thread": True, "app_focused": True, "window_focused": True,
+            "frontmost_is_muse": False, "activation_requested": False, "busy": False, "waiting_user": False,
+            "focused_role": "AXWebArea", "request_marker_found": False, "expected_payload_found": False, "outer_whitespace_only": False,
+            "expected_sha256": "a" * 64, "copied_sha256": "b" * 64,
+            "copied": "private clipboard text", "url": "https://muse.ai/thread/private", "unexpected": {"secret": "hidden"},
+        }})
+        self.assertIn("未覆盖", detail)
+        self.assertEqual(fields["draft_verification"]["attempts"], 6)
+        self.assertEqual(fields["draft_verification"]["copied_sha256"], "b" * 64)
+        self.assertFalse(fields["draft_verification"]["activation_requested"])
+        self.assertEqual(fields["draft_verification"]["focused_role"], "AXWebArea")
+        self.assertNotIn("private", json.dumps(fields))
+        _, invalid = muse.native_failure({"error": "draft_copy_unconfirmed", "draft_verification": {
+            "attempts": 7, "expected_characters": True, "copied_characters": -1,
+            "copied_sha256": "raw content", "text_matches": "yes", "expected_sha256": "A" * 64,
+            "focused_role": "private text", "request_marker_found": "true",
+        }})
+        self.assertEqual(invalid, {"native_error_code": "draft_copy_unconfirmed"})
 
     async def test_unknown_native_error_is_not_exposed_and_known_probe_error_is_helpful(self):
         async def failed_probe(command, payload=None):

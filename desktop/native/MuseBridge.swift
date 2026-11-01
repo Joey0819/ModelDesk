@@ -1,6 +1,7 @@
 import AppKit
 import ApplicationServices
 import Foundation
+import CryptoKit
 
 // A narrow adapter for the user's signed-in Muse window. No cookies, tokens,
 // private endpoints, or other applications are accessed.
@@ -69,7 +70,18 @@ func composer(_ tree: [AXUIElement]) -> AXUIElement? {
 }
 func press(_ element: AXUIElement) -> Bool { AXUIElementPerformAction(element, kAXPressAction as CFString) == .success }
 func foreground() -> Bool { NSWorkspace.shared.frontmostApplication?.processIdentifier == app.processIdentifier }
-func activate() -> Bool { app.activate(options: []); settle(0.3); return foreground() }
+var activationRequested = false
+func activate() -> Bool {
+    // AppKit activation is a request. Wait for actual foreground/window
+    // readiness rather than assuming a fixed animation delay is sufficient.
+    activationRequested = app.activate(options: [])
+    let deadline = Date().addingTimeInterval(2)
+    repeat {
+        if foreground() && mainWindowFocused() { return true }
+        settle(0.1)
+    } while Date() < deadline
+    return false
+}
 func click(_ point: CGPoint) -> Bool {
     guard foreground(), mainWindowFocused() else { return false }
     CGEvent(mouseEventSource: nil, mouseType: .leftMouseDown, mouseCursorPosition: point, mouseButton: .left)?.post(tap: .cghidEventTap)
@@ -174,6 +186,63 @@ final class TemporaryClipboard {
         let items = original.map { values -> NSPasteboardItem in let item = NSPasteboardItem(); for (type, data) in values { item.setData(data, forType: type) }; return item }
         if !items.isEmpty { board.writeObjects(items) }
     }
+}
+
+// BEGIN DRAFT VERIFICATION CONTRACT
+// This pure check is also exercised without opening an application. No
+// whitespace normalization is permitted: code and user constraints must match.
+func draftVerificationError(expected: String, copied: String, sentinel: String,
+                            newThread: Bool, appFocused: Bool, windowFocused: Bool) -> String {
+    if !appFocused || !windowFocused { return "draft_focus_lost" }
+    if !newThread { return "draft_thread_changed" }
+    if copied == sentinel || copied.isEmpty { return "draft_copy_unconfirmed" }
+    return copied == expected ? "" : "draft_content_mismatch"
+}
+// END DRAFT VERIFICATION CONTRACT
+
+func verifyDraft(_ expected: String, requestTag: String, clipboard: TemporaryClipboard) -> (String, [String: Any]) {
+    let sentinel = "MODELDESK_VERIFY_" + UUID().uuidString
+    var copied = sentinel; var error = "draft_copy_unconfirmed"; var attempts = 0
+    var newThread = false; var appFocused = false; var windowFocused = false
+    for attempt in 1...6 {
+        attempts = attempt
+        newThread = threadURL(snapshot()) == "https://muse.ai/thread/new"
+        appFocused = foreground(); windowFocused = mainWindowFocused()
+        error = draftVerificationError(expected: expected, copied: sentinel, sentinel: sentinel,
+                                       newThread: newThread, appFocused: appFocused, windowFocused: windowFocused)
+        if error != "draft_copy_unconfirmed" { break }
+        // A no-op Cmd+C must not be mistaken for successful readback of the
+        // payload that was already on the clipboard before Cmd+V.
+        clipboard.put(sentinel)
+        guard key(0, flags: .maskCommand), key(8, flags: .maskCommand) else { error = "draft_focus_lost"; break }
+        copied = clipboard.read()
+        if copied.hasPrefix(requestTag) { clipboard.owned.insert(copied) }
+        newThread = threadURL(snapshot()) == "https://muse.ai/thread/new"
+        appFocused = foreground(); windowFocused = mainWindowFocused()
+        error = draftVerificationError(expected: expected, copied: copied, sentinel: sentinel,
+                                       newThread: newThread, appFocused: appFocused, windowFocused: windowFocused)
+        if error.isEmpty || !["draft_copy_unconfirmed", "draft_content_mismatch"].contains(error) { break }
+        // A different copied object is not ours to overwrite or retry.
+        if copied != sentinel && !copied.isEmpty && !copied.hasPrefix(requestTag) { break }
+        settle(0.2)
+    }
+    let ours = copied.hasPrefix(requestTag)
+    let markerFound = copied.contains(requestTag)
+    var focusedRole = "unavailable"
+    if let focused = attr(application, kAXFocusedUIElementAttribute), CFGetTypeID(focused) == AXUIElementGetTypeID() {
+        let role = string(unsafeBitCast(focused, to: AXUIElement.self), kAXRoleAttribute)
+        focusedRole = ["AXTextArea", "AXTextField", "AXComboBox", "AXGroup", "AXWebArea", "AXButton", "AXWindow"].contains(role) ? role : "other"
+    }
+    func digest(_ value: String) -> String { SHA256.hash(data: Data(value.utf8)).map { String(format: "%02x", $0) }.joined() }
+    var diagnostics: [String: Any] = ["attempts": attempts, "clipboard_changed": copied != sentinel,
+        "request_marker_present": ours, "text_matches": copied == expected,
+        "request_marker_found": markerFound, "expected_payload_found": copied.contains(expected),
+        "outer_whitespace_only": copied.trimmingCharacters(in: .whitespacesAndNewlines) == expected,
+        "new_thread": newThread, "app_focused": appFocused, "window_focused": windowFocused,
+        "expected_characters": expected.count, "copied_characters": ours ? copied.count : 0,
+        "expected_sha256": digest(expected), "copied_sha256": ours ? digest(copied) : NSNull()]
+    if command == "check_draft" { diagnostics["focused_role"] = focusedRole }
+    return (error, diagnostics)
 }
 
 func stagingDirectory() -> URL? {
@@ -367,6 +436,56 @@ if command == "probe" {
 guard let requestID = input["request_id"] as? String, UUID(uuidString: requestID) != nil else { fail("invalid_request") }
 let requestTag = "[MODELDESK_REQUEST:\(requestID)]"
 let closingTag = "[MODELDESK_DONE:\(requestID)]"
+func draftGeometry(_ tree: [AXUIElement]) -> [String: Any] {
+    func fields(_ rectangle: CGRect?) -> Any {
+        guard let box = rectangle else { return NSNull() }
+        return ["x": box.minX, "y": box.minY, "width": box.width, "height": box.height]
+    }
+    var window: CGRect?; var focusedRole = "unavailable"
+    for key in [kAXFocusedWindowAttribute, kAXMainWindowAttribute] {
+        if let value = attr(application, key), CFGetTypeID(value) == AXUIElementGetTypeID() {
+            let element = unsafeBitCast(value, to: AXUIElement.self)
+            if validWindow(element) { window = rect(element); break }
+        }
+    }
+    if let value = attr(application, kAXFocusedUIElementAttribute), CFGetTypeID(value) == AXUIElementGetTypeID() {
+        let role = string(unsafeBitCast(value, to: AXUIElement.self), kAXRoleAttribute)
+        focusedRole = ["AXTextArea", "AXTextField", "AXComboBox", "AXGroup", "AXWebArea", "AXButton", "AXWindow"].contains(role) ? role : "other"
+    }
+    return ["composer": fields(composer(tree).flatMap(rect)), "window": fields(window), "focused_role": focusedRole]
+}
+func failDraftPreflight(_ code: String, _ extra: [String: Bool] = [:]) -> Never {
+    var diagnostic: [String: Any] = ["frontmost_is_muse": foreground(), "window_focused": mainWindowFocused(),
+                                   "activation_requested": activationRequested]
+    for (key, value) in extra { diagnostic[key] = value }
+    emit(["ok": false, "error": code, "sent": false, "uncertain": false,
+          "request_id": requestID, "draft_verification": diagnostic, "geometry": draftGeometry(snapshot())])
+}
+if command == "check_draft" {
+    guard let prompt = input["prompt"] as? String, !prompt.isEmpty, prompt.count <= 24000 else { fail("invalid_request") }
+    guard emptyNewThread(initial) else { failDraftPreflight("draft_thread_changed", ["new_thread": false]) }
+    if input["inspect_only"] as? Bool == true {
+        emit(["ok": true, "sent": false, "uncertain": false, "request_id": requestID,
+              "inspected_only": true, "geometry": draftGeometry(initial),
+              "draft_verification": ["frontmost_is_muse": foreground(), "window_focused": mainWindowFocused(), "new_thread": true]])
+    }
+    let busy = isBusy(initial), waiting = hasApproval(initial)
+    guard !busy, !waiting else { failDraftPreflight("draft_busy_or_waiting_user", ["busy": busy, "waiting_user": waiting]) }
+    guard activate() else { failDraftPreflight("draft_activation_failed") }
+    let current = snapshot()
+    guard emptyNewThread(current) else { failDraftPreflight("draft_thread_changed", ["new_thread": false]) }
+    let currentBusy = isBusy(current), currentWaiting = hasApproval(current)
+    guard !currentBusy, !currentWaiting else { failDraftPreflight("draft_busy_or_waiting_user", ["busy": currentBusy, "waiting_user": currentWaiting]) }
+    guard let box = composer(current).flatMap(rect) else { failDraftPreflight("draft_composer_unavailable", ["composer_found": false]) }
+    guard click(CGPoint(x: box.minX + box.width * 0.35, y: box.midY)) else { failDraftPreflight("draft_composer_focus_failed", ["composer_found": true, "composer_focused": false]) }
+    // Diagnostic readback only. Focus the same guarded composer region as
+    // submit, but never create a chat, paste, delete, or press Enter.
+    let clipboard = TemporaryClipboard()
+    let (error, diagnostics) = verifyDraft(requestTag + "\n" + prompt, requestTag: requestTag, clipboard: clipboard)
+    clipboard.restore()
+    emit(["ok": error.isEmpty, "error": error.isEmpty ? NSNull() : error,
+          "sent": false, "uncertain": false, "request_id": requestID, "draft_verification": diagnostics, "geometry": draftGeometry(snapshot())])
+}
 if command == "submit" {
     guard let prompt = input["prompt"] as? String, !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, prompt.count <= 24000, input["thread_url"] == nil || input["thread_url"] is NSNull else { fail("invalid_request") }
     guard activate(), mainWindowFocused() else { fail("window_focus_lost") }
@@ -395,10 +514,13 @@ if command == "submit" {
     guard existing == sentinel || existing.isEmpty else { clipboard.owned.insert(existing); clipboard.restore(); fail("composer_has_draft") }
     let payload = requestTag + "\n" + prompt
     clipboard.put(payload)
-    guard key(9, flags: .maskCommand), key(0, flags: .maskCommand), key(8, flags: .maskCommand) else { clipboard.restore(); fail("window_focus_lost") }
-    let copied = clipboard.read()
-    if copied.hasPrefix(requestTag) { clipboard.owned.insert(copied) }
-    guard copied == payload, threadURL(snapshot()) == "https://muse.ai/thread/new", foreground(), mainWindowFocused() else { clipboard.restore(); fail("draft_not_verified") }
+    guard key(9, flags: .maskCommand) else { clipboard.restore(); fail("window_focus_lost") }
+    let (draftError, draftDiagnostics) = verifyDraft(payload, requestTag: requestTag, clipboard: clipboard)
+    guard draftError.isEmpty else {
+        clipboard.restore()
+        emit(["ok": false, "error": draftError, "sent": false, "uncertain": false,
+              "request_id": requestID, "draft_verification": draftDiagnostics])
+    }
     if let names = input["attachment_names"] as? [String], !names.isEmpty {
         guard names.count <= 4, let directory = stagingDirectory() else { clipboard.restore(); fail("reference_upload_unconfirmed") }
         for name in names {

@@ -26,7 +26,13 @@ import {
   groupRecipients,
   groupTimeline,
   groupDeliveryMode,
+  detectComposerTrigger,
+  detectMessageHandoffIntent,
+  filterComposerSuggestions,
+  applyMentionCandidate,
+  formatQuoteReply,
 } from '../src/group-state.js';
+import { computeArtifactDiff, deriveRoomArtifacts, filterArtifactsByCategory } from '../src/artifacts.js';
 import { applyEvent } from '../src/workbench-state.js';
 
 const members = [{ id: 'writer', name: 'Writer', model: 'model-a', role: 'Draft the proposal' }, { id: 'reviewer', name: 'Reviewer', model: 'model-b', role: 'Check the evidence' }];
@@ -112,10 +118,10 @@ test('group harness synthesizes completed member deliverables for Muse and Agent
 });
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const compiled = buildSync({ stdin: { contents: 'export {GroupTurn, GroupMuseTurn, GroupAgentTaskTurn, GroupDeliveryProgress, GroupDeliveryModeSelector} from "./src/components/GroupWorkspace.jsx"; export {default as WorkspaceNavigation} from "./src/components/WorkspaceNavigation.jsx";', resolveDir: root }, bundle: true, platform: 'node', format: 'cjs', jsx: 'automatic', write: false, external: ['react', 'react/jsx-runtime'], define: { 'import.meta.env': '{}' }, loader: { '.css': 'empty' } });
+const compiled = buildSync({ stdin: { contents: 'export {GroupTurn, GroupMuseTurn, GroupAgentTaskTurn, GroupDeliveryProgress, GroupDeliveryModeSelector, GroupLiveActivityBar} from "./src/components/GroupWorkspace.jsx"; export {default as WorkspaceNavigation} from "./src/components/WorkspaceNavigation.jsx"; export {default as CommandPalette} from "./src/components/CommandPalette.jsx"; export {buildCommandItems, filterCommandItems} from "./src/workbench-sessions.js";', resolveDir: root }, bundle: true, platform: 'node', format: 'cjs', jsx: 'automatic', write: false, external: ['react', 'react/jsx-runtime'], define: { 'import.meta.env': '{}' }, loader: { '.css': 'empty' } });
 const filename = path.join(root, 'tests/group-virtual.cjs');
 const module = new Module(filename); module.paths = Module._nodeModulePaths(path.dirname(filename)); module._compile(compiled.outputFiles[0].text, filename);
-const { GroupTurn, GroupMuseTurn, GroupAgentTaskTurn, GroupDeliveryProgress, GroupDeliveryModeSelector, WorkspaceNavigation } = module.exports;
+const { GroupTurn, GroupMuseTurn, GroupAgentTaskTurn, GroupDeliveryProgress, GroupDeliveryModeSelector, GroupLiveActivityBar, WorkspaceNavigation, CommandPalette, buildCommandItems, filterCommandItems } = module.exports;
 
 test('automatic delivery timeline distinguishes execution progress, full results, and blocked steps', () => {
   const delivery = { status: 'partial', title: '实际文章初稿', content: '完整收到的文章正文', steps: [
@@ -263,4 +269,92 @@ test('restored selections cannot silently choose an executor after a member type
   assert.equal(groupSelection(changedRoster, ['writer']).runtimeMember.id, 'writer');
   assert.equal(groupSelection(changedRoster, ['writer']).selectionError, '');
   assert.deepEqual(groupSelection(changedRoster, []).discussionMembers, [members[1]]);
+});
+
+test('composer @ mention and / recipe autocomplete detects triggers and preserves explicit recipient boundaries', () => {
+  const roster = [...members, { id: 'muse', name: 'Muse', kind: 'muse' }, { id: 'codex', name: 'Codex', kind: 'codex' }];
+  const mentionTrigger = detectComposerTrigger('请帮我看看 @wr', 9);
+  assert.equal(mentionTrigger.type, 'mention');
+  assert.equal(mentionTrigger.query, 'wr');
+  const mentionCandidates = filterComposerSuggestions(mentionTrigger, roster);
+  assert.equal(mentionCandidates.length, 1);
+  assert.equal(mentionCandidates[0].id, 'writer');
+  const appliedModel = applyMentionCandidate('请帮我看看 @wr', mentionTrigger, mentionCandidates[0], ['reviewer'], roster);
+  assert.equal(appliedModel.prompt, '请帮我看看 ');
+  assert.deepEqual(appliedModel.recipientIds, ['reviewer', 'writer']);
+
+  const museTrigger = detectComposerTrigger('@mu', 3);
+  const museCandidates = filterComposerSuggestions(museTrigger, roster);
+  const appliedMuse = applyMentionCandidate('@mu', museTrigger, museCandidates[0], ['writer'], roster);
+  assert.equal(appliedMuse.prompt, '');
+  assert.deepEqual(appliedMuse.recipientIds, ['muse']);
+
+  const recipeTrigger = detectComposerTrigger('/vid', 4);
+  assert.equal(recipeTrigger.type, 'recipe');
+  const recipes = filterComposerSuggestions(recipeTrigger, roster);
+  assert.equal(recipes[0].recipe.command, '/video');
+
+  const reviewTrigger = detectComposerTrigger('/code-rev', 9);
+  const reviewRecipes = filterComposerSuggestions(reviewTrigger, roster);
+  assert.equal(reviewRecipes[0].recipe.command, '/code-review');
+
+  const quoted = formatQuoteReply({ member_name: 'Writer', content: 'First line\nSecond line' }, '');
+  assert.match(quoted, /> 【Writer】：First line/);
+  assert.match(quoted, /针对以上内容，请进一步：/);
+});
+
+test('live activity bar, quote reply action, room artifact gallery, and command palette render cleanly', () => {
+  const liveHtml = renderToStaticMarkup(React.createElement(GroupLiveActivityBar, {
+    activeJob: { ...job, status: 'running', group_delivery_mode: 'auto' },
+    museTasks: [{ id: 'm1', monitoring: true, status: 'running' }],
+    agentTasks: [{ id: 'a1', status: 'running', engine: 'codex', member: { name: 'Codex' } }],
+    onScrollToLatest() {},
+    onOpenMuse() {},
+    onOpenCodeTasks() {},
+    onCancelJob() {},
+  }));
+  assert.match(liveHtml, /实时协同中/);
+  assert.match(liveHtml, /自动统筹与交付中/);
+  assert.match(liveHtml, /Muse 窗口同步中/);
+  assert.match(liveHtml, /代码 Agent 运行中/);
+
+  const smartJob = {
+    ...job,
+    result: {
+      messages: [
+        { model: 'model-a', round: 1, content: '分镜一：海边阳台镜头，接着修改 src/App.jsx 的函数```js\nfunction test() {}\n```' },
+      ],
+    },
+  };
+  assert.deepEqual(detectMessageHandoffIntent(smartJob.result.messages[0].content), { isVideoStoryboard: true, isCodeProposal: true });
+  const turnHtml = renderToStaticMarkup(React.createElement(GroupTurn, {
+    job: smartJob,
+    room,
+    onOpenArtifacts() {},
+    onSendToMuse() {},
+    onHandOffToAgent() {},
+    onQuoteReply() {},
+  }));
+  assert.match(turnHtml, /@Writer 追问/);
+  assert.match(turnHtml, /一键交给 @Muse 生成视频/);
+  assert.match(turnHtml, /交给 @Codex 执行修改/);
+
+  const diff = computeArtifactDiff('line 1\nline 2', 'line 1\nline 3');
+  assert.equal(diff.addedCount, 1);
+  assert.equal(diff.removedCount, 1);
+
+  const roomArtifacts = deriveRoomArtifacts({
+    jobs: [job],
+    museTasks: [{ id: 'm-video', status: 'complete', created_at: '2026-10-14T01:00:00Z', completion_evidence: 'framed_assistant_reply', response: 'Scene ready', video_url: '/muse-media/test.mp4' }],
+    agentTasks: [{ id: 'a-code', status: 'complete', created_at: '2026-10-14T02:00:00Z', output: 'Done', diff: 'diff --git a/x b/x' }],
+  });
+  assert.ok(roomArtifacts.length >= 3);
+  assert.equal(filterArtifactsByCategory(roomArtifacts, 'media').length, 1);
+  assert.equal(filterArtifactsByCategory(roomArtifacts, 'code').length, 2);
+
+  const cmdItems = buildCommandItems({ mode: 'chat', theme: 'light', sidebarCollapsed: false, artifactsOpen: true, history: [], projects: [{ id: 'p1', name: 'Alpha' }] });
+  assert.ok(filterCommandItems(cmdItems, '项目群聊').length >= 1);
+  assert.ok(filterCommandItems(cmdItems, 'Alpha').length === 1);
+  const paletteHtml = renderToStaticMarkup(React.createElement(CommandPalette, { open: true, mode: 'chat', theme: 'light' }));
+  assert.match(paletteHtml, /全局快捷命令面板/);
 });

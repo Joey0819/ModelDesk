@@ -1,3 +1,6 @@
+import { API_BASE } from './api-base.js';
+import { managedDeliveryMedia } from './delivery-media.js';
+
 const complete = (job) => ['complete', 'completed'].includes(job?.status);
 const active = (job) => ['queued', 'running'].includes(job?.status);
 const text = (value) => typeof value === 'string' ? value : '';
@@ -6,10 +9,10 @@ const taskComplete = (task) => ['complete', 'completed'].includes(task?.status);
 const usefulMessage = (message) => message.phase !== 'plan' && text(message?.content).trim() && !/任务规划|任务细化|模型传输重试|原生任务结果|原生结果整理/.test(message.role || '');
 
 function makeArtifact(job, id, title, content, extra = {}) {
-  if (!text(content).trim()) return null;
+  if (!text(content).trim() && !extra.allowEmpty) return null;
   const partial = !complete(job) || Boolean(job.result?.partial || job.result?.partial_failure || extra.partial);
   const html = /^\s*(?:<!doctype\s+html|<html\b|<script\b|<style\b|<iframe\b|<svg\b)/i.test(content);
-  const { partial: _partial, ...metadata } = extra;
+  const { partial: _partial, allowEmpty: _allowEmpty, ...metadata } = extra;
   return {
     id, title, content,
     status: active(job) ? 'live' : partial ? 'partial' : 'complete',
@@ -71,7 +74,7 @@ function reviewMarkdown(result) {
 }
 
 /** Derive previews only from actual model/task output; never fabricate a completed deliverable. */
-export function deriveArtifacts(job) {
+export function deriveArtifacts(job, apiBase = API_BASE) {
   if (!job) return [];
   const result = job.result || {};
   if (job.mode === 'muse_task') return [
@@ -97,7 +100,12 @@ export function deriveArtifacts(job) {
   }
   if (job.mode === 'group' && (job.group_delivery_mode === 'auto' || result.delivery)) {
     const delivery = result.delivery || {};
-    return [makeArtifact(job, 'group:delivery', delivery.title || '完整交付结果', text(delivery.content), {
+    // Media can finish before synthesis, or survive a failed synthesis. Keep it
+    // accessible without inventing prose or changing the task's completion state.
+    const mediaOnly = !text(delivery.content).trim();
+    const hasMedia = managedDeliveryMedia(job, apiBase).length > 0;
+    return [makeArtifact(job, 'group:delivery', delivery.title || (mediaOnly ? '已保存的图片与视频' : '完整交付结果'), text(delivery.content), {
+      allowEmpty: hasMedia, media_only: mediaOnly,
       model: delivery.model, source: '项目群自动交付', partial: delivery.status !== 'complete',
       media: Array.isArray(delivery.media) ? delivery.media : [],
       media_requirements: delivery.media_requirements || {},
@@ -132,6 +140,100 @@ export function deriveArtifacts(job) {
   if (tasks.length) return tasks.reverse().map(taskArtifact).filter(Boolean);
   const failures = nativeEvidence(job);
   return failures.length ? failures : rawEvidence(job);
+}
+
+export function artifactCategory(artifact) {
+  if (!artifact) return 'deliverable';
+  if (artifact.video_url || (Array.isArray(artifact.media) && artifact.media.length > 0)) return 'media';
+  const rawId = String(artifact.raw_id || artifact.id || '');
+  if (artifact.format === 'code' || artifact.language === 'diff' || rawId.startsWith('group-agent:')) return 'code';
+  if (artifact.kind === 'discussion') return 'discussion';
+  return 'deliverable';
+}
+
+export function filterArtifactsByCategory(artifacts = [], category = 'all') {
+  const list = Array.isArray(artifacts) ? artifacts : [];
+  if (!category || category === 'all') return list;
+  return list.filter((item) => artifactCategory(item) === category);
+}
+
+export function deriveRoomArtifacts(roomHistory) {
+  if (!roomHistory || typeof roomHistory !== 'object') return [];
+  const entries = [
+    ...(Array.isArray(roomHistory.jobs) ? roomHistory.jobs : []),
+    ...(Array.isArray(roomHistory.museTasks)
+      ? roomHistory.museTasks.map((task) => ({ ...task, mode: 'muse_task' }))
+      : []),
+    ...(Array.isArray(roomHistory.agentTasks)
+      ? roomHistory.agentTasks.map((task) => ({ ...task, mode: 'group_agent' }))
+      : []),
+  ].sort((a, b) => String(b.created_at || '').localeCompare(String(a.created_at || '')));
+  const results = [];
+  const seen = new Set();
+  for (const entry of entries) {
+    const derived = deriveArtifacts(entry);
+    for (const artifact of derived) {
+      const compositeId = `${entry.id}:${artifact.id}`;
+      if (seen.has(compositeId)) continue;
+      seen.add(compositeId);
+      results.push({
+        ...artifact,
+        id: compositeId,
+        raw_id: artifact.id,
+        origin_job: entry,
+        created_at: entry.created_at || null,
+        category: artifactCategory(artifact),
+      });
+    }
+  }
+  return results;
+}
+
+export function computeArtifactDiff(previousContent = '', currentContent = '') {
+  const beforeLines = String(previousContent ?? '').split('\n');
+  const afterLines = String(currentContent ?? '').split('\n');
+  const maxLines = 400;
+  const a = beforeLines.slice(0, maxLines);
+  const b = afterLines.slice(0, maxLines);
+  const dp = Array.from({ length: a.length + 1 }, () => new Uint16Array(b.length + 1));
+  for (let i = a.length - 1; i >= 0; i -= 1) {
+    for (let j = b.length - 1; j >= 0; j -= 1) {
+      dp[i][j] = a[i] === b[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
+    }
+  }
+  const lines = [];
+  let i = 0;
+  let j = 0;
+  let addedCount = 0;
+  let removedCount = 0;
+  let unchangedCount = 0;
+  while (i < a.length && j < b.length) {
+    if (a[i] === b[j]) {
+      lines.push({ type: 'same', text: a[i] });
+      unchangedCount += 1;
+      i += 1;
+      j += 1;
+    } else if (dp[i + 1][j] >= dp[i][j + 1]) {
+      lines.push({ type: 'remove', text: a[i] });
+      removedCount += 1;
+      i += 1;
+    } else {
+      lines.push({ type: 'add', text: b[j] });
+      addedCount += 1;
+      j += 1;
+    }
+  }
+  while (i < a.length) {
+    lines.push({ type: 'remove', text: a[i] });
+    removedCount += 1;
+    i += 1;
+  }
+  while (j < b.length) {
+    lines.push({ type: 'add', text: b[j] });
+    addedCount += 1;
+    j += 1;
+  }
+  return { addedCount, removedCount, unchangedCount, lines };
 }
 
 export function artifactMarkdown(artifact) {

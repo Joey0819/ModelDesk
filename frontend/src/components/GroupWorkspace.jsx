@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { REMOTE_CLIENT } from '../api-base';
+import { API_BASE, REMOTE_CLIENT } from '../api-base';
+import { managedDeliveryMedia } from '../delivery-media';
 import { groupApi } from '../group-api';
 import { groupTaskApi } from '../group-task-api';
 import { TASK_LABELS, taskActive, taskDraftKey, taskEngineLabel, readTaskDraft } from '../group-task-state';
@@ -15,10 +16,16 @@ import { resolveMuseVideoUrl } from '../muse-video';
 import { museApi } from '../muse-api';
 import {
   GROUP_HARNESS_MODES,
+  GROUP_QUICK_RECIPES,
   GROUP_DELIVERY_STATUS,
   GROUP_DELIVERY_STEP_STATUS,
+  applyMentionCandidate,
   buildMuseHandoffPrompt,
   buildGroupRuntimePrompt,
+  detectComposerTrigger,
+  detectMessageHandoffIntent,
+  filterComposerSuggestions,
+  formatQuoteReply,
   groupMemberKind,
   groupMemberKindLabel,
   groupSelection,
@@ -118,24 +125,61 @@ export function GroupDeliveryProgress({ job, onOpenArtifacts }) {
   const delivery = job.result?.delivery || {};
   const active = groupActive(job);
   const content = typeof delivery.content === 'string' && delivery.content.trim();
+  const hasOutput = Boolean(content || managedDeliveryMedia(job, API_BASE).length);
   const stopped = ['cancelled', 'interrupted', 'error'].includes(job.status);
-  const state = stopped ? content ? 'partial' : 'blocked' : delivery.status || (active ? 'planning' : 'blocked');
+  const state = stopped ? hasOutput ? 'partial' : 'blocked' : delivery.status || (active ? 'planning' : 'blocked');
   const filesAwaitReview = state === 'partial' && delivery.media?.length > 0 && delivery.validation?.mechanical_checks?.length > 0 && delivery.validation.mechanical_checks.every((check) => check.met === true) && delivery.steps?.every((step) => step.status === 'complete');
   const label = filesAwaitReview ? '文件已生成，内容待验收' : job.status === 'cancelled' ? '任务已停止' : job.status === 'interrupted' ? '任务已中断' : GROUP_DELIVERY_STATUS[state];
   const steps = Array.isArray(delivery.steps) ? delivery.steps : [];
   const limitations = Array.isArray(delivery.limitations) ? delivery.limitations.filter((item) => typeof item === 'string') : [];
   return <section className={`group-delivery-progress group-delivery-${state}`} aria-label="自动交付进度" aria-live={active ? 'polite' : 'off'}>
-    <header>{active ? <span className="small-spinner" /> : <Icon name="file" size={16} />}<strong>{label || '正在同步交付进度'}</strong>{content && <button className="subtle-button" type="button" onClick={() => onOpenArtifacts(job, true)}><Icon name="panel" size={14} />{state === 'complete' ? '查看完整成果' : filesAwaitReview ? '查看文件与验收意见' : '查看部分成果'}</button>}</header>
+    <header>{active ? <span className="small-spinner" /> : <Icon name="file" size={16} />}<strong>{label || '正在同步交付进度'}</strong>{hasOutput && <button className="subtle-button" type="button" onClick={() => onOpenArtifacts(job, true)}><Icon name="panel" size={14} />{state === 'complete' ? '查看完整成果' : filesAwaitReview ? '查看文件与验收意见' : '查看部分成果'}</button>}</header>
     {delivery.title && <p className="group-delivery-title">{delivery.title}</p>}
-    {steps.length > 0 && <ol>{steps.map((step, index) => <li key={step.id || index} className={`group-delivery-step-${step.status}`}><div><strong>{step.member_name || step.member_id || '协作成员'}</strong><span>{GROUP_DELIVERY_STEP_STATUS[step.status] || '状态待同步'}</span></div>{step.instruction && <p>{step.instruction}</p>}{step.error && <p className="output-error">{step.error}</p>}</li>)}</ol>}
-    <DeliveryMediaProgress job={job} />
-    {limitations.length > 0 && <ul className="group-delivery-limitations">{limitations.map((limit, index) => <li key={index}>{limit}</li>)}</ul>}
-    {!active && !content && <p>尚未生成完整成果。请查看执行步骤与失败原因；讨论发言保留在下方记录中。</p>}
+    {steps.length > 0 && <details className="group-execution-details"><summary>分工与执行 · {steps.filter((step) => step.status === 'complete').length}/{steps.length} 已完成{steps.some((step) => step.status === 'error') ? ' · 有步骤失败' : ''}</summary><ol>{steps.map((step, index) => <li key={step.id || index} className={`group-delivery-step-${step.status}`}><div><strong>{step.member_name || step.member_id || '协作成员'}</strong><span>{GROUP_DELIVERY_STEP_STATUS[step.status] || '状态待同步'}</span></div>{step.instruction && <p>{step.instruction}</p>}{step.error && <p className="output-error">{step.error}</p>}</li>)}</ol></details>}
+    <details className="group-delivery-receipt"><summary>验收与素材{limitations.length > 0 ? ` · ${limitations.length} 条待处理说明` : ''}</summary><DeliveryMediaProgress job={job} />
+    {limitations.length > 0 && <ul className="group-delivery-limitations">{limitations.map((limit, index) => <li key={index}>{limit}</li>)}</ul>}</details>
+    {!active && !hasOutput && <p>尚未生成完整成果。请查看执行步骤与失败原因；讨论发言保留在下方记录中。</p>}
     {active && !steps.length && <p>正在分析你的要求，安排群内模型与可用 Agent。</p>}
   </section>;
 }
 
-export function GroupTurn({ job, room, onOpenArtifacts, onSendToMuse, onHandOffToAgent }) {
+export function GroupLiveActivityBar({ activeJob, museTasks = [], agentTasks = [], onScrollToLatest, onOpenMuse, onOpenCodeTasks, onCancelJob }) {
+  const activeMuse = (Array.isArray(museTasks) ? museTasks : []).filter((task) => task.monitoring || ['queued', 'running'].includes(task.status));
+  const activeAgents = (Array.isArray(agentTasks) ? agentTasks : []).filter(taskActive);
+  const jobRunning = groupActive(activeJob);
+  if (!jobRunning && !activeMuse.length && !activeAgents.length) return null;
+  const deliverySteps = Array.isArray(activeJob?.result?.delivery?.steps) ? activeJob.result.delivery.steps : [];
+  const runningStep = deliverySteps.find((step) => step.status === 'running');
+  return <div className="group-live-activity-bar" role="status" aria-label="实时协作状态条">
+    <span className="small-spinner" />
+    <strong>实时协同中</strong>
+    <div className="group-live-badges">
+      {jobRunning && (
+        <span className="group-live-badge group-live-llm">
+          {runningStep ? `${runningStep.member_name || '成员'} 正在执行` : groupDeliveryMode(activeJob) === 'auto' ? '自动统筹与交付中' : '群内模型依次发言中'}
+        </span>
+      )}
+      {activeMuse.length > 0 && (
+        <span className="group-live-badge group-live-muse">
+          Muse 窗口同步中 ({activeMuse.length})
+        </span>
+      )}
+      {activeAgents.length > 0 && (
+        <span className="group-live-badge group-live-agent">
+          代码 Agent 运行中 ({activeAgents.map((task) => task.member?.name || taskEngineLabel(task)).join('、')})
+        </span>
+      )}
+    </div>
+    <div className="group-live-actions">
+      {onScrollToLatest && <button type="button" className="subtle-button" onClick={onScrollToLatest}>定位进度 ↓</button>}
+      {activeMuse.length > 0 && onOpenMuse && <button type="button" className="subtle-button" onClick={onOpenMuse}>查看 Muse</button>}
+      {activeAgents.length > 0 && onOpenCodeTasks && <button type="button" className="subtle-button" onClick={() => onOpenCodeTasks('code')}>查看代码任务</button>}
+      {jobRunning && onCancelJob && <button type="button" className="subtle-button" onClick={onCancelJob}>停止本轮</button>}
+    </div>
+  </div>;
+}
+
+export function GroupTurn({ job, room, onOpenArtifacts, onSendToMuse, onHandOffToAgent, onQuoteReply }) {
   const messages = groupMessages(job, room);
   const recipients = groupRecipients(job, room);
   const automatic = groupDeliveryMode(job) === 'auto';
@@ -145,7 +189,10 @@ export function GroupTurn({ job, room, onOpenArtifacts, onSendToMuse, onHandOffT
     {automatic && <GroupDeliveryProgress job={job} onOpenArtifacts={onOpenArtifacts} />}
     <MessageContainer className={automatic ? "group-delivery-discussion" : "group-discussion-messages"}>
     {automatic && <summary>查看讨论与规划记录（{messages.length} 条）</summary>}
-    {messages.map((message, index) => <section className="group-member-message" style={{ '--member-color': groupMemberColor(message.member_id || message.model) }} key={`${message.member_id || message.model}-${message.round}-${index}`}><span className="group-member-avatar" aria-hidden="true">{message.member_name?.slice(0, 1) || 'A'}</span><div><header><strong>{message.member_name}</strong><small>{message.model}</small>{message.phase && <small className="group-phase-badge">{message.phase === 'plan' ? '统筹规划' : message.phase === 'synthesis' ? '统筹汇总' : '成员讨论'}</small>}{message.round > 1 && <small>第 {message.round} 轮</small>}</header>{message.error && <p className="output-error">发言失败：{message.error}</p>}{message.content && <Markdown>{message.content}</Markdown>}{message.incomplete && <p className="result-note">发言达到输出长度限制，内容可能不完整。</p>}<div className="group-message-actions"><CopyTextButton text={message.content || ''} label={`复制 ${message.member_name} 的发言`} /><button className="subtle-button" type="button" onClick={() => onOpenArtifacts(job, true)}><Icon name="panel" size={14} />查看本轮成果</button>{!automatic && message.content && onSendToMuse && <button className="subtle-button group-inline-muse-btn" type="button" onClick={() => onSendToMuse(message.content, job)}><span className="group-muse-mark">M</span>准备 Muse 任务</button>}{!automatic && message.content && onHandOffToAgent && <button className="subtle-button" type="button" onClick={() => onHandOffToAgent(message.content, message.member_id)}>交由代码 Agent</button>}</div></div></section>)}
+    {messages.map((message, index) => {
+      const handoff = detectMessageHandoffIntent(message.content || '');
+      return <section className="group-member-message" style={{ '--member-color': groupMemberColor(message.member_id || message.model) }} key={`${message.member_id || message.model}-${message.round}-${index}`}><span className="group-member-avatar" aria-hidden="true">{message.member_name?.slice(0, 1) || 'A'}</span><div><header><strong>{message.member_name}</strong><small>{message.model}</small>{message.phase && <small className="group-phase-badge">{message.phase === 'plan' ? '统筹规划' : message.phase === 'synthesis' ? '统筹汇总' : '成员讨论'}</small>}{message.round > 1 && <small>第 {message.round} 轮</small>}</header>{message.error && <p className="output-error">发言失败：{message.error}</p>}{message.content && <Markdown>{message.content}</Markdown>}{message.incomplete && <p className="result-note">发言达到输出长度限制，内容可能不完整。</p>}<div className="group-message-actions"><CopyTextButton text={message.content || ''} label={`复制 ${message.member_name} 的发言`} /><button className="subtle-button" type="button" onClick={() => onOpenArtifacts(job, true)}><Icon name="panel" size={14} />查看本轮成果</button>{message.content && onQuoteReply && <button className="subtle-button" type="button" onClick={() => onQuoteReply(message, job)}>@{message.member_name} 追问</button>}{!automatic && message.content && onSendToMuse && handoff.isVideoStoryboard && <button className="subtle-button group-inline-muse-btn group-smart-handoff" type="button" onClick={() => onSendToMuse(message.content, job)}><span className="group-muse-mark">M</span>一键交给 @Muse 生成视频</button>}{!automatic && message.content && onSendToMuse && <button className="subtle-button group-inline-muse-btn" type="button" onClick={() => onSendToMuse(message.content, job)}><span className="group-muse-mark">M</span>准备 Muse 任务</button>}{!automatic && message.content && onHandOffToAgent && handoff.isCodeProposal && <button className="subtle-button group-smart-handoff" type="button" onClick={() => onHandOffToAgent(message.content, message.member_id)}>交给 @Codex 执行修改</button>}{!automatic && message.content && onHandOffToAgent && <button className="subtle-button" type="button" onClick={() => onHandOffToAgent(message.content, message.member_id)}>交由代码 Agent</button>}</div></div></section>;
+    })}
     </MessageContainer>
     {!automatic && groupActive(job) && <p className="group-turn-running" role="status"><span className="small-spinner" />成员正在依次阅读上下文并发言…</p>}
     {job.error && <p className="output-error" role="alert">{job.error}</p>}
@@ -192,9 +239,15 @@ function GroupRoom({ roomId, projectId, status, models, context, onContextChange
   const [contextTurns, setContextTurns] = useState(saved.contextTurns);
   const [contextMode, setContextMode] = useState('continue');
   const [attachmentPending, setAttachmentPending] = useState(false);
-  const [settings, setSettings] = useState(false);
+  const settingsDialog = useRef(null);
+  const museDialog = useRef(null);
   const [showLatest, setShowLatest] = useState(false);
-  const [selectedArtifactId, setSelectedArtifactId] = useState(null);
+  const [selectedArtifactId, setSelectedArtifactId] = useState(() => localStorage.getItem(`modeldesk.group.artifact.${projectId || 'none'}.${roomId}`) || null);
+  useEffect(() => {
+    const key = `modeldesk.group.artifact.${projectId || 'none'}.${roomId}`;
+    if (selectedArtifactId) localStorage.setItem(key, selectedArtifactId);
+    else localStorage.removeItem(key);
+  }, [selectedArtifactId, projectId, roomId]);
   const [memberSettings, setMemberSettings] = useState(null);
   const [museTasks, setMuseTasks] = useState([]);
   const [agentTasks, setAgentTasks] = useState([]);
@@ -204,6 +257,10 @@ function GroupRoom({ roomId, projectId, status, models, context, onContextChange
   const [museProbe, setMuseProbe] = useState(null);
   const [harnessNotice, setHarnessNotice] = useState('');
   const [timelineFilter, setTimelineFilter] = useState('all');
+  const [cursorPosition, setCursorPosition] = useState(null);
+  const [suggestionIndex, setSuggestionIndex] = useState(0);
+  const [dismissedTriggerKey, setDismissedTriggerKey] = useState('');
+  const composerInputRef = useRef(null);
   const pendingHarnessJobRef = useRef(null);
   const pendingDeliveryRevealRef = useRef(null);
   const museMonitoring = museTasks.some((task) => task.monitoring);
@@ -249,7 +306,24 @@ function GroupRoom({ roomId, projectId, status, models, context, onContextChange
   const lastJob = jobs.at(-1);
   const latestMuseWithVideo = museTasks.find((item) => item.status === 'complete' && resolveMuseVideoUrl(item));
   const artifactJob = selectedArtifactId ? jobs.find((job) => job.id === selectedArtifactId) : lastJob;
-  const openTurnArtifact = (job, reveal) => { pendingDeliveryRevealRef.current = null; setSelectedArtifactId(job.id); onOpenArtifacts(job, reveal); };
+  const withRoomHistory = useCallback((target) => {
+    if (!target) return null;
+    return {
+      ...target,
+      room_history: {
+        roomId,
+        roomTitle: room?.title || '项目群聊',
+        jobs,
+        museTasks,
+        agentTasks,
+      },
+    };
+  }, [roomId, room?.title, jobs, museTasks, agentTasks]);
+  const openTurnArtifact = (job, reveal) => {
+    pendingDeliveryRevealRef.current = null;
+    setSelectedArtifactId(job.id);
+    onOpenArtifacts(withRoomHistory(job), reveal);
+  };
   const members = useMemo(() => room?.team_snapshot?.members || [], [room]);
   const { runtimeMember, discussionMembers: selectedMembers, selectionError } = groupSelection(members, recipientIds);
   const runtimeKind = runtimeMember ? groupMemberKind(runtimeMember) : null;
@@ -257,6 +331,65 @@ function GroupRoom({ roomId, projectId, status, models, context, onContextChange
   const runtimeReadiness = museReadiness(museProbe);
   const coordinatorModel = room?.team_snapshot?.coordinator_model;
   const runtimeReady = runtimeKind === 'muse' ? (!REMOTE_CLIENT && runtimeReadiness.ready) : Boolean(projectId && runtimeEngine?.available && runtimeEngine.authenticated !== false);
+  const activeTrigger = useMemo(() => detectComposerTrigger(prompt, cursorPosition), [prompt, cursorPosition]);
+  const triggerKey = activeTrigger ? `${activeTrigger.type}:${activeTrigger.start}:${activeTrigger.query}` : '';
+  const composerSuggestions = useMemo(
+    () => (activeTrigger && triggerKey !== dismissedTriggerKey ? filterComposerSuggestions(activeTrigger, members) : []),
+    [activeTrigger, triggerKey, dismissedTriggerKey, members]
+  );
+
+  const applyQuickRecipe = useCallback((recipe, trigger = null) => {
+    if (!recipe) return;
+    if (trigger) {
+      setPrompt((current) => `${current.slice(0, trigger.start)}${current.slice(trigger.end)}`.replace(/^\s+/, ''));
+    }
+    if (recipe.deliveryMode) setDeliveryMode(recipe.deliveryMode);
+    if (recipe.outputFormat) setOutputOptions((current) => ({ ...current, outputFormat: recipe.outputFormat }));
+    if (recipe.harnessMode) setHarnessMode(recipe.harnessMode);
+    if (recipe.preferKind) {
+      const preferred = members.find((item) => groupMemberKind(item) === recipe.preferKind);
+      if (preferred && recipe.deliveryMode !== 'auto') {
+        setRecipientIds([preferred.id]);
+      } else {
+        setRecipientIds([]);
+      }
+    } else {
+      setRecipientIds((current) => current.filter((id) => members.some((item) => item.id === id && groupMemberKind(item) === 'model')));
+    }
+    setHarnessNotice(`已应用快捷协作配方：${recipe.label}（${recipe.detail}）`);
+    requestAnimationFrame(() => composerInputRef.current?.focus());
+  }, [members]);
+
+  const selectComposerSuggestion = useCallback((candidate) => {
+    if (!candidate) return;
+    if (candidate.type === 'recipe') {
+      applyQuickRecipe(candidate.recipe, activeTrigger);
+    } else if (candidate.type === 'mention') {
+      const applied = applyMentionCandidate(prompt, activeTrigger, candidate, recipientIds, members);
+      setPrompt(applied.prompt);
+      setRecipientIds(applied.recipientIds);
+    }
+    setDismissedTriggerKey(triggerKey);
+    setSuggestionIndex(0);
+    requestAnimationFrame(() => composerInputRef.current?.focus());
+  }, [activeTrigger, applyQuickRecipe, members, prompt, recipientIds, triggerKey]);
+
+  const quoteReplyToMember = useCallback((message) => {
+    if (!message?.content) return;
+    const matchedMember = members.find((item) => item.id === message.member_id || item.model === message.model);
+    if (matchedMember && groupMemberKind(matchedMember) === 'model') {
+      setDeliveryMode('discussion');
+      setRecipientIds([matchedMember.id]);
+    }
+    setPrompt((current) => formatQuoteReply(message, current));
+    requestAnimationFrame(() => {
+      const el = composerInputRef.current;
+      if (el) {
+        el.focus();
+        el.setSelectionRange(el.value.length, el.value.length);
+      }
+    });
+  }, [members]);
 
   useEffect(() => { onContextChange(saved.context); onClearArtifacts(); }, [saved, onContextChange, onClearArtifacts]);
   useEffect(() => {
@@ -267,19 +400,19 @@ function GroupRoom({ roomId, projectId, status, models, context, onContextChange
   useEffect(() => {
     if (workMode !== 'discussion') return;
     if (!selectedArtifactId && groupDeliveryMode(artifactJob) !== 'auto' && latestMuseWithVideo && (!artifactJob || String(latestMuseWithVideo.created_at || '') >= String(artifactJob.created_at || ''))) {
-      onOpenArtifacts({ ...latestMuseWithVideo, video_url: resolveMuseVideoUrl(latestMuseWithVideo), mode: 'muse_task' }, false);
+      onOpenArtifacts(withRoomHistory({ ...latestMuseWithVideo, video_url: resolveMuseVideoUrl(latestMuseWithVideo), mode: 'muse_task' }), false);
     } else if (artifactJob) {
-      onOpenArtifacts(artifactJob, false);
+      onOpenArtifacts(withRoomHistory(artifactJob), false);
     }
-  }, [artifactJob, latestMuseWithVideo, onOpenArtifacts, workMode, selectedArtifactId]);
+  }, [artifactJob, latestMuseWithVideo, onOpenArtifacts, workMode, selectedArtifactId, withRoomHistory]);
   useEffect(() => {
     const pendingId = pendingDeliveryRevealRef.current;
     if (!pendingId || workMode !== 'discussion') return;
     const completed = jobs.find((item) => item.id === pendingId);
     if (!completed || groupActive(completed)) return;
     pendingDeliveryRevealRef.current = null;
-    if (selectedArtifactId === pendingId && completed.status === 'complete' && completed.result?.delivery?.content?.trim()) onOpenArtifacts(completed, true);
-  }, [jobs, onOpenArtifacts, selectedArtifactId, workMode]);
+    if (selectedArtifactId === pendingId && completed.status === 'complete' && completed.result?.delivery?.content?.trim()) onOpenArtifacts(withRoomHistory(completed), true);
+  }, [jobs, onOpenArtifacts, selectedArtifactId, workMode, withRoomHistory]);
   useEffect(() => { if (workMode !== 'discussion') onClearArtifacts(); }, [workMode, onClearArtifacts]);
   useEffect(() => {
     const element = timelineRef.current;
@@ -432,6 +565,7 @@ function GroupRoom({ roomId, projectId, status, models, context, onContextChange
   const openMuse = () => {
     setWorkMode('discussion');
     requestAnimationFrame(() => {
+      museDialog.current?.showModal();
       const panel = integrationRef.current;
       const details = panel?.querySelector('details');
       if (details) details.open = true;
@@ -471,23 +605,26 @@ function GroupRoom({ roomId, projectId, status, models, context, onContextChange
         ))}
       </nav>
       {room && <div className="group-member-toolbar">
-        {coordinatorModel && <span className="group-coordinator-badge" title="在管理成员中更换统筹 LLM">统筹 · {coordinatorModel}</span>}
+
         <details className="group-roster-popover">
-          <summary title="查看本群成员与职责分工"><Icon name="group" size={14} /><strong>{room.team_snapshot.name}</strong><span>{members.length} 名成员</span><Icon name="chevron" size={12} /></summary>
-          <div className="group-roster-dropdown">
+          <summary title="查看本群成员与职责分工"><Icon name="group" size={14} /><strong>成员与分工</strong><span>{members.length}</span><Icon name="chevron" size={12} /></summary>
+          <div className="group-roster-dropdown"><div className="group-roster-actions">        <button type="button" className="subtle-button" onClick={() => setMemberSettings({ room, add: true })}><Icon name="plus" size={13} />添加 Agent</button>
+        <button type="button" className="subtle-button" onClick={() => setMemberSettings({ room, add: false })}><Icon name="settings" size={13} />管理成员</button>
+</div>{coordinatorModel && <p className="group-roster-footnote">统筹：{coordinatorModel}</p>}
             <div className="group-roster-grid">{members.map((member) => <article key={member.id}><strong>{member.name}</strong><small className="group-member-kind">{groupMemberKindLabel(member)}</small><small>{member.model && (status?.models?.find((model) => model.id === member.model)?.label || member.model)}</small><p>{member.role}</p></article>)}</div>
             <p className="group-roster-footnote">自动完成会按任务安排群内可用成员并整理成果；也可明确选择 Codex、Claude Code 或 Muse 单独派发。</p>
           </div>
         </details>
-        <button type="button" className="subtle-button" onClick={() => setMemberSettings({ room, add: true })}><Icon name="plus" size={13} />添加 Agent</button>
-        <button type="button" className="subtle-button" onClick={() => setMemberSettings({ room, add: false })}><Icon name="settings" size={13} />管理成员</button>
         {renderIntegration && <button type="button" className="subtle-button" onClick={openMuse}><span className="group-muse-mark">M</span>Muse 面板</button>}
         <button type="button" className={`subtle-button ${focusHistory ? 'selected' : ''}`} onClick={onToggleFocusHistory} title="收起辅助栏，最大化聊天历史视窗">{focusHistory ? '退出专注' : '专注阅读'}</button>
       </div>}
     </div>
     {memberSettings && <GroupTeamSettings room={memberSettings.room} models={models} catalog={status?.models || []} addRequested={memberSettings.add} onOpenAgentSettings={onOpenAgentSettings} onApplied={applyMembers} onClose={() => setMemberSettings(null)} />}
     {workMode !== 'discussion' && room ? <GroupAgentTasks projectId={projectId} room={room} kind={workMode} onKindChange={setWorkMode} onOpenProjects={onOpenProjects} onOpenArtifacts={onOpenArtifacts} /> : <>
-      {!focusHistory && renderIntegration && <div ref={integrationRef} className="group-native-integration">{renderIntegration({ projectId, roomId, onUseReply: useMuseReply })}</div>}
+      {renderIntegration && <dialog ref={museDialog} className="group-options-dialog group-muse-dialog" aria-label="Muse 任务与连接">
+        <header><div><strong>Muse 任务与连接</strong><p>查看原生任务、实际回复和媒体。</p></div><button type="button" className="subtle-button" onClick={() => museDialog.current?.close()}>关闭</button></header>
+        <div ref={integrationRef} className="group-options-body">{renderIntegration({ projectId, roomId, onUseReply: useMuseReply })}</div>
+      </dialog>}
       <div className="group-room-timeline" ref={timelineRef} onScroll={(event) => { const element = event.currentTarget; nearBottom.current = element.scrollHeight - element.scrollTop - element.clientHeight < 100; setShowLatest(!nearBottom.current); }}>
         {error && <div className="error-banner" role="alert">{error}<button className="subtle-button" type="button" onClick={roomState.refresh}>重新连接</button></div>}
         {harnessNotice && <div className="group-harness-banner" role="status"><span>{harnessNotice}</span><button type="button" className="icon-button" aria-label="关闭提示" onClick={() => setHarnessNotice('')}><Icon name="close" size={13} /></button></div>}
@@ -514,14 +651,33 @@ function GroupRoom({ roomId, projectId, status, models, context, onContextChange
             if (type === 'agent_task') {
               return <GroupAgentTaskTurn key={`agent-${value.id}`} task={value} onOpenTaskMode={setWorkMode} onUseAgentOutput={useAgentOutput} onOpenCreative={jobs.some((job) => job.id === value.parent_job_id) ? () => onOpenArtifacts(jobs.find((job) => job.id === value.parent_job_id), true) : undefined} />;
             }
-            return <GroupTurn key={value.id} job={value} room={room || { team_snapshot: { members: [] } }} onOpenArtifacts={openTurnArtifact} onSendToMuse={prepareMuseDraft} onHandOffToAgent={handOffToAgent} />;
+            return <GroupTurn key={value.id} job={value} room={room || { team_snapshot: { members: [] } }} onOpenArtifacts={openTurnArtifact} onSendToMuse={prepareMuseDraft} onHandOffToAgent={handOffToAgent} onQuoteReply={quoteReplyToMember} />;
           })}
         </>}
       </div>
       <div className={`group-room-compose ${focusHistory ? 'group-compose-compact' : ''}`}>
+        <GroupLiveActivityBar
+          activeJob={activeJob}
+          museTasks={museTasks}
+          agentTasks={agentTasks}
+          onScrollToLatest={scrollToLatest}
+          onOpenMuse={openMuse}
+          onOpenCodeTasks={setWorkMode}
+          onCancelJob={roomState.cancel}
+        />
         {showLatest && <button type="button" className="group-jump-latest subtle-button" onClick={scrollToLatest}>回到最新消息 ↓</button>}
         {roomState.streamError && activeJob && <p className="stream-warning">实时连接暂时中断，正在通过后台记录同步。</p>}
         {context.muse_task_id && <div className="group-muse-source-chip"><strong>Muse 回复待引用</strong><span>{context.muse_task_label || '已选定本群的已完成回复'}</span><button type="button" className="icon-button" aria-label="移除 Muse 回复引用" onClick={() => onContextChange((current) => ({ ...current, muse_task_id: null, muse_task_label: '', muse_harness_response: '' }))}><Icon name="close" size={14} /></button></div>}
+        <div className="group-compose-summary" aria-label="本轮任务设置摘要">
+          <button type="button" className="subtle-button group-target-summary" aria-haspopup="dialog" onClick={() => settingsDialog.current?.showModal()} title="选择参与成员、分配 Agent 或调整协作方式"><Icon name="group" size={15} /><span>{recipientIds.length ? members.filter((member) => recipientIds.includes(member.id)).map((member) => `@${member.name}`).join('、') : '全组协作'}</span><Icon name="chevron" size={12} /></button>
+          <span className="group-mode-summary">{runtimeMember ? '单独派发' : deliveryMode === 'auto' ? '自动完成' : '仅讨论'}</span>
+          <button type="button" className="subtle-button group-memory-summary" aria-haspopup="dialog" onClick={() => settingsDialog.current?.showModal()}><Icon name="memory" size={14} />{contextMode === 'fresh' ? '新任务 · 不带旧对话' : `继续任务${lastJob?.task_context?.requests?.length ? ` · ${lastJob.task_context.requests.length} 条记忆` : ''}`}</button>
+          <button type="button" className="subtle-button" aria-haspopup="dialog" onClick={() => settingsDialog.current?.showModal()}><Icon name="settings" size={14} />任务设置</button>
+        </div>
+        <dialog ref={settingsDialog} className="group-options-dialog" aria-label="协作任务设置">
+          <header><div><strong>协作任务设置</strong><p>选成员、定成果，保留同一任务的上下文。</p></div><button type="button" className="subtle-button" onClick={() => settingsDialog.current?.close()}>完成</button></header>
+          <div className="group-options-body">
+            <h3>参与成员与成果</h3>
         <div className="group-compose-top-row">
           <div className="group-recipient-picker" role="group" aria-label="选择回复成员">
             <span>发送给</span>
@@ -545,29 +701,115 @@ function GroupRoom({ roomId, projectId, status, models, context, onContextChange
           )}
         </div>
         {!runtimeMember && deliveryMode === 'auto' && <DeliveryOutputOptions value={outputOptions} onChange={setOutputOptions} disabled={busy || Boolean(activeJob)} />}
+        <div className="group-quick-recipe-bar" role="toolbar" aria-label="快捷协作配方">
+          <span>快捷配方</span>
+          {GROUP_QUICK_RECIPES.map((recipe) => (
+            <button
+              key={recipe.id}
+              type="button"
+              className="group-recipe-chip"
+              title={recipe.detail}
+              onClick={() => { settingsDialog.current?.close(); applyQuickRecipe(recipe); }}
+            >
+              <code>{recipe.command}</code>
+              <span>{recipe.label}</span>
+            </button>
+          ))}
+        </div>
+            {!runtimeMember && <><h3>任务记忆</h3><TaskContextControl value={contextMode} onChange={setContextMode} disabled={busy || Boolean(activeJob)} jobs={jobs} /></>}
+            <details className="group-advanced-context"><summary>工具与更多上下文</summary>
+              <section className="group-message-settings"><label>最近对话上下文<select aria-label="群聊上下文轮数" value={contextTurns} onChange={(event) => setContextTurns(Number(event.target.value))}>{[1, 4, 6, 8, 12].map((count) => <option key={count} value={count}>{count} 轮</option>)}</select></label><p>仅引用当前群聊的实际记录；过长内容按模型上下文预算截断。</p><ContextAttachments mode="group" value={context} onChange={onContextChange} jobs={jobs} disabled={busy || Boolean(activeJob)} onOpenProjects={onOpenProjects} /></section>
+            </details>
+            <p className="group-options-note">自动协作会安排本群可用成员执行并收集实际成果。代码改动仍需审阅和合入审批。输入 @ 可点名成员，输入 / 可选择快捷配方。</p>
+          </div>
+        </dialog>
+        {composerSuggestions.length > 0 && (
+          <div className="group-autocomplete-popover" role="listbox" aria-label={activeTrigger?.type === 'mention' ? '点名成员候选列表' : '快捷配方候选列表'}>
+            <div className="group-autocomplete-header">
+              <strong>{activeTrigger?.type === 'mention' ? '选择要 @点名的成员（↑↓ 选择，Enter 确认）' : '选择 /快捷协作配方（↑↓ 选择，Enter 应用）'}</strong>
+              <button type="button" className="icon-button" aria-label="关闭候选菜单" onClick={() => setDismissedTriggerKey(triggerKey)}>
+                <Icon name="close" size={12} />
+              </button>
+            </div>
+            {composerSuggestions.map((item, index) => {
+              const selected = index === Math.min(suggestionIndex, composerSuggestions.length - 1);
+              return (
+                <button
+                  key={item.id}
+                  type="button"
+                  role="option"
+                  aria-selected={selected}
+                  className={`group-autocomplete-option ${selected ? 'selected' : ''}`}
+                  onMouseEnter={() => setSuggestionIndex(index)}
+                  onMouseDown={(event) => {
+                    event.preventDefault();
+                    selectComposerSuggestion(item);
+                  }}
+                >
+                  <strong>{item.type === 'mention' ? `@${item.name}` : item.name}</strong>
+                  <small>{item.badge}</small>
+                </button>
+              );
+            })}
+          </div>
+        )}
         <form className="composer group-composer" onSubmit={send} onDragOver={(event) => { if (event.dataTransfer.types.includes('Files')) event.preventDefault(); }} onDrop={(event) => attachmentRef.current?.handleDrop(event)}>
-          {!runtimeMember && <TaskContextControl value={contextMode} onChange={setContextMode} disabled={busy || Boolean(activeJob)} jobs={jobs} />}
-          {!runtimeMember && <AttachmentComposer ref={attachmentRef} attachmentIds={context.attachment_ids} onChange={(ids) => onContextChange({ ...context, attachment_ids: ids })} includeShared={context.include_project_assets} onIncludeShared={(include) => onContextChange({ ...context, include_project_assets: include })} disabled={busy || Boolean(activeJob)} onPendingChange={setAttachmentPending} />}
+          {!runtimeMember && <AttachmentComposer compact ref={attachmentRef} attachmentIds={context.attachment_ids} onChange={(ids) => onContextChange({ ...context, attachment_ids: ids })} includeShared={context.include_project_assets} onIncludeShared={(include) => onContextChange({ ...context, include_project_assets: include })} disabled={busy || Boolean(activeJob)} onPendingChange={setAttachmentPending} />}
           <textarea
+            ref={composerInputRef}
             aria-label="群聊消息"
             maxLength={12000}
             value={prompt}
-            onChange={(event) => setPrompt(event.target.value)}
+            onChange={(event) => {
+              setPrompt(event.target.value);
+              setCursorPosition(event.target.selectionStart);
+              setDismissedTriggerKey('');
+              setSuggestionIndex(0);
+            }}
+            onClick={(event) => setCursorPosition(event.currentTarget.selectionStart)}
+            onKeyUp={(event) => setCursorPosition(event.currentTarget.selectionStart)}
             onPaste={(event) => attachmentRef.current?.handlePaste(event)}
-            onKeyDown={(event) => { if (!runtimeMember && event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); send(event); } }}
+            onKeyDown={(event) => {
+              if (composerSuggestions.length > 0 && !event.nativeEvent.isComposing) {
+                const safeIndex = Math.min(suggestionIndex, composerSuggestions.length - 1);
+                if (event.key === 'ArrowDown') {
+                  event.preventDefault();
+                  setSuggestionIndex((current) => (current + 1) % composerSuggestions.length);
+                  return;
+                }
+                if (event.key === 'ArrowUp') {
+                  event.preventDefault();
+                  setSuggestionIndex((current) => (current - 1 + composerSuggestions.length) % composerSuggestions.length);
+                  return;
+                }
+                if (event.key === 'Enter' || event.key === 'Tab') {
+                  event.preventDefault();
+                  selectComposerSuggestion(composerSuggestions[safeIndex]);
+                  return;
+                }
+                if (event.key === 'Escape') {
+                  event.preventDefault();
+                  setDismissedTriggerKey(triggerKey);
+                  return;
+                }
+              }
+              if (!runtimeMember && event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
+                event.preventDefault();
+                send(event);
+              }
+            }}
             rows={2}
-            placeholder={runtimeMember ? `交给 ${runtimeMember.name} 的任务。选择成员并点击派发才会执行…` : deliveryMode === 'auto' ? '描述你需要的完整成果，例如：写一篇可发布的公众号文章，并生成所需配图…' : recipientIds.length ? `请 ${selectedMembers.map((member) => member.name).join('、')} 接着讨论…` : '给项目群发消息，LLM 共同讨论…'}
+            placeholder={runtimeMember ? `交给 ${runtimeMember.name} 的任务。选择成员并点击派发才会执行…` : deliveryMode === 'auto' ? '输入 @ 点名成员，或输入 / 选择快捷配方；描述你需要的完整成果…' : recipientIds.length ? `请 ${selectedMembers.map((member) => member.name).join('、')} 接着讨论（支持 @点名 与 /配方）…` : '给项目群发消息（输入 @ 点名成员，输入 / 唤起快捷协作配方）…'}
           />
           <div className="composer-footer">
-            <button className="subtle-button" type="button" aria-expanded={settings} onClick={() => setSettings(!settings)}><Icon name="memory" size={14} />上下文与工具 ({contextTurns}轮)</button>
+            <span className="group-input-hint">@ 点名 · / 配方</span>
             <span>{activeJob ? '可先写下一条消息' : runtimeMember ? `${groupMemberKindLabel(runtimeMember)} · 明确派发 · 引用本群实际上下文` : `${coordinatorModel && !recipientIds.length ? `统筹：${coordinatorModel} · ` : ''}${deliveryMode === 'auto' ? '自动安排执行并整理成果' : `${selectedMembers.length} 名 LLM 讨论`}`}</span>
             {activeJob ? <button className="stop-button" type="button" disabled={busy} onClick={roomState.cancel}><Icon name="stop" size={15} />停止本轮</button> : <button className="primary-button" type="submit" disabled={!canSend}><Icon name="send" size={15} />{busy || runtimeDispatching ? '正在提交' : runtimeMember ? `派发 ${runtimeKind === 'muse' ? 'Muse' : runtimeKind === 'codex' ? 'Codex' : 'Claude Code'}` : deliveryMode === 'auto' ? '开始完成任务' : '发送消息'}</button>}
           </div>
         </form>
         {(!runtimeMember && (errors.length > 0 || attachmentPending || transfers > 0)) && <p className="mission-form-note">{attachmentPending || transfers > 0 ? '请等待资料准备完成。' : errors[0]}</p>}
         {runtimeMember && <p className="group-runtime-boundary">{runtimeKind === 'muse' ? (REMOTE_CLIENT ? 'Muse 原生窗口操作需要在 Mac 端派发。' : runtimeReadiness.ready ? '将操作本机 Muse。回复与文件仅在桥接实际读取后显示；附件不会自动传入原生应用。' : `${runtimeReadiness.label}：${runtimeReadiness.detail} 请打开 Muse 面板检查连接。`) : !projectId ? '代码 Agent 需要选择本地 Git 项目。' : !runtimeReady ? (runtimeEngine?.error || '请在“Agent 与连接”检查本机执行器安装与登录状态。') : '将在隔离 Git 工作区执行，改动需要独立审阅和你的合入审批。附件不会自动传入执行器。'} <button type="button" className="subtle-button" onClick={refreshRuntimeStatus}>重新检查执行器</button></p>}
-        {!runtimeMember && <p className="group-coordinator-note">{deliveryMode === 'auto' ? `自动完成：${REMOTE_CLIENT ? '可用模型与代码 Agent 将协作完成任务；Muse 原生窗口仅能在 Mac 运行。' : '可用模型与群内 Agent 按任务协作，最终成果在右侧呈现。'} 代码改动仍需审阅和合入审批。` : `${recipientIds.length ? '已指定 LLM 成员，本轮直接回答。' : coordinatorModel ? `由 ${coordinatorModel} 规划分工并汇总讨论。` : '成员共同讨论。'} 本模式只讨论，运行时 Agent 需要单独派发。`}</p>}
-        {settings && <section className="group-message-settings"><label>最近对话上下文<select aria-label="群聊上下文轮数" value={contextTurns} onChange={(event) => setContextTurns(Number(event.target.value))}>{[1, 4, 6, 8, 12].map((count) => <option key={count} value={count}>{count} 轮</option>)}</select></label><p>仅引用当前群聊的实际记录；过长内容按模型上下文预算截断。发送对象以上方选择为准。</p><ContextAttachments mode="group" value={context} onChange={onContextChange} jobs={jobs} disabled={busy || Boolean(activeJob)} onOpenProjects={onOpenProjects} /></section>}
+
       </div>
     </>}
   </>;

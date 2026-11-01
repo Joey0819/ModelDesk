@@ -98,7 +98,7 @@ def native_media_instruction(contract):
     if contract["images"] and contract["provider"] == "muse":
         targets.append(f"{contract['images']} 张真实生成的图片")
     if contract["videos"] and contract.get("video_provider", contract["provider"]) in {"auto", "muse"}:
-        targets.append("1 个真实视频文件")
+        targets.append(f"{contract['videos']} 个真实视频文件")
     return ("完成用户要求的" + "和".join(targets) + "。请实际创作，不只写脚本、提示词或声称已经完成。"
             "在回复中给出本次产物可下载的 HTTPS 原始资源链接或实际媒体附件；不要编造链接，"
             "不要复用与当前任务无关的旧产物。若无法生成或导出原始媒体，请明确说明缺失项。") if targets else ""
@@ -192,15 +192,17 @@ async def produce_media(manager, job, result, delivery, contract, *, steps=None)
     if contract["provider"] == "muse" or (contract["videos"] and video_provider in {"auto", "muse"}):
         _, errors = await collect_native_media(job, delivery["steps"] if steps is None else steps, on_asset=append_unique)
         native = [asset for asset in delivery["media"] if asset.get("provider") == "muse"]
-        native_missing = (contract["provider"] == "muse" and sum(asset["kind"] == "image" for asset in native) < contract["images"]
-                          or sum(asset["kind"] == "video" for asset in native) < contract["videos"])
+        native_counts = {"image": contract["images"] if contract["provider"] == "muse" else 0,
+                         "video": contract["videos"] if video_provider in {"auto", "muse"} else 0}
+        native_missing = any(sum(asset["kind"] == kind for asset in native) < needed
+                             for kind, needed in native_counts.items())
         # Rejecting a non-media link in an otherwise complete native reply is
         # a diagnostic, not a missing requested output.
         delivery.setdefault("media_warnings", []).extend(errors)
         if native_missing:
             delivery["limitations"].extend(errors)
         for index, kind in enumerate(("image", "video")):
-            needed = contract["images"] if kind == "image" and contract["provider"] == "muse" else contract["videos"] if kind == "video" else 0
+            needed = native_counts[kind]
             if needed:
                 matched = [asset["id"] for asset in native if asset["kind"] == kind]
                 count = len(matched)

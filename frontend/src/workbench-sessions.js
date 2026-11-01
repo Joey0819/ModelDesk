@@ -91,3 +91,178 @@ export function previousTurns(jobs, job) {
   if (!job) return [];
   return jobs.filter((item) => item.id !== job.id && item.conversation_id === job.conversation_id && (item.project_id || null) === (job.project_id || null) && Date.parse(item.created_at) < Date.parse(job.created_at)).sort((a, b) => Date.parse(a.created_at) - Date.parse(b.created_at));
 }
+
+export function buildCommandItems({
+  modes = {},
+  mode = 'chat',
+  theme = 'light',
+  sidebarCollapsed = false,
+  artifactsOpen = true,
+  history = [],
+  projects = [],
+  activeProjectId = null,
+  onOpenGroups,
+  onOpenMissions,
+  onOpenProjects,
+  onOpenAgentSettings,
+  onSelectMode,
+  onNewConversation,
+  onToggleSidebar,
+  onToggleArtifacts,
+  onToggleTheme,
+  onOpenRemote,
+  onSelectJob,
+  onSelectProject,
+}) {
+  const items = [
+    {
+      id: 'nav:groups',
+      category: '核心工作区',
+      title: '打开项目群聊（多智能体协同群）',
+      subtitle: '固定成员、@点名、自动交付与 Muse / Codex 协同',
+      keywords: 'group chat room 项目群聊 群组 muse codex claude',
+      icon: 'group',
+      shortcut: 'G',
+      action: onOpenGroups,
+    },
+    {
+      id: 'nav:missions',
+      category: '核心工作区',
+      title: '打开协作任务（跨引擎流水线）',
+      subtitle: '多引擎接力执行与人工审阅关卡',
+      keywords: 'mission tasks 协作任务 流水线',
+      icon: 'tasks',
+      shortcut: 'M',
+      action: onOpenMissions,
+    },
+    {
+      id: 'nav:projects',
+      category: '核心工作区',
+      title: '打开项目与资料管理',
+      subtitle: '管理共享文件、图片、Git 快照与代码评审',
+      keywords: 'project files assets 项目 资料 文件夹',
+      icon: 'folder',
+      shortcut: 'P',
+      action: onOpenProjects,
+    },
+    {
+      id: 'nav:agents',
+      category: '核心工作区',
+      title: '打开 Agent 与模型 API 连接',
+      subtitle: '配置协作组、外部 API Key、Grok 与 Muse 桥接',
+      keywords: 'agents settings api key connection 模型 连接 设置',
+      icon: 'settings',
+      shortcut: 'A',
+      action: () => onOpenAgentSettings?.('agents'),
+    },
+    {
+      id: 'nav:connections',
+      category: '核心工作区',
+      title: '配置外部模型与 API Key 连接',
+      subtitle: '添加 OpenAI / Anthropic / Gemini / Grok / Ollama 端点',
+      keywords: 'api key grok openai gemini claude ollama 连接',
+      icon: 'settings',
+      action: () => onOpenAgentSettings?.('connections'),
+    },
+    {
+      id: 'action:new-chat',
+      category: '快捷操作',
+      title: '新建单项协作会话',
+      subtitle: `在当前模式（${modes[mode]?.label || mode}）下开始新任务`,
+      keywords: 'new chat task 新建会话 清空',
+      icon: 'plus',
+      shortcut: 'N',
+      action: onNewConversation,
+    },
+    {
+      id: 'action:toggle-sidebar',
+      category: '界面与视图',
+      title: sidebarCollapsed ? '展开左侧导航栏' : '收起左侧导航栏（专注主工作区）',
+      subtitle: '释放水平视野，最大化聊天与代码区域',
+      keywords: 'sidebar collapse expand 侧边栏 导航 折叠 收起 展开',
+      icon: 'panel',
+      shortcut: '⌘B',
+      action: onToggleSidebar,
+    },
+    {
+      id: 'action:toggle-artifacts',
+      category: '界面与视图',
+      title: artifactsOpen ? '收起右侧成果预览栏' : '展开右侧成果预览栏',
+      subtitle: '切换右侧代码、文档与 Muse 视频预览抽屉',
+      keywords: 'artifact panel preview 成果 预览 右侧栏',
+      icon: 'layers',
+      shortcut: '⌘.',
+      action: onToggleArtifacts,
+    },
+    {
+      id: 'action:toggle-theme',
+      category: '界面与视图',
+      title: theme === 'light' ? '切换为深色模式 (Dark)' : '切换为浅色模式 (Light)',
+      subtitle: '切换工作台整体配色主题',
+      keywords: 'theme dark light 深色 浅色 主题 夜间',
+      icon: theme === 'light' ? 'moon' : 'sun',
+      action: onToggleTheme,
+    },
+    {
+      id: 'action:remote',
+      category: '界面与视图',
+      title: '手机连接与远程访问配对',
+      subtitle: '查看配对二维码、PIN 码与受信任设备',
+      keywords: 'phone remote mobile 手机 远程 二维码',
+      icon: 'phone',
+      action: onOpenRemote,
+    },
+  ];
+
+  Object.entries(modes).forEach(([id, item]) => {
+    items.push({
+      id: `mode:${id}`,
+      category: '单项协作方式',
+      title: `切换到：${item.label}`,
+      subtitle: item.description,
+      keywords: `mode ${id} ${item.label} ${item.description}`,
+      icon: item.icon || 'chat',
+      action: () => onSelectMode?.(id),
+    });
+  });
+
+  projects.slice(0, 8).forEach((project) => {
+    const isCurrent = project.id === activeProjectId;
+    items.push({
+      id: `project:${project.id}`,
+      category: '切换项目空间',
+      title: `${isCurrent ? '当前项目：' : '切换到项目：'}${project.name}`,
+      subtitle: project.description || project.repo_path || '共享资料与独立群聊作用域',
+      keywords: `project ${project.name} ${project.description || ''}`,
+      icon: 'folder',
+      action: () => onSelectProject?.(project.id),
+    });
+  });
+
+  history.slice(0, 12).forEach((group) => {
+    const latest = group.latest;
+    if (!latest) return;
+    const isGroupRoom = Boolean(latest.group_room_id);
+    items.push({
+      id: `history:${group.id}`,
+      category: '最近会话与群聊记录',
+      title: group.title || taskTitle(latest.prompt),
+      subtitle: `${isGroupRoom ? '项目群聊' : group.modes.map((m) => modes[m]?.label || m).join(' / ')} · ${group.jobs.length} 轮记录`,
+      keywords: `history ${group.title} ${latest.prompt || ''}`,
+      icon: isGroupRoom ? 'group' : 'chat',
+      action: () => onSelectJob?.(latest),
+    });
+  });
+
+  return items;
+}
+
+export function filterCommandItems(items, query = '') {
+  const needle = query.trim().toLowerCase();
+  if (!needle) return items;
+  const terms = needle.split(/\s+/).filter(Boolean);
+  return items.filter((item) => {
+    const haystack = `${item.category} ${item.title} ${item.subtitle || ''} ${item.keywords || ''}`.toLowerCase();
+    return terms.every((term) => haystack.includes(term));
+  });
+}

@@ -270,6 +270,39 @@ class CoordinationTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(delivery["status"], "complete", delivery["limitations"])
                 self.assertFalse(any(step["kind"] == "muse" for step in delivery["steps"]))
 
+    async def test_native_dispatch_preserves_each_roles_video_quota(self):
+        self.job.update(group_output_format="auto", group_media_provider="muse")
+        for identifier in ["director-a", "director-b"]:
+            self.job["group_team_snapshot"]["members"].append(
+                {"id": identifier, "kind": "muse", "name": identifier, "role": "Create assigned films"})
+            self.job["group_recipient_member_ids"].append(identifier)
+        async def provider(job, model, system, prompt, **kwargs):
+            if "你是项目统筹者" in system:
+                return json.dumps(plan(steps=[
+                    {"id": identifier, "member_id": identifier, "instruction": "Create the assigned films",
+                     "expected_output": "Real videos", "output_kind": "video", "output_count": count}
+                    for identifier, count in [("director-a", 2), ("director-b", 1)]], requirements=[
+                    {"id": "videos", "kind": "video", "count": 3, "description": "Three distinct films"}])), False
+            if "你是交付审查者" in system:
+                return json.dumps({"goal_met": False, "missing_requirements": ["No files in this mock"], "checks": [
+                    {"requirement_id": "media-video", "met": False, "evidence_status": "unverified", "reason": "No files"}]}), False
+            return await self.provider(job, model, system, prompt, **kwargs)
+        sent = {}
+        async def runtime(job, member, prompt, **kwargs):
+            sent[member["id"]] = prompt
+            return {"status": "complete", "task_id": str(uuid.uuid4()), "output": "No generated file in mock", "sources": []}
+        async def handoff(job, member, step, prompt, delivery, changed, **kwargs):
+            return prompt
+        with patch("backend.group_delivery_runtime.run_runtime_step", side_effect=runtime), \
+             patch("backend.task_handoff.prepare_handoff", side_effect=handoff), \
+             patch("backend.delivery_harness.produce_media", AsyncMock()):
+            delivery = (await self.run_delivery(provider))["delivery"]
+        self.assertEqual(set(sent), {"director-a", "director-b"})
+        self.assertIn("2 个真实视频文件", sent["director-a"])
+        self.assertIn("1 个真实视频文件", sent["director-b"])
+        self.assertTrue(all("3 个真实视频文件" not in value for value in sent.values()))
+        self.assertEqual(delivery["status"], "partial")
+
     async def test_original_goal_omission_cannot_pass_all_planned_checks(self):
         async def provider(job, model, system, prompt, **kwargs):
             if "你是交付审查者" in system:

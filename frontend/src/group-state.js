@@ -160,3 +160,147 @@ export function groupRuntimeRequest({ member, projectId, roomId, prompt }) {
     ...(kind === 'muse' ? { timeout_seconds: 600 } : { engine: kind, kind: 'code' }),
   } };
 }
+
+export const GROUP_QUICK_RECIPES = [
+  {
+    id: 'auto_delivery',
+    command: '/auto',
+    label: '自动完成完整交付',
+    detail: '切回“自动完成”模式，由统筹模型协调群内成员并产出最终成果',
+    deliveryMode: 'auto',
+    outputFormat: 'auto',
+  },
+  {
+    id: 'video_muse',
+    command: '/video',
+    label: '视频创作与 @Muse 成片回传',
+    detail: '自动点名 @Muse（或切换视频成果形式），生成分镜并回传 MP4 视频',
+    deliveryMode: 'auto',
+    outputFormat: 'video',
+    preferKind: 'muse',
+  },
+  {
+    id: 'code_review',
+    command: '/code-review',
+    label: '代码审阅 (@Codex / @Claude Code)',
+    detail: '自动衔接 @Codex / @Claude Code 代码审阅与改动评估',
+    deliveryMode: 'discussion',
+    harnessMode: 'discuss_agent',
+    preferKind: 'codex',
+  },
+  {
+    id: 'illustrated_article',
+    command: '/article',
+    label: '图文并茂长文交付',
+    detail: '自动规划正文与配图槽位，生成可发布的图文成果包',
+    deliveryMode: 'auto',
+    outputFormat: 'illustrated',
+  },
+  {
+    id: 'code_handoff',
+    command: '/code',
+    label: '讨论方案 → 代码 Agent 执行',
+    detail: '群内模型先收敛技术方案，完成后自动填入 Codex / Claude Code 草稿',
+    deliveryMode: 'discussion',
+    harnessMode: 'discuss_agent',
+  },
+  {
+    id: 'deep_consensus',
+    command: '/consensus',
+    label: '多轮深研交叉质询 (2轮)',
+    detail: '切换为仅讨论 + 2 轮交叉补充，适合复杂架构或方案评审',
+    deliveryMode: 'discussion',
+    harnessMode: 'consensus',
+  },
+];
+
+export function detectMessageHandoffIntent(content = '') {
+  const text = String(content ?? '');
+  const isVideoStoryboard = /(?:分镜|镜头|画面|景别|转场|旁白|配乐|背景音乐|视频|短片|动画|成片|storyboard|scene\s*\d|shot\s*\d|camera)/i.test(text);
+  const isCodeProposal = /(?:```|diff\s+--git|\b(?:function|const|class|def|import|export)\b|\.(?:jsx?|tsx?|py|swift|css|sh)\b|修改方案|代码修改|重构|补丁|实现步骤)/i.test(text);
+  return { isVideoStoryboard, isCodeProposal };
+}
+
+export function detectComposerTrigger(prompt = '', cursorPosition = null) {
+  const text = String(prompt ?? '');
+  const cursor = typeof cursorPosition === 'number' ? Math.max(0, Math.min(text.length, cursorPosition)) : text.length;
+  const before = text.slice(0, cursor);
+  const match = /(?:^|\s)([@/])([^\s@/]{0,32})$/.exec(before);
+  if (!match) return null;
+  const symbol = match[1];
+  const query = match[2] || '';
+  const start = cursor - query.length - 1;
+  return {
+    type: symbol === '@' ? 'mention' : 'recipe',
+    symbol,
+    query,
+    start,
+    end: cursor,
+  };
+}
+
+export function filterComposerSuggestions(trigger, members = []) {
+  if (!trigger) return [];
+  const needle = (trigger.query || '').trim().toLowerCase();
+  if (trigger.type === 'mention') {
+    const allOption = {
+      id: '__all__',
+      type: 'mention',
+      name: '协作组全体 LLM',
+      badge: '广播讨论 / 自动统筹',
+      kind: 'all',
+    };
+    const memberOptions = (Array.isArray(members) ? members : []).map((member) => ({
+      id: member.id,
+      type: 'mention',
+      name: member.name || member.model || member.id,
+      badge: `${groupMemberKindLabel(member)}${member.role ? ` · ${member.role}` : ''}`,
+      kind: groupMemberKind(member),
+      member,
+    }));
+    return [allOption, ...memberOptions].filter((item) => !needle || `${item.name} ${item.badge} ${item.kind}`.toLowerCase().includes(needle));
+  }
+  if (trigger.type === 'recipe') {
+    return GROUP_QUICK_RECIPES
+      .map((recipe) => ({
+        id: recipe.id,
+        type: 'recipe',
+        name: `${recipe.command} · ${recipe.label}`,
+        badge: recipe.detail,
+        recipe,
+      }))
+      .filter((item) => !needle || `${item.recipe.command} ${item.recipe.label} ${item.recipe.detail}`.toLowerCase().includes(needle));
+  }
+  return [];
+}
+
+export function applyMentionCandidate(prompt = '', trigger, candidate, currentRecipientIds = [], members = []) {
+  const text = String(prompt ?? '');
+  const cleanPrompt = trigger
+    ? `${text.slice(0, trigger.start)}${text.slice(trigger.end)}`.replace(/^\s+/, '')
+    : text;
+  if (!candidate || candidate.id === '__all__') {
+    return { prompt: cleanPrompt, recipientIds: [] };
+  }
+  const target = candidate.member || members.find((item) => item.id === candidate.id);
+  if (!target) return { prompt: cleanPrompt, recipientIds: currentRecipientIds };
+  const runtime = groupMemberKind(target) !== 'model';
+  if (runtime) {
+    return { prompt: cleanPrompt, recipientIds: [target.id] };
+  }
+  const modelOnlyIds = (Array.isArray(currentRecipientIds) ? currentRecipientIds : []).filter((id) =>
+    members.some((item) => item.id === id && groupMemberKind(item) === 'model')
+  );
+  const nextIds = modelOnlyIds.includes(target.id)
+    ? modelOnlyIds
+    : [...modelOnlyIds, target.id];
+  return { prompt: cleanPrompt, recipientIds: nextIds };
+}
+
+export function formatQuoteReply(message, currentPrompt = '') {
+  if (!message?.content) return String(currentPrompt || '');
+  const speaker = message.member_name || message.model || '群成员';
+  const excerpt = String(message.content).trim().slice(0, 360).replace(/\n+/g, '\n> ');
+  const prefix = currentPrompt.trim() ? `${currentPrompt.trim()}\n\n` : '';
+  return `${prefix}> 【${speaker}】：${excerpt}\n\n针对以上内容，请进一步：`;
+}

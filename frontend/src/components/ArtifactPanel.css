@@ -68,6 +68,170 @@
 .artifact-video-player { display: block; width: 100%; max-height: 360px; background: #0b101b; }
 .artifact-video-actions { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 9px 12px; background: var(--artifact-soft); border-top: 1px solid var(--artifact-line); font-size: 11px; color: var(--artifact-muted); }
 .artifact-video-actions .primary-button { text-decoration: none; height: 28px; font-size: 11px; padding: 0 12px; }
+.artifact-scope-tabs {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  border-radius: 6px;
+  background: var(--artifact-soft);
+  border: 1px solid var(--artifact-line);
+}
+.artifact-scope-tabs button {
+  border: 0;
+  background: transparent;
+  color: var(--artifact-muted);
+  font-size: 10.5px;
+  padding: 3px 7px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.artifact-scope-tabs button.selected {
+  background: var(--artifact-bg);
+  color: var(--artifact-accent);
+  font-weight: 600;
+}
+.artifact-category-bar {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex-wrap: wrap;
+  padding: 7px 18px;
+  border-bottom: 1px solid var(--artifact-line);
+  background: var(--artifact-soft);
+}
+.artifact-category-bar button {
+  border: 1px solid var(--artifact-line);
+  background: var(--artifact-bg);
+  color: var(--artifact-muted);
+  font-size: 10.5px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  cursor: pointer;
+}
+.artifact-category-bar button.selected {
+  border-color: var(--artifact-accent);
+  color: var(--artifact-accent);
+  font-weight: 600;
+}
+.artifact-gallery-strip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  overflow-x: auto;
+  padding: 7px 18px;
+  border-bottom: 1px solid var(--artifact-line);
+  background: var(--artifact-bg);
+  flex: 0 0 auto;
+  scrollbar-width: thin;
+}
+.artifact-gallery-card {
+  flex: 0 0 auto;
+  max-width: 170px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--artifact-line);
+  background: var(--artifact-soft);
+  color: var(--artifact-ink);
+  cursor: pointer;
+  text-align: left;
+}
+.artifact-gallery-card.selected {
+  border-color: var(--artifact-accent);
+  background: #4658c812;
+  color: var(--artifact-accent);
+}
+.artifact-gallery-badge {
+  font-size: 9.5px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--artifact-bg);
+  border: 1px solid var(--artifact-line);
+  color: var(--artifact-muted);
+  flex-shrink: 0;
+}
+.artifact-gallery-card strong {
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.artifact-diff-Selector {
+  padding: 8px 18px;
+  border-bottom: 1px solid var(--artifact-line);
+  background: var(--artifact-soft);
+}
+.artifact-diff-Selector label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--artifact-muted);
+}
+.artifact-diff-Selector select {
+  flex: 1;
+  min-width: 0;
+  border: 1px solid var(--artifact-line);
+  border-radius: 5px;
+  background: var(--artifact-bg);
+  color: var(--artifact-ink);
+  font-size: 11.5px;
+  padding: 3px 6px;
+}
+.artifact-diff-view {
+  border: 1px solid var(--artifact-line);
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--artifact-soft);
+}
+.artifact-diff-summary {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--artifact-line);
+  font-size: 11px;
+  color: var(--artifact-muted);
+}
+.artifact-diff-added {
+  color: #1f7a4c;
+  font-weight: 600;
+}
+.artifact-diff-removed {
+  color: #b42318;
+  font-weight: 600;
+}
+.artifact-diff-lines {
+  margin: 0;
+  padding: 8px 0;
+  font-size: 11.5px;
+  line-height: 1.65;
+  overflow-x: auto;
+}
+.artifact-diff-line {
+  display: flex;
+  padding: 1px 12px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.artifact-diff-line.artifact-diff-add {
+  background: rgba(31, 122, 76, 0.12);
+  color: #185c37;
+}
+.artifact-diff-line.artifact-diff-remove {
+  background: rgba(180, 35, 24, 0.12);
+  color: #912018;
+}
+.artifact-diff-prefix {
+  width: 16px;
+  flex-shrink: 0;
+  user-select: none;
+  font-weight: 700;
+}
 
 .artifact-validation { margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--shell-border); }
 .artifact-validation > summary { cursor: pointer; color: var(--shell-muted); font-size: 13px; }

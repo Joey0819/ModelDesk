@@ -7,7 +7,7 @@ import { buildSync } from 'esbuild';
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { managedDeliveryMedia, mediaBundleUrl, resolveManagedMediaUrl, resolveReusedMediaLink, embeddedMediaIds, normalizeMediaCapabilities, loadMediaCapabilities, deliveryMediaWarnings } from '../src/delivery-media.js';
-import { deriveArtifacts } from '../src/artifacts.js';
+import { deriveArtifacts, deriveRoomArtifacts } from '../src/artifacts.js';
 import { groupMessageRequest, groupOutputOptions, readGroupDraft } from '../src/group-state.js';
 
 const jobId = '00000000-1111-2222-3333-444444444444';
@@ -25,10 +25,10 @@ function job(media = [asset()], extra = {}) {
 }
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const compiled = buildSync({ stdin: { contents: 'export {MediaDelivery,DeliveryMediaProgress} from "./src/components/MediaDelivery.jsx"; export {default as ArtifactPanel} from "./src/components/ArtifactPanel.jsx"; export {default as DeliveryOutputOptions,MediaCapabilityStatus} from "./src/components/DeliveryOutputOptions.jsx";', resolveDir: root }, bundle: true, platform: 'node', format: 'cjs', jsx: 'automatic', write: false, external: ['react', 'react/jsx-runtime'], define: { 'import.meta.env': '{}' }, loader: { '.css': 'empty' } });
+const compiled = buildSync({ stdin: { contents: 'export {GroupDeliveryProgress} from "./src/components/GroupWorkspace.jsx"; export {MediaDelivery,DeliveryMediaProgress} from "./src/components/MediaDelivery.jsx"; export {default as ArtifactPanel} from "./src/components/ArtifactPanel.jsx"; export {default as DeliveryOutputOptions,MediaCapabilityStatus} from "./src/components/DeliveryOutputOptions.jsx";', resolveDir: root }, bundle: true, platform: 'node', format: 'cjs', jsx: 'automatic', write: false, external: ['react', 'react/jsx-runtime'], define: { 'import.meta.env': '{}' }, loader: { '.css': 'empty' } });
 const filename = path.join(root, 'tests/media-virtual.cjs');
 const module = new Module(filename); module.paths = Module._nodeModulePaths(path.dirname(filename)); module._compile(compiled.outputFiles[0].text, filename);
-const { MediaDelivery, DeliveryMediaProgress, ArtifactPanel, DeliveryOutputOptions, MediaCapabilityStatus } = module.exports;
+const { GroupDeliveryProgress, MediaDelivery, DeliveryMediaProgress, ArtifactPanel, DeliveryOutputOptions, MediaCapabilityStatus } = module.exports;
 const render = (component, props) => renderToStaticMarkup(React.createElement(component, props));
 
 test('managed media resolves on the paired phone API origin and retains exact job and project scope', () => {
@@ -141,6 +141,87 @@ test('reused links require exact provenance, project scope and safe API origin',
   }
   assert.equal(resolveReusedMediaLink(source, { ...video, slot_id: 'cover' }, job([video]), base), null);
   assert.equal(resolveReusedMediaLink(source, { ...video, job_id: oldJob }, job([video]), base), null);
+});
+
+test('reused inline and reference illustrations retain their article position without a duplicate gallery', () => {
+  const oldJob = '33333333-4444-5555-6666-777777777777';
+  for (const scope of [projectId, null]) {
+    const suffix = scope ? `?project_id=${scope}` : '';
+    const source = `/api/media/jobs/${oldJob}/assets/${imageId}/content${suffix}`;
+    const current = `/api/media/jobs/${jobId}/assets/${videoId}/content${suffix}`;
+    const image = asset(videoId, 'image', { project_id: scope, url: current, download_url: `${current}${scope ? '&' : '?'}download=1`, source_task_id: oldJob, slot_id: `reused-${imageId}` });
+    for (const apiBase of [base, phone]) {
+      for (const content of [`Before\n\n![保留的章节配图](${source})\n\nAfter`, `Before\n\n![保留的章节配图][figure]\n\nAfter\n\n[figure]: ${source}`]) {
+        const html = render(MediaDelivery, { job: job([image], { project_id: scope }), content, apiBase });
+        assert.equal((html.match(/<img /g) || []).length, 1);
+        assert.ok(html.includes(`src="${apiBase}${current}"`));
+        assert.ok(html.indexOf('Before') < html.indexOf('<img '));
+        assert.ok(html.indexOf('<img ') < html.indexOf('After'));
+        assert.doesNotMatch(html, /尚未保存|delivery-media-gallery/);
+        assert.doesNotMatch(html, new RegExp(oldJob));
+      }
+      const code = render(MediaDelivery, { job: job([image], { project_id: scope }), content: `\`![sample](${source})\``, apiBase });
+      assert.match(code, /delivery-media-gallery/);
+      assert.equal((code.match(/<img /g) || []).length, 1);
+    }
+  }
+});
+
+test('reused image references never bypass source, project or host checks', () => {
+  const oldJob = '33333333-4444-5555-6666-777777777777';
+  const source = `/api/media/jobs/${oldJob}/assets/${imageId}/content?project_id=${projectId}`;
+  const image = asset(videoId, 'image', { source_task_id: oldJob, slot_id: `reused-${imageId}` });
+  for (const invalid of [source.replace(oldJob, videoId), source.replace(projectId, jobId), `https://evil.example${source}`, `${source}&redirect=1`, 'data:image/png;base64,AAAA']) {
+    const html = render(MediaDelivery, { job: job([image]), content: `![不匹配的来源](${invalid})`, apiBase: base });
+    assert.match(html, /尚未保存/);
+    assert.match(html, /delivery-media-gallery/);
+    assert.equal((html.match(/<img /g) || []).length, 1);
+    assert.doesNotMatch(html, /evil\.example|data:image|redirect=1/);
+  }
+});
+
+test('saved media stays viewable and downloadable before prose and after failed synthesis', () => {
+  for (const kind of ['image', 'video']) {
+    for (const status of ['running', 'error', 'cancelled', 'interrupted']) {
+      const current = job([asset(imageId, kind)], { status });
+      current.result.delivery.content = '';
+      current.result.delivery.status = status === 'running' ? 'working' : 'partial';
+      current.result.delivery.limitations = ['交付正文尚未完成'];
+      const original = JSON.stringify(current);
+      const artifacts = deriveArtifacts(current);
+      assert.equal(artifacts.length, 1);
+      assert.equal(artifacts[0].content, '');
+      assert.equal(artifacts[0].media_only, true);
+      assert.equal(artifacts[0].status, status === 'running' ? 'live' : 'partial');
+      assert.equal(JSON.stringify(current), original);
+      const html = render(ArtifactPanel, { job: current });
+      assert.match(html, kind === 'image' ? /<img / : /<video /);
+      assert.match(html, /媒体预览|下载图文成果包/);
+      assert.match(html, /下载原件/);
+      assert.match(html, /交付正文尚未完成/);
+      assert.doesNotMatch(html, /artifact-empty|下载 Markdown|下载当前成果 Markdown|复制内容/);
+      const gallery = deriveRoomArtifacts({ jobs: [current] });
+      assert.equal(gallery[0].raw_id, 'group:delivery');
+      assert.equal(gallery[0].category, 'media');
+      assert.equal(gallery[0].origin_job, current);
+    }
+  }
+});
+
+test('media-only delivery requires a valid scoped manifest and follows the paired phone origin', () => {
+  for (const invalid of [[], [asset(imageId, 'image', { sha256: '' })], [asset(imageId, 'image', { job_id: videoId })], [asset(imageId, 'image', { project_id: videoId })], [asset(imageId, 'image', { url: 'https://evil.example/file.png' })]]) {
+    const current = job(invalid, { status: 'error' });
+    current.result.delivery.content = '';
+    assert.deepEqual(deriveArtifacts(current), []);
+    const html = render(ArtifactPanel, { job: current });
+    assert.match(html, /artifact-empty/);
+    assert.doesNotMatch(html, /<img |<video |下载图文成果包|下载 Markdown/);
+  }
+  const image = asset();
+  const current = job([{ ...image, url: `${phone}${image.url}`, download_url: `${phone}${image.download_url}` }], { status: 'running' });
+  current.result.delivery.content = '';
+  assert.equal(deriveArtifacts(current, phone).length, 1);
+  assert.deepEqual(deriveArtifacts(current, base), []);
 });
 
 test('bundle and artifact links preserve project scope, work on phone, and accompany Markdown', () => {
@@ -257,4 +338,20 @@ test('capability request uses the current phone origin and reports a safe non-bl
   const html = render(MediaCapabilityStatus, { state: { status: 'error', entries: [], error: '暂时无法读取生图能力，可继续提交任务。' }, onRefresh() {} });
   assert.match(html, /可继续提交任务/); assert.match(html, /重新检查/); assert.doesNotMatch(html, /disabled|必须.*API|secret/);
   assert.match(render(MediaCapabilityStatus, { state: { status: 'ready', entries: [] }, onRefresh() {} }), /检查已有登录/);
+});
+
+
+test('chat exposes saved media after synthesis fails and keeps long execution evidence collapsed', () => {
+  const current = job([asset(videoId, 'video')], { status: 'error' });
+  current.result.delivery.content = '';
+  current.result.delivery.status = 'partial';
+  current.result.delivery.steps = [{ id: 'synthesis', member_name: 'Editor', status: 'error', instruction: 'Combine actual files', error: 'Synthesis timed out' }];
+  current.result.delivery.limitations = ['Final prose is missing'];
+  const html = render(GroupDeliveryProgress, { job: current, onOpenArtifacts() {} });
+  assert.match(html, /查看部分成果/);
+  assert.match(html, /<details class="group-execution-details"><summary>/);
+  assert.match(html, /有步骤失败/);
+  assert.match(html, /Synthesis timed out/);
+  assert.match(html, /<details class="group-delivery-receipt"><summary>/);
+  assert.doesNotMatch(html, /完整成果已生成|尚未生成完整成果/);
 });

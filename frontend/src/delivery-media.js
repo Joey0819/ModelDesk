@@ -73,7 +73,7 @@ export function mediaBundleUrl(job, apiBase) {
 }
 
 /** Match inline and reference Markdown images for the gallery's duplicate check. */
-export function embeddedMediaIds(content, media) {
+export function embeddedMediaIds(content, media, resolveSource) {
   const definitions = new Map();
   const value = String(content || '').replace(/^ {0,3}(`{3,}|~{3,})[^\n]*\n[\s\S]*?^ {0,3}\1[^\n]*$/gm, '').replace(/(`+)[\s\S]*?\1/g, '');
   const normalize = (label) => label.trim().replace(/\s+/g, ' ').toLowerCase();
@@ -81,7 +81,8 @@ export function embeddedMediaIds(content, media) {
   const urls = [];
   for (const match of value.matchAll(/(?<!\\)!\[[^\]]*\]\(\s*(?:<([^>]+)>|([^\s)]+))(?:\s+["'][^"']*["'])?\s*\)/g)) urls.push(match[1] || match[2]);
   for (const match of value.matchAll(/(?<!\\)!\[([^\]]*)\](?:\[([^\]]*)\])?(?!\()/g)) urls.push(definitions.get(normalize(match[2] || match[1])));
-  return new Set(media.filter((asset) => urls.some((url) => url && [asset.url, asset.original_url].includes(url))).map((asset) => asset.id));
+  return new Set(media.filter((asset) => urls.some((url) => url && (resolveSource
+    ? resolveSource(url, asset) : [asset.url, asset.original_url].includes(url)))).map((asset) => asset.id));
 }
 
 export function deliveryMediaProgress(delivery = {}) {

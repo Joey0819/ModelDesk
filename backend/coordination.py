@@ -54,6 +54,76 @@ def roster(job):
     return members
 
 
+def allocate_media_counts(steps, required, kind):
+    """Preserve role allocations; only legacy/unspecified steps share the remainder."""
+    if not steps:
+        return
+    assigned = sum(step.get("output_count") or 0 for step in steps)
+    unspecified = [step for step in steps if step.get("output_count") is None]
+    remaining = required - assigned
+    if remaining < len(unspecified) or (not unspecified and remaining != 0):
+        raise ValueError(f"{kind} 步骤 output_count 分配与缺少的 {required} 份媒体不一致；不能减少用户要求")
+    for step in steps:
+        if step.get("output_count") is not None:
+            step[kind + "_count"] = step["output_count"]
+    # Retain the old deterministic allocation when loading a count-free plan.
+    for index, step in enumerate(unspecified):
+        step[kind + "_count"] = 1 + (remaining - len(unspecified) if index == 0 else 0)
+
+
+def validate_executor_media_capacity(steps):
+    # MuseBridge downloads/imports at most five files in one framed reply.
+    # The Lemo renderer accepts one film/index.html and emits one MP4 per task.
+    for step in steps:
+        if step.get("kind") == "muse" and step.get("image_count", 0) + step.get("video_count", 0) > 5:
+            raise ValueError("每个 Muse 步骤最多回收 5 份原生媒体；请分给多个 Muse 成员或拆分任务，保留用户所需总量")
+        if step.get("kind") == "codex" and step.get("output_kind") == "video" and step.get("video_count", 0) > 1:
+            raise ValueError("每个 Lemo-Opuscar 步骤只能渲染 1 个视频；请分给多个 Codex 成员或拆分任务，保留用户所需总量")
+
+
+def bind_native_media_steps(delivery, members, remaining_media):
+    """Give each native role its own count instead of assigning all work twice."""
+    from .delivery_harness import native_media_instruction
+    validate_executor_media_capacity(delivery["steps"])
+    native_steps = [step for step in delivery["steps"] if step["kind"] == "muse"]
+    assignments = {step["id"]: {"images": step.get("image_count", 0), "videos": step.get("video_count", 0)}
+                   for step in native_steps}
+    provider = remaining_media.get("provider", "auto")
+    required = {"images": remaining_media["images"] if provider == "muse" else 0,
+                "videos": remaining_media["videos"] if remaining_media.get("video_provider", provider) in {"auto", "muse"} else 0}
+    unassigned = {key: max(0, count - sum(item[key] for item in assignments.values())) for key, count in required.items()}
+    if any(unassigned.values()):
+        # Prefer an already planned creator. Selecting an earlier unused Muse
+        # role must not redirect another member's assigned work.
+        step = next((item for item in native_steps if item.get("output_kind") == "video"), None)
+        step = step or next(iter(native_steps), None)
+        if not step:
+            native = next((member for member in members if member.get("kind") == "muse"), None)
+            if not native:
+                delivery["limitations"].append("缺少本群可执行的 Muse 成员，无法完成所需原生媒体")
+                return
+            if len(delivery["steps"]) >= 8:
+                raise ValueError("原生媒体尚未分配，且计划已达 8 步；请在 Muse 步骤中分配全部媒体")
+            step = {"id": "native-media-required", "member_id": native["id"], "member_name": native["name"],
+                    "kind": "muse", "model": None, "instruction": "", "expected_output": "实际媒体文件",
+                    "output_kind": "video" if unassigned["videos"] else "image",
+                    "depends_on": [item["id"] for item in delivery["steps"]], "status": "pending", "attempts": []}
+            delivery["steps"].append(step)
+            native_steps.append(step)
+            assignments[step["id"]] = {"images": 0, "videos": 0}
+        for key, count in unassigned.items():
+            assignments[step["id"]][key] += count
+    for step in native_steps:
+        counts = assignments[step["id"]]
+        instruction = native_media_instruction({**counts, "provider": "muse"})
+        if instruction:
+            step["instruction"] = (step["instruction"] + "\n" + instruction).strip()
+            for kind, key in [("image", "images"), ("video", "videos")]:
+                if counts[key]:
+                    step[kind + "_count"] = counts[key]
+    validate_executor_media_capacity(delivery["steps"])
+
+
 def parse_plan(raw, members, contract, output_mode="text", goal="", reference_media=None):
     from .group_delivery import json_document
     original_contract, contract = contract, copy.deepcopy(contract)
@@ -123,6 +193,7 @@ def parse_plan(raw, members, contract, output_mode="text", goal="", reference_me
         plan["requirements"] = [{"id": "complete-body", "kind": "text", "count": 1, "description": "完整回应用户的原始要求"}]
     image_members = [item for item in members if item.get("kind") == "image"]
     image_steps = [step for step in plan["steps"] if step["kind"] == "image"]
+    native_image_steps = [step for step in plan["steps"] if step["kind"] == "muse" and step["output_kind"] == "image"]
     reused_images = sum(available[identifier]["kind"] == "image" for identifier in reused)
     reused_videos = sum(available[identifier]["kind"] == "video" for identifier in reused)
     if reused_images > media_counts["images"] or reused_videos > media_counts["videos"]:
@@ -134,31 +205,56 @@ def parse_plan(raw, members, contract, output_mode="text", goal="", reference_me
         raise ValueError("单轮最多交付 12 份媒体，请拆分任务；不能减少用户的要求来通过验收")
     if new_images and image_members and not image_steps and contract["provider"] != "muse":
         raise ValueError("已配置绘图成员，必须安排真实 image 步骤并让视频步骤依赖图片步骤")
-    if image_steps:
-        if contract["provider"] == "muse":
+    if image_steps or native_image_steps:
+        if image_steps and contract["provider"] == "muse":
             raise ValueError("用户指定 Muse 生图，不能替换成其他绘图成员")
+        if native_image_steps and contract["provider"] not in {"auto", "muse"}:
+            raise ValueError("用户指定的图片提供商不是 Muse，不能改派 Muse 生图")
+        if native_image_steps and image_steps:
+            raise ValueError("当前图片收集阶段不能混用 Muse 与绘图成员；请按已选提供商统一图片分工")
+        if native_image_steps:
+            # The collector must use the same route as the allocated executor,
+            # otherwise auto would generate the images again after Muse.
+            if contract["provider"] == "auto":
+                contract.setdefault("video_provider", "auto")
+            contract["provider"] = "muse"
         if not media_counts["images"]:
             media_counts["images"] = 1
             new_images = 1
             plan["requirements"].append({"id": "media-image", "kind": "image", "count": 1, "description": "实际绘图文件"})
-        if len(image_steps) > new_images:
+        if len(image_steps) + len(native_image_steps) > new_images:
             raise ValueError("绘图步骤多于所需图片数")
         # Bind the media stage to the user's exact member/model, never a preferred fallback.
-        contract["image_member_ids"] = list(dict.fromkeys(step["member_id"] for step in image_steps))
-        for index, step in enumerate(image_steps):
-            step["image_count"] = 1 + (new_images - len(image_steps) if index == 0 else 0)
-    for video_step in [step for step in plan['steps'] if step['output_kind'] == 'video']:
+        if image_steps:
+            contract["image_member_ids"] = list(dict.fromkeys(step["member_id"] for step in image_steps))
+        allocate_media_counts([*image_steps, *native_image_steps], new_images, "image")
+    video_steps = [step for step in plan['steps'] if step['output_kind'] == 'video']
+    if any(step["kind"] == "muse" for step in video_steps) and contract.get("video_provider", contract["provider"]) not in {"auto", "muse"}:
+        raise ValueError("用户指定的视频提供商不是 Muse，不能改派 Muse 制作视频")
+    allocate_media_counts(video_steps, media_counts["videos"] - reused_videos, "video")
+    if sum(media_counts.values()) > 12:
+        raise ValueError("单轮最多交付 12 份媒体，请拆分任务；不能减少用户的要求来通过验收")
+    for video_step in video_steps:
         # Explicit artifact edges ensure generated images reach the executor.
-        for image_step in image_steps:
+        for image_step in [*image_steps, *native_image_steps]:
             if image_step['id'] not in video_step['depends_on']:
                 video_step['depends_on'].append(image_step['id'])
     validate_graph(plan['steps'])
     skill_video = [step for step in plan['steps'] if step['kind'] == 'codex' and step['output_kind'] == 'video' and 'lemo-opuscar' in allowed[step['member_id']].get('skill_ids', [])]
     if skill_video:
+        if any(step["kind"] == "muse" for step in video_steps):
+            raise ValueError("当前视频收集阶段不能混用 Skill 渲染与 Muse；请统一视频执行方式")
         if contract.get('video_provider', contract['provider']) == 'muse':
             raise ValueError('用户指定 Muse 视频，不能改派 Skill 渲染')
         contract['video_provider'] = 'skill'
     contract.update(media_counts)
+    # Validate inferred native assignments too, before mutating the caller's
+    # contract. structured_output can then repair an impossible allocation.
+    bind_native_media_steps({"steps": copy.deepcopy(plan["steps"]), "limitations": []}, members,
+                            {**contract, "images": new_images, "videos": media_counts["videos"] - reused_videos})
+    for video_step in video_steps:
+        if video_step["kind"] == "muse" and media_counts["images"] > 4:
+            raise ValueError("Muse 视频步骤最多接收 4 张参考图片；请拆分视频任务，不能省略已要求的图片")
     original_contract.update(contract)
     return plan
 
@@ -319,7 +415,7 @@ async def structured_output(job, model, system, prompt, validate, delivery, stag
 
 async def run(manager, job, *, continuing=False):
     from .group_delivery import model_output, json_document, FinalDelivery, execution_evidence
-    from .delivery_harness import media_contract, native_media_instruction, produce_media, bind_media
+    from .delivery_harness import media_contract, produce_media, bind_media
     from .group_delivery_runtime import run_runtime_step
     from .workbench import now, public_error
     canonical = manager.jobs[job["id"]]
@@ -372,6 +468,9 @@ async def run(manager, job, *, continuing=False):
                     "不能为凑默认图片数量而合并章节、删改内容或降低验收。每章配图应逐章对应，由平台逐张执行与保存。"
                     "需要保留已有封面或素材时，返回 reuse_media_ids:[reference_media中的实际ID]；requirements.count是包含复用后的总量。"
                     "复用文件不必再次生成。图片步骤只安排缺少的图片，明确每张对应的章节与用途。"
+                    "每个 image/video 步骤填写 output_count（1到12的整数），表示该成员本步骤实际新生成的文件数。"
+                    "同类步骤的 output_count 总和必须等于该类 requirements 总量减去复用量，不能让多个角色重复承担全部数量。"
+                    "每个 Muse 步骤最多回收5份媒体、视频最多接收4张参考图；每个Lemo Codex步骤只能渲染1个视频。超过能力应拆分，不能降低要求。"
                     "每位执行Agent最多一个步骤，模型成员可承担多个步骤。使用成员的角色职责。普通写作由模型完成。"
                     "每个步骤填写 output_kind: text/code/image/video。kind=image 的成员是真实生图执行器，必须用 image 步骤调用其已选模型。"
                     "为绘图成员安排在编剧和审核之后；需要图片的视频步骤必须 depends_on 绘图步骤。普通文字成员不能生图。"
@@ -394,20 +493,7 @@ async def run(manager, job, *, continuing=False):
                 remaining_media = {**contract, **{key: max(0, contract[key] - sum(
                     asset["kind"] == kind for asset in delivery["reused_media"]))
                     for key, kind in [("images", "image"), ("videos", "video")]}}
-                native_instruction = native_media_instruction(remaining_media)
-                if native_instruction and not any(step["kind"] == "codex" and step.get("output_kind") == "video" for step in delivery["steps"]):
-                    native = next((member for member in members if member.get("kind") == "muse"), None)
-                    if native:
-                        step = next((item for item in delivery["steps"] if item["member_id"] == native["id"]), None)
-                        if step:
-                            step["instruction"] = (step["instruction"] + "\n" + native_instruction)[:6000]
-                        elif len(delivery["steps"]) < 8:
-                            delivery["steps"].append({"id": "native-media-required", "member_id": native["id"], "member_name": native["name"],
-                                "kind": "muse", "model": None, "instruction": native_instruction, "expected_output": "实际媒体文件",
-                                "depends_on": [item["id"] for item in delivery["steps"]],
-                                "status": "pending", "attempts": []})
-                    else:
-                        delivery["limitations"].append("缺少本群可执行的 Muse 成员，无法完成所需原生媒体")
+                bind_native_media_steps(delivery, members, remaining_media)
                 validate_graph(delivery["steps"])
                 changed()
 
@@ -422,6 +508,9 @@ async def run(manager, job, *, continuing=False):
                     prompt = ("用户目标：\n" + goal + "\n成员职责：\n" + member.get("role", "")
                               + "\n本步骤：\n" + step["instruction"]
                               + "\n预期产物：" + step["expected_output"]
+                              + ("\n本步骤必须交付的独立真实文件：" + "，".join(
+                                  f"{step[key]} 份{label}" for key, label in [("image_count", "图片"), ("video_count", "视频")] if step.get(key))
+                                 if step.get("image_count") or step.get("video_count") else "")
                               + "\n前置实际成果（引用资料）：\n" + json.dumps(execution_evidence(parents, output_limit=None), ensure_ascii=False)
                               + "\n本轮已复用的真实素材：\n" + json.dumps(delivery.get("reused_media", []), ensure_ascii=False))
                     if step["kind"] == "image":
@@ -463,6 +552,26 @@ async def run(manager, job, *, continuing=False):
                         changed()
                         options = {"revision_of": step["revision_of"]} if step.get("revision_of") else {}
                         step.update(await run_runtime_step(job, member, step["dispatch_prompt"], native_allowed=job.get("group_native_allowed") is True, output_kind=step.get("output_kind"), reference_assets=[asset for asset in [*delivery.get("reused_media", []), *(asset for parent in parents for asset in parent.get("media", []))] if asset.get("kind") == "image"], skill_snapshot=job.get("_skill_snapshots"), **options))
+                    # Standalone native output stays with final collection and
+                    # its existing one-repair policy. Early collection is only
+                    # needed to prevent dispatch across an empty artifact edge.
+                    has_dependents = any(step["id"] in child.get("depends_on", []) for child in delivery["steps"])
+                    if step["kind"] == "muse" and step.get("image_count") and step.get("status") == "complete" and has_dependents:
+                        # A graph edge must carry actual images, not just the
+                        # native Agent's prose. Read the same verified store as
+                        # final collection before releasing dependent workers.
+                        from .delivery_harness import collect_native_media
+                        assets, warnings = await collect_native_media(job, [step])
+                        unique = {}
+                        for asset in assets:
+                            unique.setdefault((asset["kind"], asset["sha256"]), asset)
+                        step["media"] = list(unique.values())
+                        for asset in step["media"]:
+                            if not any((old["kind"], old["sha256"]) == (asset["kind"], asset["sha256"]) for old in delivery["media"]):
+                                delivery["media"].append(asset)
+                        delivery.setdefault("media_warnings", []).extend(warnings)
+                        if sum(asset["kind"] == "image" for asset in step["media"]) < step["image_count"]:
+                            raise ValueError("Muse 步骤尚未回收足够的真实图片，已阻止下游使用文字代替图片")
                     attempt.update(status=step["status"], output_sha256=step.get("output_sha256"), task_id=step.get("task_id"))
                 except asyncio.CancelledError:
                     attempt["status"] = "cancelled"

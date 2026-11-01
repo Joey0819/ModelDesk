@@ -36,15 +36,16 @@ export function DeliveryMediaProgress({ job, apiBase = API_BASE }) {
 /** Rich delivery only loads stored media from this job's verified asset manifest. */
 export function MediaDelivery({ job, content, apiBase = API_BASE }) {
   const media = managedDeliveryMedia(job, apiBase);
-  const embedded = embeddedMediaIds(content, media);
+  const resolveSource = (source, asset) => resolveManagedMediaUrl(source, asset, job, apiBase)
+    || resolveReusedMediaLink(source, asset, job, apiBase);
+  const embedded = embeddedMediaIds(content, media, resolveSource);
   const remaining = media.filter((asset) => !embedded.has(asset.id));
-  const imageAsset = (source) => media.find((asset) => resolveManagedMediaUrl(source, asset, job, apiBase));
+  const imageAsset = (source) => media.find((asset) => resolveSource(source, asset));
   const transform = (url, key) => {
     const asset = imageAsset(url);
     if (key === 'src') return asset?.url || '';
-    if (asset) return resolveManagedMediaUrl(url, asset, job, apiBase);
-    const reused = media.map((item) => resolveReusedMediaLink(url, item, job, apiBase)).find(Boolean);
-    return reused || defaultUrlTransform(url);
+    if (asset) return resolveSource(url, asset);
+    return defaultUrlTransform(url);
   };
   const renderImage = ({ src, alt }) => {
     const asset = imageAsset(src);

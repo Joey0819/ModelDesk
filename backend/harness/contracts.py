@@ -30,7 +30,14 @@ class Step(BaseModel):
     instruction: str = Field(min_length=1, max_length=5000)
     expected_output: str = Field(min_length=1, max_length=500)
     output_kind: Literal["text", "code", "image", "video"] = "text"
+    output_count: int | None = Field(default=None, ge=1, le=12, strict=True)
     depends_on: list[str] = Field(default_factory=list, max_length=7)
+
+    @model_validator(mode="after")
+    def media_count(self):
+        if self.output_count is not None and self.output_kind not in {"image", "video"}:
+            raise ValueError("output_count 仅用于实际图片或视频数量")
+        return self
 
 
 class Plan(BaseModel):

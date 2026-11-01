@@ -224,6 +224,39 @@ class DeliveryMediaTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(manifest["media"][0]["sha256"], entry["sha256"])
             self.assertNotIn(extra["id"], str(manifest))
 
+    def test_bundle_preserves_original_inline_image_after_multiple_reuse_turns(self):
+        immediate_job, immediate_id, origin_job, origin_id = [str(uuid.uuid4()) for _ in range(4)]
+        entry = self.save(slot_id="reused-" + immediate_id, source_task_id=immediate_job, caption="章节图")
+        old_url, old_download = media._urls(origin_job, self.job["project_id"], origin_id)
+        delivery = self.job["result"]["delivery"]
+        delivery.update(media=[entry], content=f'## 第一章\n\n![章节图](<{old_url}>)\n\n## 第二章\n\n[下载原图][image]\n\n[image]: {old_download}',
+            media_reuse_origins=[{"asset_id": entry["id"], "source_job_id": origin_job, "source_asset_id": origin_id, "sha256": entry["sha256"]}])
+        with patch.object(media, "store", self.store):
+            bundle = media.delivery_bundle(self.job)
+        with zipfile.ZipFile(io.BytesIO(bundle)) as archive:
+            article = archive.read("article.md").decode()
+            document = archive.read("index.html").decode()
+            self.assertEqual(article.count("media/" + entry["name"]), 2)
+            self.assertNotIn("/api/media/", article)
+            self.assertEqual(document.count('<img src="media/'), 1)
+            self.assertLess(document.index('<img src="media/'), document.index("第二章"))
+            self.assertEqual(archive.read("media/" + entry["name"]), self.raw)
+
+    def test_portable_reuse_links_require_exact_scope_hash_and_destination(self):
+        immediate_job, immediate_id, origin_job, origin_id = [str(uuid.uuid4()) for _ in range(4)]
+        entry = self.save(slot_id="reused-" + immediate_id, source_task_id=immediate_job)
+        immediate_url = media._urls(immediate_job, self.job["project_id"], immediate_id)[0]
+        old_url = media._urls(origin_job, self.job["project_id"], origin_id)[0]
+        origin = {"asset_id": entry["id"], "source_job_id": origin_job, "source_asset_id": origin_id, "sha256": entry["sha256"]}
+        self.assertEqual(media._portable_markdown(f'![x]({immediate_url})', [entry]), f'![x](media/{entry["name"]})')
+        for alias in [{**origin, "sha256": "0" * 64}, {**origin, "asset_id": str(uuid.uuid4())}, {**origin, "source_job_id": "../../elsewhere"}]:
+            text = f'![x]({old_url})'
+            self.assertEqual(media._portable_markdown(text, [entry], [alias]), text)
+        for url in [old_url + "&extra=1", old_url + "#section", "https://outside.example" + old_url,
+                    old_url.replace(self.job["project_id"], str(uuid.uuid4()))]:
+            text = f'![x]({url})'
+            self.assertEqual(media._portable_markdown(text, [entry], [origin]), text)
+
     def test_offline_inventory_keeps_links_in_tables_without_duplicate_images(self):
         entry = self.save(caption="章节图")
         local = "media/" + entry["name"]

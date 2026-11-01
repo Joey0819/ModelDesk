@@ -425,11 +425,57 @@ async def media_content(request: Request, job_id: str, asset_id: str, project_id
     return Response(content=raw, media_type=entry["mime_type"], headers=headers)
 
 
-def _portable_markdown(content, assets):
+def _portable_markdown(content, assets, reuse_origins=()):
+    """Rewrite exact Markdown destinations to files verified for this bundle.
+
+    Reused files retain older links in the user's draft. Their source identity
+    comes from the verified current manifest or the hash-bound reuse receipt,
+    never an arbitrary URL supplied by a model. No historical file is reopened.
+    """
+    from markdown_it.helpers import parseLinkDestination
+
+    destinations, reused = {}, {}
+
+    def add_source(entry, source_job_id, source_asset_id):
+        try:
+            _identifier(source_job_id)
+            _identifier(source_asset_id)
+        except HTTPException:
+            return False
+        for url in _urls(source_job_id, entry["project_id"], source_asset_id):
+            destinations[url] = "media/" + entry["name"]
+        return True
+
     for entry in assets:
-        # Longest URL first: /content is a prefix of the download URL.
-        for url in (entry["download_url"], entry["url"]):
-            content = content.replace(url, "media/" + entry["name"])
+        for url in (entry["url"], entry["download_url"]):
+            destinations[url] = "media/" + entry["name"]
+        slot = entry.get("slot_id", "")
+        if slot.startswith("reused-") and add_source(entry, entry.get("source_task_id"), slot[len("reused-"):]):
+            reused[entry["id"]] = entry
+    if isinstance(reuse_origins, (list, tuple)):
+        for origin in reuse_origins:
+            if not isinstance(origin, dict) or set(origin) != {"asset_id", "source_asset_id", "source_job_id", "sha256"}:
+                continue
+            entry = reused.get(origin.get("asset_id"))
+            if entry and origin.get("sha256") == entry["sha256"]:
+                add_source(entry, origin.get("source_job_id"), origin.get("source_asset_id"))
+
+    # Let the maintained CommonMark destination parser handle angle brackets
+    # and balanced parentheses. Whole-token lookup keeps altered query strings,
+    # fragments and local-looking paths inside external URLs unchanged.
+    starts = re.compile(r"\]\([ \t\r\n]*|(?m:^[ \t]{0,3}\[(?:\\.|[^\]\\\r\n])+\]:[ \t]*(?:\r?\n[ \t]*)?)")
+    edits = []
+    for match in starts.finditer(content):
+        start = match.end()
+        parsed = parseLinkDestination(content, start, len(content))
+        if not parsed.ok:
+            continue
+        raw = content[start:parsed.pos]
+        url = raw[1:-1] if raw.startswith("<") and raw.endswith(">") else raw
+        if url == parsed.str and url in destinations:
+            edits.append((start, parsed.pos, destinations[url]))
+    for start, end, destination in reversed(edits):
+        content = content[:start] + destination + content[end:]
     return content
 
 
@@ -521,7 +567,7 @@ def delivery_bundle(job):
         assets.append(entry)
         binaries.append(raw)
         seen.add(entry["id"])
-    article = _portable_markdown(content, assets)
+    article = _portable_markdown(content, assets, delivery.get("media_reuse_origins"))
     status = str(delivery.get("status") or job.get("status") or "partial")[:100]
     limitations = delivery.get("limitations") or []
     if not isinstance(limitations, list) or len(limitations) > 100:

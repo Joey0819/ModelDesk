@@ -54,12 +54,18 @@ export function resolveReusedMediaLink(value, asset, job, apiBase) {
   const current = resolveManagedMediaUrl(asset?.url, asset, job, apiBase);
   const sourceId = /^reused-([0-9a-f-]+)$/i.exec(asset?.slot_id || '')?.[1];
   if (!current || !UUID.test(sourceId || '') || !UUID.test(asset.source_task_id || '')) return null;
-  const source = resolveManagedMediaUrl(value,
-    { ...asset, id: sourceId, job_id: asset.source_task_id },
-    { ...job, id: asset.source_task_id }, apiBase);
-  if (!source) return null;
-  return new URL(source).searchParams.has('download')
-    ? resolveManagedMediaUrl(asset.download_url, asset, job, apiBase) : current;
+  const origins = job?.result?.delivery?.media_reuse_origins;
+  const sources = [{ source_asset_id: sourceId, source_job_id: asset.source_task_id },
+    ...(Array.isArray(origins) ? origins.filter((item) => item?.asset_id === asset.id
+      && item.sha256 === asset.sha256 && UUID.test(item.source_asset_id || '') && UUID.test(item.source_job_id || '')) : [])];
+  for (const origin of sources) {
+    const source = resolveManagedMediaUrl(value,
+      { ...asset, id: origin.source_asset_id, job_id: origin.source_job_id },
+      { ...job, id: origin.source_job_id }, apiBase);
+    if (source) return new URL(source).searchParams.has('download')
+      ? resolveManagedMediaUrl(asset.download_url, asset, job, apiBase) : current;
+  }
+  return null;
 }
 
 export function mediaBundleUrl(job, apiBase) {

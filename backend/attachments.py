@@ -29,6 +29,41 @@ def sha(raw):
     return hashlib.sha256(raw).hexdigest()
 
 
+def select_frozen_text(text, items, document_ids):
+    """Select exact frozen excerpts, including bundles saved before this API.
+
+    Character counts and labels come from the authenticated manifest. Splitting
+    on labels alone would let a document's own text masquerade as another file.
+    """
+    requested = set(document_ids)
+    documents = [item for item in items if item.get("kind") == "text"]
+    if not requested.issubset({item["id"] for item in documents}):
+        raise HTTPException(422, "所选历史文本不在冻结附件清单中")
+    cursor, selected = 0, []
+    for index, item in enumerate(documents):
+        prefix = f"[附件 {item['relative_path']}；sha256={item['sha256']}]\n"
+        count = item.get("context_chars")
+        if type(count) is not int or count < 0:
+            raise HTTPException(409, "冻结附件缺少有效文本边界，请重新添加资料")
+        if index:
+            if text[cursor:cursor + 2] != "\n\n":
+                raise HTTPException(409, "冻结附件文本边界校验失败")
+            cursor += 2
+        start = cursor
+        if not text.startswith(prefix, cursor):
+            raise HTTPException(409, "冻结附件文本边界校验失败")
+        cursor += len(prefix) + count
+        suffix = "\n[此附件引用内容已截断]" if item.get("truncated") else ""
+        if cursor > len(text) or not text.startswith(suffix, cursor):
+            raise HTTPException(409, "冻结附件文本边界校验失败")
+        cursor += len(suffix)
+        if item["id"] in requested:
+            selected.append(text[start:cursor])
+    if cursor != len(text):
+        raise HTTPException(409, "冻结附件文本边界校验失败")
+    return "\n\n".join(selected)
+
+
 def safe_relative(value):
     from .projects import excluded
     if not isinstance(value, str) or not value or len(value) > 1024 or any(char in value for char in ("\x00", "\n", "\r", "\\")):
@@ -347,7 +382,7 @@ class AssetStore:
         frozen.chmod(0o600)
         return manifest
 
-    def prepared(self, job, inputs_root):
+    def prepared(self, job, inputs_root, *, document_ids=None, include_project=True):
         if not job.get("attachment_manifest"):
             return "", [], []
         path = inputs_root / job["id"] / "context.json"
@@ -369,8 +404,11 @@ class AssetStore:
         for image in data["images"]:
             if image["id"] not in expected or image["job_id"] != job["id"] or image["project_id"] != job["project_id"] or image["sha256"] != expected[image["id"]]["content_sha256"]:
                 raise HTTPException(409, "任务图片清单校验失败")
+        if document_ids is not None:
+            text = select_frozen_text(text, manifest["items"], document_ids)
         profile = manifest["project"]
-        header = f"用户选择的项目：{profile['name']}\n项目说明：{profile['description']}\n项目要求：{profile['instructions']}"
+        header = (f"用户选择的项目：{profile['name']}\n项目说明：{profile['description']}\n项目要求：{profile['instructions']}"
+                  if include_project else "")
         return header + ("\n\n<UNTRUSTED_ATTACHMENTS>\n" + text + "\n</UNTRUSTED_ATTACHMENTS>" if text else ""), manifest["items"], data["images"]
 
     def historical_images(self, job, inputs_root):

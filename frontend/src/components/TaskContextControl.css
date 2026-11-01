@@ -10,3 +10,12 @@
 .task-memory-dialog header{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:16px 24px;border-bottom:1px solid var(--border-color,#e3e7ef)}
 .task-memory-body{padding:8px 24px 24px;max-height:calc(80vh - 70px);overflow:auto;overflow-wrap:anywhere;font-size:14px}
 .task-memory-body ol{padding-left:22px}.task-memory-body li+li{margin-top:16px}.task-memory-body p{line-height:1.7}
+.task-memory-scope{padding:12px 14px;border-left:3px solid var(--accent,#6366f1);background:var(--bg-tertiary,#f7f8fc)}
+.task-memory-inventory{display:flex;flex-wrap:wrap;gap:8px;margin:16px 0}
+.task-memory-inventory span{padding:5px 9px;border:1px solid var(--border-color,#e3e7ef);border-radius:6px;font-size:12px}
+.task-memory-files small{display:block;color:var(--text-secondary,#667085)}
+.task-memory-warnings{color:var(--text-secondary,#667085)}
+.handoff-receipt{margin-top:10px;border-top:1px solid var(--border-color,#e3e7ef);padding-top:8px;font-size:12px;overflow-wrap:anywhere}
+.handoff-receipt summary{cursor:pointer;color:var(--text-secondary,#667085)}
+.handoff-receipt p{line-height:1.6}.handoff-receipt ul{padding-left:18px}
+.handoff-receipt code{display:inline-block;margin-left:6px;font-size:11px;color:var(--text-secondary,#667085)}

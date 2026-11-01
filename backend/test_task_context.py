@@ -70,6 +70,99 @@ class TaskMemoryTests(unittest.TestCase):
         self.assertEqual(context['baseline_artifact']['content'], 'FULL_BODY')
         self.assertNotIn('content', task_context.context_summary(context)['baseline_artifact'])
 
+    def test_media_survives_failed_summary_and_later_text_only_edits(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = delivery_media.DeliveryMediaStore(Path(tmp).resolve() / "media")
+            raw = io.BytesIO(); Image.new("RGB", (8, 8), "blue").save(raw, format="PNG")
+            other_raw = io.BytesIO(); Image.new("RGB", (8, 8), "red").save(other_raw, format="PNG")
+            original, failed, edited, current = [turn(i, prompt) for i, prompt in enumerate(
+                ["Write an illustrated article", "Add another picture", "Only edit the title", "Keep both pictures"])]
+            first = store.save_bytes(original, raw.getvalue(), kind="image", provider="fixture", slot_id="cover")
+            second = store.save_bytes(failed, other_raw.getvalue(), kind="image", provider="fixture", slot_id="chapter")
+            original["result"] = {"delivery": {"status": "complete", "content": "Original article", "media": [first]}}
+            failed.update(status="error", result={"delivery": {"status": "partial", "content": "", "media": [second]}})
+            edited["result"] = {"delivery": {"status": "complete", "content": "New title and article", "media": []}}
+            jobs = {item["id"]: item for item in [original, failed, edited]}
+            context = task_context.build_task_context(jobs, current)
+            self.assertEqual(context["artifact"]["content"], "New title and article")
+            self.assertEqual([asset["id"] for asset in context["reference_media"]], [second["id"], first["id"]])
+            with patch.object(delivery_media, "store", store):
+                copied = task_context.reuse_media(current, [second["id"], first["id"]], context, jobs, {"media": []})
+                self.assertEqual([store.read(current, asset["id"])[1] for asset in copied], [other_raw.getvalue(), raw.getvalue()])
+
+    def test_media_inventory_obeys_boundary_and_rejects_foreign_ownership(self):
+        old, start, foreign, current = [turn(i, prompt) for i, prompt in enumerate(["OLD", "NEW", "OTHER", "Continue"])]
+        start["group_context_mode"] = "fresh"
+        foreign["conversation_id"] = "another-conversation"
+        for item in [old, start, foreign]:
+            item["result"] = {"delivery": {"content": "", "media": [{"id": item["id"], "job_id": item["id"],
+                "project_id": None, "kind": "image", "sha256": "a" * 64}]}}
+        start["result"]["delivery"]["media"].append({"id": "foreign-owned", "job_id": old["id"], "kind": "image"})
+        context = task_context.build_task_context({item["id"]: item for item in [old, start, foreign]}, current)
+        self.assertEqual([asset["id"] for asset in context["reference_media"]], [start["id"]])
+        self.assertEqual(len(context["warnings"]), 1)
+        self.assertIsNone(context["artifact"])
+        self.assertIn("正文汇总失败前", task_context.quote_task_context(context))
+
+    def test_twenty_reuses_keep_two_unique_images_and_verified_baseline_links(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve() / "media"
+            store = delivery_media.DeliveryMediaStore(root)
+            original = turn(0, "Write an illustrated article", group_context_mode="fresh")
+            originals = []
+            for color in ["blue", "red"]:
+                raw = io.BytesIO(); Image.new("RGB", (8, 8), color).save(raw, format="PNG")
+                originals.append(store.save_bytes(original, raw.getvalue(), kind="image", provider="fixture", slot_id=color))
+            body = "\n".join(f"![illustration]({asset['url']})" for asset in originals)
+            original["result"] = {"delivery": {"status": "complete", "content": body, "media": originals}}
+            jobs = {original["id"]: original}
+            with patch.object(delivery_media, "store", store):
+                for index in range(1, 21):
+                    current = turn(index, f"Keep both pictures, edit paragraph {index}")
+                    context = task_context.build_task_context(jobs, current)
+                    self.assertEqual(len(context["reference_media"]), 2)
+                    delivery = {"status": "complete", "content": body, "media": []}
+                    task_context.reuse_media(current, [item["id"] for item in context["reference_media"]], context, jobs, delivery)
+                    current["result"] = {"delivery": delivery}
+                    jobs[current["id"]] = current
+                failed = turn(21, "Revise conclusion", result={"delivery": {"status": "partial", "content": "Incomplete draft"}})
+                jobs[failed["id"]] = failed
+                next_turn = turn(22, "Keep complete baseline and original pictures")
+                context = task_context.build_task_context(jobs, next_turn)
+                self.assertEqual(len(context["requests"]), 23)
+                self.assertLess(len(task_context.encoded(context)), 16000)
+                self.assertEqual(context["baseline_artifact"]["content"], body)
+                self.assertEqual(len(context["reference_media"]), 2)
+                self.assertEqual({alias["id"] for alias in context["reference_media_aliases"]}, {asset["id"] for asset in originals})
+                delivery = {"media": []}
+                selected = [item["id"] for item in context["reference_media"]]
+                copies = task_context.reuse_media(next_turn, selected, context, jobs, delivery)
+                self.assertEqual(len(delivery["media_reuse_origins"]), 2)
+                for origin in delivery["media_reuse_origins"]:
+                    self.assertEqual(origin["source_job_id"], original["id"])
+                    self.assertIn(origin["source_asset_id"], {asset["id"] for asset in originals})
+                    self.assertEqual(origin["sha256"], next(asset["sha256"] for asset in copies if asset["id"] == origin["asset_id"]))
+                self.assertEqual(task_context.reuse_media(next_turn, selected, context, jobs, delivery), copies)
+                self.assertEqual(len(delivery["media_reuse_origins"]), 2)
+                source = originals[0]
+                (root / original["id"] / source["id"] / source["name"]).write_bytes(b"changed original")
+                with self.assertRaisesRegex(ValueError, "素材副本不可用"):
+                    task_context.reuse_media(next_turn, selected, context, jobs, {"media": []})
+
+    def test_media_reuse_cannot_cross_conversation_or_new_task_boundary(self):
+        old, fresh, current = turn(0, "OLD"), turn(1, "NEW", group_context_mode="fresh"), turn(2, "Continue")
+        asset = {"id": "image", "job_id": old["id"]}
+        context = {"reference_media": [asset]}
+        jobs = {old["id"]: old, fresh["id"]: fresh}
+        with patch.object(delivery_media.store, "read") as read:
+            with self.assertRaisesRegex(ValueError, "任务记忆边界"):
+                task_context.reuse_media(current, ["image"], context, jobs, {"media": []})
+            jobs.pop(fresh["id"])
+            old["conversation_id"] = "other"
+            with self.assertRaisesRegex(ValueError, "任务记忆边界"):
+                task_context.reuse_media(current, ["image"], context, jobs, {"media": []})
+            read.assert_not_called()
+
     def test_media_reuse_is_exact_scoped_and_detects_changed_bytes(self):
         with tempfile.TemporaryDirectory() as tmp:
             store = delivery_media.DeliveryMediaStore(Path(tmp).resolve() / "media")

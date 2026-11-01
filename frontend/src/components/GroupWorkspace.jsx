@@ -54,6 +54,7 @@ import MissionTeamPicker from './MissionTeamPicker';
 import AttachmentComposer from './AttachmentComposer';
 import ContextAttachments from './ContextAttachments';
 import TaskContextControl from './TaskContextControl';
+import HandoffReceipt from './HandoffReceipt';
 import './TaskContextControl.css';
 import JobAttachments from './JobAttachments';
 import GroupAgentTasks from './GroupAgentTasks';
@@ -135,7 +136,7 @@ export function GroupDeliveryProgress({ job, onOpenArtifacts }) {
   return <section className={`group-delivery-progress group-delivery-${state}`} aria-label="自动交付进度" aria-live={active ? 'polite' : 'off'}>
     <header>{active ? <span className="small-spinner" /> : <Icon name="file" size={16} />}<strong>{label || '正在同步交付进度'}</strong>{hasOutput && <button className="subtle-button" type="button" onClick={() => onOpenArtifacts(job, true)}><Icon name="panel" size={14} />{state === 'complete' ? '查看完整成果' : filesAwaitReview ? '查看文件与验收意见' : '查看部分成果'}</button>}</header>
     {delivery.title && <p className="group-delivery-title">{delivery.title}</p>}
-    {steps.length > 0 && <details className="group-execution-details"><summary>分工与执行 · {steps.filter((step) => step.status === 'complete').length}/{steps.length} 已完成{steps.some((step) => step.status === 'error') ? ' · 有步骤失败' : ''}</summary><ol>{steps.map((step, index) => <li key={step.id || index} className={`group-delivery-step-${step.status}`}><div><strong>{step.member_name || step.member_id || '协作成员'}</strong><span>{GROUP_DELIVERY_STEP_STATUS[step.status] || '状态待同步'}</span></div>{step.instruction && <p>{step.instruction}</p>}{step.error && <p className="output-error">{step.error}</p>}</li>)}</ol></details>}
+    {steps.length > 0 && <details className="group-execution-details"><summary>分工与执行 · {steps.filter((step) => step.status === 'complete').length}/{steps.length} 已完成{steps.some((step) => step.status === 'error') ? ' · 有步骤失败' : ''}</summary><ol>{steps.map((step, index) => <li key={step.id || index} className={`group-delivery-step-${step.status}`}><div><strong>{step.member_name || step.member_id || '协作成员'}</strong><span>{GROUP_DELIVERY_STEP_STATUS[step.status] || '状态待同步'}</span></div>{step.instruction && <p>{step.instruction}</p>}<HandoffReceipt step={step} />{step.error && <p className="output-error">{step.error}</p>}</li>)}</ol></details>}
     <details className="group-delivery-receipt"><summary>验收与素材{limitations.length > 0 ? ` · ${limitations.length} 条待处理说明` : ''}</summary><DeliveryMediaProgress job={job} />
     {limitations.length > 0 && <ul className="group-delivery-limitations">{limitations.map((limit, index) => <li key={index}>{limit}</li>)}</ul>}</details>
     {!active && !hasOutput && <p>尚未生成完整成果。请查看执行步骤与失败原因；讨论发言保留在下方记录中。</p>}

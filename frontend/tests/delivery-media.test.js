@@ -41,6 +41,26 @@ test('managed media resolves on the paired phone API origin and retains exact jo
   assert.equal(managedDeliveryMedia(job([standalone], { project_id: null }), base).length, 1);
 });
 
+test('older draft links follow verified reuse lineage without accepting forged scope or hash', () => {
+  const immediateJob = '33333333-4444-5555-6666-777777777777';
+  const originJob = '44444444-5555-6666-7777-888888888888';
+  const originId = '55555555-6666-7777-8888-999999999999';
+  const currentAsset = asset(imageId, 'image', { source_task_id: immediateJob, slot_id: `reused-${videoId}` });
+  const current = job([currentAsset]);
+  const origin = { asset_id: imageId, source_asset_id: originId, source_job_id: originJob, sha256: currentAsset.sha256 };
+  current.result.delivery.media_reuse_origins = [origin];
+  const oldUrl = `/api/media/jobs/${originJob}/assets/${originId}/content?project_id=${projectId}`;
+  assert.equal(resolveReusedMediaLink(oldUrl, currentAsset, current, base), base + currentAsset.url);
+  assert.equal(resolveReusedMediaLink(oldUrl + '&download=1', currentAsset, current, phone), phone + currentAsset.download_url);
+  for (const url of [oldUrl + '&extra=1', 'https://other.example' + oldUrl, oldUrl.replace(projectId, originId)]) {
+    assert.equal(resolveReusedMediaLink(url, currentAsset, current, base), null);
+  }
+  for (const alias of [{ ...origin, sha256: '0'.repeat(64) }, { ...origin, asset_id: videoId }]) {
+    current.result.delivery.media_reuse_origins = [alias];
+    assert.equal(resolveReusedMediaLink(oldUrl, currentAsset, current, base), null);
+  }
+});
+
 test('in-progress harness media counts keep the full requirement while files arrive', () => {
   const current = job([asset()]);
   current.result.delivery.task_spec = { media: { images: 9, videos: 0 } };

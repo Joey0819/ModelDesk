@@ -2,7 +2,7 @@
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator, model_serializer
 
 from ..workflow_config import WorkflowConfig
 
@@ -14,10 +14,21 @@ class TeamMember(BaseModel):
     model_config = ConfigDict(extra="forbid")
     id: str = Field(pattern=r"^[A-Za-z][A-Za-z0-9_-]{0,39}$")
     name: str = Field(min_length=1, max_length=80)
-    kind: Literal["model", "image", "codex", "claude", "muse"] = "model"
+    kind: Literal["model", "image", "codex", "claude", "muse", "mcp"] = "model"
     model: str | None = Field(default=None, max_length=200)
     role: str = Field(default="", max_length=1600)
     skill_ids: list[str] = Field(default_factory=list, max_length=4)
+    mcp_server_id: UUID | None = None
+    mcp_tool: str | None = Field(default=None, min_length=1, max_length=100, pattern=r"^[A-Za-z0-9_.:/-]+$")
+    mcp_prompt_field: str = Field(default="prompt", min_length=1, max_length=100, pattern=r"^[A-Za-z][A-Za-z0-9_]*$")
+
+    @model_serializer(mode="wrap")
+    def serialize_member(self, handler):
+        value = handler(self)
+        if self.kind != "mcp":
+            for field in ("mcp_server_id", "mcp_tool", "mcp_prompt_field"):
+                value.pop(field, None)
+        return value
 
     @field_validator("name", "model")
     @classmethod
@@ -33,8 +44,12 @@ class TeamMember(BaseModel):
         from ..attachments import secret_text
         if not self.name or (self.kind in {"model", "image"} and not self.model):
             raise ValueError("模型成员需要名称与模型标识")
-        if self.kind == "muse" and self.model:
-            raise ValueError("Muse 使用自己的应用与账户，不配置底层模型")
+        if self.kind in {"muse", "mcp"} and self.model:
+            raise ValueError("应用与 MCP Agent 使用自己的执行能力，不配置底层模型")
+        if self.kind == "mcp" and (not self.mcp_server_id or not self.mcp_tool):
+            raise ValueError("MCP Agent 需要已注册服务、获准工具和任务参数名")
+        if self.kind != "mcp" and (self.mcp_server_id or self.mcp_tool or self.mcp_prompt_field != "prompt"):
+            raise ValueError("只有 MCP Agent 可以绑定 MCP 执行工具")
         if self.kind in {"codex", "claude"} and self.model and (self.model.startswith("-") or any(char.isspace() for char in self.model)):
             raise ValueError("CLI 模型标识不能含空格或以选项符号开头")
         if not self.model:

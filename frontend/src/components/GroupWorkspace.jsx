@@ -59,6 +59,7 @@ import './TaskContextControl.css';
 import JobAttachments from './JobAttachments';
 import GroupAgentTasks from './GroupAgentTasks';
 import DeliveryOutputOptions from './DeliveryOutputOptions';
+import DocumentOutputOptions from './DocumentOutputOptions';
 import { DeliveryMediaProgress } from './MediaDelivery';
 import './GroupWorkspace.css';
 
@@ -237,6 +238,7 @@ function GroupRoom({ roomId, projectId, status, models, context, onContextChange
   const [harnessMode, setHarnessMode] = useState(saved.harnessMode || 'relay');
   const [deliveryMode, setDeliveryMode] = useState(saved.deliveryMode);
   const [outputOptions, setOutputOptions] = useState({ outputFormat: saved.outputFormat, imageCount: saved.imageCount, mediaProvider: saved.mediaProvider });
+  const [documentOptions, setDocumentOptions] = useState({ documentFormats: saved.documentFormats, documentLayout: saved.documentLayout });
   const [contextTurns, setContextTurns] = useState(saved.contextTurns);
   const [contextMode, setContextMode] = useState('continue');
   const [attachmentPending, setAttachmentPending] = useState(false);
@@ -328,6 +330,7 @@ function GroupRoom({ roomId, projectId, status, models, context, onContextChange
   const members = useMemo(() => room?.team_snapshot?.members || [], [room]);
   const { runtimeMember, discussionMembers: selectedMembers, selectionError } = groupSelection(members, recipientIds);
   const runtimeKind = runtimeMember ? groupMemberKind(runtimeMember) : null;
+  const selectedMcp = members.some((member) => groupMemberKind(member) === 'mcp' && recipientIds.includes(member.id));
   const runtimeEngine = engines.find((item) => item.id === runtimeKind);
   const runtimeReadiness = museReadiness(museProbe);
   const coordinatorModel = room?.team_snapshot?.coordinator_model;
@@ -395,9 +398,9 @@ function GroupRoom({ roomId, projectId, status, models, context, onContextChange
   useEffect(() => { onContextChange(saved.context); onClearArtifacts(); }, [saved, onContextChange, onClearArtifacts]);
   useEffect(() => {
     if ((context.project_id || null) === (projectId || null)) {
-      localStorage.setItem(groupDraftKey(projectId, roomId), JSON.stringify({ prompt, recipientIds, harnessMode, deliveryMode, ...outputOptions, contextTurns, context }));
+      localStorage.setItem(groupDraftKey(projectId, roomId), JSON.stringify({ prompt, recipientIds, harnessMode, deliveryMode, ...outputOptions, ...documentOptions, contextTurns, context }));
     }
-  }, [prompt, recipientIds, harnessMode, deliveryMode, outputOptions, contextTurns, context, projectId, roomId]);
+  }, [prompt, recipientIds, harnessMode, deliveryMode, outputOptions, documentOptions, contextTurns, context, projectId, roomId]);
   useEffect(() => {
     if (workMode !== 'discussion') return;
     if (!selectedArtifactId && groupDeliveryMode(artifactJob) !== 'auto' && latestMuseWithVideo && (!artifactJob || String(latestMuseWithVideo.created_at || '') >= String(artifactJob.created_at || ''))) {
@@ -486,13 +489,14 @@ function GroupRoom({ roomId, projectId, status, models, context, onContextChange
 
   const errors = [
     ...(selectionError ? [selectionError] : []),
+    ...(selectedMcp && deliveryMode !== 'auto' ? ['MCP Agent 需要在任务设置中选择“自动完成”。'] : []),
     ...contextErrors(context), ...attachmentIssues(assets, context.attachment_ids, context.include_project_assets),
     ...((context.project_id || null) !== (projectId || null) ? ['正在切换群聊资料。'] : []),
     ...(!runtimeMember && recipientIds.some((id) => !members.some((member) => member.id === id)) ? ['部分收件成员不在这个群聊，请重新选择。'] : []),
     ...(!runtimeMember && status && selectedMembers.some((member) => !status.models?.some((model) => model.id === member.model)) ? ['指定成员的模型当前未接入，请选择可用成员或检查“Agent 与连接”。'] : []),
     ...(!runtimeMember && !recipientIds.length && coordinatorModel && status && !status.models?.some((model) => model.id === coordinatorModel) ? ['统筹 LLM 当前未连接，请检查“Agent 与连接”。'] : []),
     ...(!runtimeMember && !status ? ['正在读取模型连接状态。'] : []),
-    ...(!runtimeMember && !selectedMembers.length && !(deliveryMode === 'auto' && members.some((member) => groupMemberKind(member) === 'image' && (!recipientIds.length || recipientIds.includes(member.id)))) && !(coordinatorModel && !recipientIds.length) ? ['本群还没有 LLM 成员，请添加模型成员，或明确选择一位运行时 Agent。'] : []),
+    ...(!runtimeMember && !selectedMembers.length && !(deliveryMode === 'auto' && members.some((member) => ['image', 'mcp'].includes(groupMemberKind(member)) && (!recipientIds.length || recipientIds.includes(member.id)))) && !(coordinatorModel && !recipientIds.length) ? ['本群还没有 LLM 成员，请添加模型成员，或明确选择一位运行时 Agent。'] : []),
   ];
   const canSend = Boolean(room && prompt.trim() && (runtimeMember ? runtimeReady : !errors.length) && !loading && !busy && !runtimeDispatching && !activeJob && !attachmentPending && !transfers);
 
@@ -518,6 +522,7 @@ function GroupRoom({ roomId, projectId, status, models, context, onContextChange
       rounds: deliveryMode === 'discussion' ? activeHarness.rounds || 1 : 1,
       deliveryMode,
       ...outputOptions,
+      ...documentOptions,
     }));
     if (job) {
       setContextMode('continue');
@@ -684,9 +689,9 @@ function GroupRoom({ roomId, projectId, status, models, context, onContextChange
             <span>发送给</span>
             <button type="button" aria-pressed={!recipientIds.length} className={!recipientIds.length ? 'selected' : ''} onClick={() => setRecipientIds([])}>{deliveryMode === 'auto' ? '@协作组' : '@所有 LLM'}</button>
             {members.map((member) => {
-              const runtime = !['model', 'image'].includes(groupMemberKind(member));
+              const runtime = !['model', 'image', 'mcp'].includes(groupMemberKind(member));
               const selected = recipientIds.includes(member.id);
-              return <button type="button" key={member.id} aria-pressed={selected} className={`${selected ? 'selected' : ''} ${runtime ? 'group-agent-recipient' : ''}`} title={`${groupMemberKindLabel(member)} · ${runtime ? '选择后需点击明确派发按钮' : member.model || ''}`} onClick={() => setRecipientIds((previous) => runtime ? (selected ? [] : [member.id]) : [...previous.filter((id) => members.some((item) => item.id === id && ['model', 'image'].includes(groupMemberKind(item))) && id !== member.id), ...(selected ? [] : [member.id])])}>@{member.name}<small>{groupMemberKindLabel(member)}</small></button>;
+              return <button type="button" key={member.id} aria-pressed={selected} className={`${selected ? 'selected' : ''} ${runtime ? 'group-agent-recipient' : ''}`} title={`${groupMemberKindLabel(member)} · ${runtime ? '选择后需点击明确派发按钮' : member.model || ''}`} onClick={() => { if (groupMemberKind(member) === 'mcp') setDeliveryMode('auto'); setRecipientIds((previous) => runtime ? (selected ? [] : [member.id]) : [...previous.filter((id) => members.some((item) => item.id === id && ['model', 'image', 'mcp'].includes(groupMemberKind(item))) && id !== member.id), ...(selected ? [] : [member.id])]); }}>@{member.name}<small>{groupMemberKindLabel(member)}</small></button>;
             })}
           </div>
           {!runtimeMember && (
@@ -702,6 +707,7 @@ function GroupRoom({ roomId, projectId, status, models, context, onContextChange
           )}
         </div>
         {!runtimeMember && deliveryMode === 'auto' && <DeliveryOutputOptions value={outputOptions} onChange={setOutputOptions} disabled={busy || Boolean(activeJob)} />}
+        {!runtimeMember && deliveryMode === 'auto' && <DocumentOutputOptions value={documentOptions} onChange={setDocumentOptions} disabled={busy || Boolean(activeJob)} />}
         <div className="group-quick-recipe-bar" role="toolbar" aria-label="快捷协作配方">
           <span>快捷配方</span>
           {GROUP_QUICK_RECIPES.map((recipe) => (

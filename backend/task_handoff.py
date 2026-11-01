@@ -6,7 +6,12 @@ import json
 async def prepare_handoff(job, member, step, source, delivery, changed, *, required_source=""):
     from .group_delivery import model_output
     from .group_delivery_runtime import MAX_PROMPT, MAX_MUSE_PROMPT
-    limit = MAX_MUSE_PROMPT if step["kind"] == "muse" else MAX_PROMPT
+    limit = MAX_MUSE_PROMPT if step["kind"] in {"muse", "mcp"} else MAX_PROMPT
+    if step["kind"] == "mcp":
+        from .skill_library import skill_prompt
+        limit -= len(skill_prompt(member.get("skill_ids", []), job.get("project_id"), snapshot=job.get("_skill_snapshots")))
+        if limit <= 0:
+            raise ValueError("MCP Agent 的 Skills 超过交接预算，未截断或发送；请减少绑定的技能")
     context = job.get("_task_context") or {}
     source_hash = hashlib.sha256(source.encode()).hexdigest()
     saved = step.get("handoff", {})

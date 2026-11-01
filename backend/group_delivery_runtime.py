@@ -60,7 +60,7 @@ def _scope(job, member):
     if not isinstance(frozen, dict) or frozen != room["team_snapshot"]:
         raise ValueError("群成员已变化；请确认当前成员后重新发起交付")
     saved = next((item for item in frozen["members"] if item["id"] == member.get("id")), None)
-    if saved != member or member.get("kind") not in {"codex", "claude", "muse"}:
+    if saved != member or member.get("kind") not in {"codex", "claude", "muse", "mcp"}:
         raise ValueError("自动执行只能使用本群已保存的运行时 Agent 成员")
     return parent_id, project_id, room_id
 
@@ -236,6 +236,11 @@ async def run_runtime_step(job, member, prompt, *, native_allowed=False, revisio
     try:
         scope = _scope(job, member)
         parent_id, project_id, room_id = scope
+        if engine == "mcp":
+            if revision_of or output_kind not in {None, "text"}:
+                raise ValueError("MCP Agent 当前回传文本成果；不自动重发或将外部链接视为已生成文件")
+            from .mcp_agent import run_mcp_step
+            return await run_mcp_step(job, member, prompt, scope=scope, skill_snapshot=skill_snapshot)
         if engine == "muse" and native_allowed is not True:
             return {"status": "blocked", "task_id": None, "engine": engine, "output": "", "sources": [],
                     "error": "Muse 原生任务只能由本机入口授权执行；请在 Mac 上继续"}

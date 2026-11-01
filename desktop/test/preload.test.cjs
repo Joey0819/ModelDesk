@@ -14,7 +14,7 @@ test('sandbox bridge exposes only fixed picker and application methods', async (
   const source = fs.readFileSync(path.join(__dirname, '..', 'preload.cjs'), 'utf8');
   vm.runInNewContext(source, { require: name => { assert.equal(name, 'electron'); return electron; } });
   assert.equal(exposed.name, 'modelDesk');
-  assert.deepEqual(Object.keys(exposed.value), ['chooseProjectDirectory', 'chooseInputFiles', 'chooseAttachmentDirectory', 'openMuse', 'openOriginalApp']);
+  assert.deepEqual(Object.keys(exposed.value), ['chooseProjectDirectory', 'chooseInputFiles', 'chooseAttachmentDirectory', 'openMuse', 'openAccessibilitySettings', 'revealMuseBridge', 'openOriginalApp']);
   assert.equal(Object.isFrozen(exposed.value), true);
   assert.equal(await exposed.value.chooseProjectDirectory('/arbitrary/path', 'execute'), '/Users/example/Project');
   assert.deepEqual(invocation, ['modeldesk:choose-project-directory']);
@@ -24,6 +24,10 @@ test('sandbox bridge exposes only fixed picker and application methods', async (
   assert.deepEqual(invocation, ['modeldesk:choose-attachment-directory']);
   await exposed.value.openMuse('https://malicious.invalid', '/arbitrary/path');
   assert.deepEqual(invocation, ['modeldesk:open-muse']);
+  await exposed.value.openAccessibilitySettings('https://malicious.invalid');
+  assert.deepEqual(invocation, ['modeldesk:open-accessibility-settings']);
+  await exposed.value.revealMuseBridge('/arbitrary/path');
+  assert.deepEqual(invocation, ['modeldesk:reveal-muse-bridge']);
   await exposed.value.openOriginalApp('chathub', 'https://malicious.invalid');
   assert.deepEqual(invocation, ['modeldesk:open-original-app', 'chathub']);
   for (const invalid of ['multibot', 'https://malicious.invalid', '../execute', null]) {

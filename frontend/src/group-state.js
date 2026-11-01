@@ -9,6 +9,12 @@ export const groupActive = (job) => ['running', 'queued'].includes(job?.status);
 export const groupDeliveryMode = (job) => job?.group_delivery_mode === 'auto' || job?.result?.delivery ? 'auto' : 'discussion';
 export const GROUP_OUTPUT_FORMATS = ['auto', 'text', 'illustrated', 'video'];
 export const GROUP_MEDIA_PROVIDERS = ['auto', 'openai', 'gemini', 'muse'];
+export function documentOutputOptions(value = {}) {
+  return {
+    documentFormats: Array.isArray(value.documentFormats) ? [...new Set(value.documentFormats.filter((format) => ['docx', 'pdf', 'html'].includes(format)))] : null,
+    documentLayout: ['auto', 'report', 'article', 'compact'].includes(value.documentLayout) ? value.documentLayout : 'auto',
+  };
+}
 export function groupOutputOptions(value = {}, change = {}) {
   const options = { ...value, ...change };
   const outputFormat = GROUP_OUTPUT_FORMATS.includes(options.outputFormat) ? options.outputFormat : 'auto';
@@ -47,6 +53,7 @@ export function readGroupDraft(storage, projectId, roomId) {
     includeMuse: Boolean(value.includeMuse),
     deliveryMode: value.deliveryMode === 'discussion' ? 'discussion' : 'auto',
     ...groupOutputOptions(value),
+    ...documentOutputOptions(value),
     harnessMode: GROUP_HARNESS_MODES.some((item) => item.id === value.harnessMode) ? value.harnessMode : 'relay',
     context: { ...EMPTY_CONTEXT, ...(value.context || {}), project_id: projectId || null },
     contextTurns: [1, 4, 6, 8, 12].includes(value.contextTurns) ? value.contextTurns : 6,
@@ -64,11 +71,16 @@ export function mergeRoomJobs(current, incoming, projectId, roomId) {
   }
   return [...values.values()].sort((a, b) => String(a.created_at || '').localeCompare(String(b.created_at || '')) || a.id.localeCompare(b.id));
 }
-export function groupMessageRequest({ prompt, recipientIds = [], context = {}, contextTurns = 6, contextMode = 'continue', rounds = 1, deliveryMode = 'auto', outputFormat, imageCount, mediaProvider }) {
+export function groupMessageRequest({ prompt, recipientIds = [], context = {}, contextTurns = 6, contextMode = 'continue', rounds = 1, deliveryMode = 'auto', outputFormat, imageCount, mediaProvider, documentFormats, documentLayout }) {
   const allowed = ['snapshot_id', 'attachment_ids', 'include_project_assets', 'knowledge_ids', 'memory_ids', 'memory_scope', 'remember', 'tools', 'mcp_server_ids', 'muse_task_id'];
   const boundedRounds = [1, 2, 3, 4, 5, 6].includes(Number(rounds)) ? Number(rounds) : 1;
   const output = groupOutputOptions({ outputFormat, imageCount, mediaProvider });
   const memory = { context_mode: contextMode === 'fresh' ? 'fresh' : 'continue' };
+  if (documentFormats !== undefined || documentLayout !== undefined) {
+    const documents = documentOutputOptions({ documentFormats, documentLayout });
+    memory.document_formats = documents.documentFormats;
+    memory.document_layout = documents.documentLayout;
+  }
   return { ...memory, ...Object.fromEntries(allowed.filter((key) => context[key] !== undefined).map((key) => [key, structuredClone(context[key])])), prompt: prompt.trim(), recipient_member_ids: [...recipientIds], context_turns: contextTurns, rounds: boundedRounds, delivery_mode: deliveryMode === 'discussion' ? 'discussion' : 'auto', output_format: output.outputFormat, image_count: output.imageCount, media_provider: output.mediaProvider };
 }
 export function groupMessages(job, room) {
@@ -81,7 +93,7 @@ export function groupMessages(job, room) {
 
 export function groupRecipients(job, room) {
   const members = job.group_team_snapshot?.members || room.team_snapshot?.members || [];
-  return members.filter((member) => groupMemberKind(member) === 'model' && (!job.group_recipient_member_ids?.length || job.group_recipient_member_ids.includes(member.id)));
+  return members.filter((member) => (groupDeliveryMode(job) === 'auto' || groupMemberKind(member) === 'model') && (!job.group_recipient_member_ids?.length || job.group_recipient_member_ids.includes(member.id)));
 }
 
 export function groupTimeline(jobs, museTasks, projectId, roomId, agentTasks = []) {
@@ -120,11 +132,11 @@ export function groupMemberKind(member) {
   return memberKind(member);
 }
 export function groupMemberKindLabel(member) {
-  return ({ model: 'LLM', image: '绘图模型', codex: 'Codex Agent', claude: 'Claude Code Agent', muse: 'Muse 原生 Agent' })[groupMemberKind(member)];
+  return ({ model: 'LLM', image: '绘图模型', codex: 'Codex Agent', claude: 'Claude Code Agent', muse: 'Muse 原生 Agent', mcp: 'MCP Agent' })[groupMemberKind(member)];
 }
 export function groupSelection(members = [], recipientIds = []) {
   const selected = members.filter((member) => recipientIds.includes(member.id));
-  const runtimeMembers = selected.filter((member) => !['model', 'image'].includes(groupMemberKind(member)));
+  const runtimeMembers = selected.filter((member) => !['model', 'image', 'mcp'].includes(groupMemberKind(member)));
   const selectionError = runtimeMembers.length && recipientIds.length !== 1 ? '运行时 Agent 只能单独派发。群成员类型可能已更新，请重新选择一位 Agent 或 LLM 讨论成员。' : '';
   return { runtimeMember: selectionError ? undefined : runtimeMembers[0], selectionError, discussionMembers: (recipientIds.length ? selected : members).filter((member) => groupMemberKind(member) === 'model') };
 }

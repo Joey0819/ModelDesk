@@ -115,6 +115,24 @@ test('selected real artifacts use the same fixed local export route without file
   for (const suffix of ['format=json&artifact_id=task:review', 'format=md&artifact_id=unknown:x', 'format=md&artifact_id=task:review&path=auth.json', 'format=md&artifact_id=task:review&artifact_id=task:draft', 'format=md&artifact_id=task:%0Aheader', 'format=md&artifact_id=']) assert.equal(isExportURL(`${route}?${suffix}`), false, suffix);
 });
 
+test('document exports and persisted downloads have fixed formats, layout and scope', () => {
+  const job = 'df9d3857-3d01-4c24-9e64-b9343e217f9a';
+  const route = `http://localhost:8001/api/workbench/jobs/${job}`;
+  for (const format of ['docx', 'pdf', 'html']) {
+    const url = `${route}/export?format=${format}&artifact_id=group%3Adelivery&layout=article`;
+    assert.equal(isExportURL(url), true);
+    assert.equal(exportFormat(url), format);
+  }
+  const file = `${route}/documents/${job}?project_id=${job}`;
+  assert.equal(isExportURL(file), true);
+  assert.equal(exportFormat(file), 'document');
+  for (const url of [file + '&path=/etc/passwd', file + '&project_id=' + job, file.replace('localhost', 'other.test'),
+    `${route}/export?format=pdf&artifact_id=group:delivery&layout=../../file`, `${route}/export?format=pdf`,
+    `${route}/export?format=pdf&artifact_id=group:delivery&layout=report&layout=compact`, `${route}/documents/../${job}`]) {
+    assert.equal(isExportURL(url), false, url);
+  }
+});
+
 test('internal page access cannot be redirected to another local file', () => {
   const status = '/Users/example/ModelDesk.app/Contents/Resources/app/status.html';
   assert.equal(isStatusURL(pathToFileURL(status).href + '?state=error', status), true);

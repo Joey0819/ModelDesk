@@ -12,11 +12,11 @@
 .artifact-status { display: inline-flex; border: 1px solid #d7e9e3; background: #f0f8f5; color: #20806d; border-radius: 4px; padding: 3px 6px; white-space: nowrap; font-size: 10px; }
 .artifact-status-partial { color: #9c6e48; background: #fbf4e9; border-color: #ecdfc9; }
 .artifact-status-live { color: #6675c0; background: #f0f2fd; border-color: #dde2f6; }
-.artifact-preview-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 9px 13px 9px 18px; flex: 0 0 auto; border-bottom: 1px solid var(--artifact-line); }
+.artifact-preview-toolbar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; padding: 9px 13px 9px 18px; flex: 0 0 auto; border-bottom: 1px solid var(--artifact-line); }
 .artifact-preview-tabs { display: flex; gap: 12px; }
 .artifact-preview-tabs button { padding: 3px 0; border: 0; background: transparent; font-size: 11px; color: var(--artifact-muted); }
 .artifact-preview-tabs button.selected { color: var(--artifact-accent); }
-.artifact-toolbar-actions { display: flex; align-items: center; gap: 3px; }
+.artifact-toolbar-actions { display: flex; align-items: center; gap: 3px; margin-left: auto; }
 .artifact-toolbar-actions .copy-text-button { font-size: 11px; }
 .artifact-preview-scroll { flex: 1; min-height: 0; overflow: auto; scrollbar-width: thin; padding: 24px 23px 34px; }
 .artifact-document-heading { margin-bottom: 21px; }
@@ -235,3 +235,9 @@
 
 .artifact-validation { margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--shell-border); }
 .artifact-validation > summary { cursor: pointer; color: var(--shell-muted); font-size: 13px; }
+.artifact-prepared-documents { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; padding: 10px 18px; border-bottom: 1px solid var(--artifact-line); background: var(--artifact-soft); }
+.artifact-prepared-documents > span { color: var(--artifact-muted); font-size: 11px; margin-right: 2px; }
+.artifact-prepared-documents a { display: inline-flex; align-items: center; gap: 5px; padding: 6px 8px; border: 1px solid var(--artifact-line); border-radius: 6px; text-decoration: none; color: var(--artifact-accent); background: var(--artifact-bg); }
+.artifact-prepared-documents a:hover { border-color: var(--artifact-accent); }
+.artifact-prepared-documents strong { font-size: 11px; font-weight: 600; }
+.artifact-prepared-documents small { color: var(--artifact-muted); font-size: 10px; }

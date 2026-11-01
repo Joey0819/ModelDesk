@@ -19,6 +19,26 @@ import './MuseDesktopPanel.css';
 
 const dateLabel = (date) => date ? new Date(date).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : '';
 
+export function MusePermissionRecovery({ probe, bridge = globalThis.modelDesk, remote = REMOTE_CLIENT, onError = () => {} }) {
+  if (!museReadiness(probe).permission_required) return null;
+  const helper = typeof probe?.bridge_helper_path === 'string' && probe.bridge_helper_path.startsWith('/') && !Array.from(probe.bridge_helper_path).some((char) => char.charCodeAt(0) < 32 || char.charCodeAt(0) === 127) ? probe.bridge_helper_path : '';
+  const act = async (method, message) => {
+    try { if (await bridge[method]() !== true) throw new Error(message); }
+    catch { onError(message); }
+  };
+  return <section className="muse-permission-recovery" aria-label="恢复 Muse 窗口权限">
+    <strong>恢复 Muse 自动协作</strong>
+    {remote ? <p>请在运行 ModelDesk 的 Mac 上打开 Muse 面板，完成辅助功能授权，然后重新检查连接。</p> : <>
+      <p>打开“系统设置 → 隐私与安全性 → 辅助功能”，用“＋”添加下面的桥接程序并开启开关。授权后返回这里点击“检查连接”。</p>
+      {helper ? <div className="muse-bridge-path"><code>{helper}</code><CopyTextButton text={helper} label="复制桥接路径" /></div> : <p>桥接程序位于 ModelDesk 项目的 <code>desktop/bin/muse-bridge</code>。如列表已有旧条目但仍无法连接，请重新添加当前程序。</p>}
+      <div className="muse-permission-actions">
+        {typeof bridge?.openAccessibilitySettings === 'function' && <button type="button" className="subtle-button" onClick={() => act('openAccessibilitySettings', '无法打开系统设置，请手动进入“隐私与安全性 → 辅助功能”。')}>打开辅助功能设置</button>}
+        {typeof bridge?.revealMuseBridge === 'function' && <button type="button" className="subtle-button" onClick={() => act('revealMuseBridge', '未能显示桥接程序，请用上方路径在 Finder 中找到 muse-bridge。')}>显示需授权的桥接程序</button>}
+      </div>
+    </>}
+  </section>;
+}
+
 export function MuseTaskCard({ task: rawTask, projectId, roomId, busy, onCancel, onObserve, onRefreshMedia, onUseReply }) {
   const task = normalizeMuseSource(rawTask);
   const threadUrl = safeMuseThreadUrl(task.thread_url);
@@ -112,6 +132,7 @@ export default function MuseDesktopPanel({ projectId, roomId, onUseReply }) {
     <summary><span className="muse-native-mark">M</span><strong>Muse <small>原生应用桥接 · 读取真实回复与成果链接</small></strong><span className={readiness.ready ? "muse-ready" : "muse-not-ready"}>{hasMonitoring ? '正在处理本群任务' : readiness.label}</span><Icon name="chevron" size={13} /></summary>
     <div className="muse-panel-body">
       <div className="muse-connection"><p>{readiness.detail}</p>{typeof window !== "undefined" && typeof window.modelDesk?.openMuse === "function" && <button type="button" className="subtle-button" onClick={openMuse}>打开 Muse</button>}<button type="button" className="subtle-button" disabled={probing} onClick={checkConnection}><Icon name="refresh" size={13} />{probing ? '正在检查' : '检查连接'}</button></div>
+      <MusePermissionRecovery probe={probe} onError={setActionError} />
       <form className="muse-task-composer" onSubmit={send}><label><span>交给 Muse 的任务</span><textarea aria-label="Muse 任务要求" value={prompt} maxLength={12000} rows={2} onChange={(event) => setPrompt(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); send(event); } }} placeholder="例如：研究这个方案并说明实际交付结果。也可将 Muse 添加为群成员后明确派发任务。" /></label><div><p>任务通过本机 Muse 窗口发送。时间线保留实际读取的回复；仅展示真实返回的视频链接。</p><button type="submit" className="primary-button" disabled={!canDispatch}><Icon name="send" size={14} />{busy ? '正在处理' : '派发 Muse'}</button></div></form>
       {REMOTE_CLIENT && <p className="mission-form-note">Muse 原生窗口操作需要在 Mac 端派发。</p>}
       {(readError || actionError) && <p className="output-error" role="alert">{actionError || readError}{readError && <button type="button" className="subtle-button" onClick={refresh}>重新读取</button>}</p>}

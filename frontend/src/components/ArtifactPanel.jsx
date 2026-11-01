@@ -8,6 +8,8 @@ import { managedDeliveryMedia, mediaBundleUrl } from '../delivery-media';
 import { Icon, Markdown } from './WorkbenchResults';
 import { CopyTextButton } from './ConversationActions';
 import { DeliveryMediaProgress, MediaDelivery } from './MediaDelivery';
+import DocumentExportControl from './DocumentExportControl';
+import { canExportDocument, DOCUMENT_FORMATS, DOCUMENT_LAYOUTS, preparedDocuments } from '../document-export';
 import './ArtifactPanel.css';
 
 const statusLabel = (artifact) => artifact.status === 'live' ? '生成中' : artifact.status === 'partial' ? '部分输出' : artifact.kind === 'discussion' ? '已保存发言' : '已生成';
@@ -108,6 +110,8 @@ export default function ArtifactPanel({ job, onClose }) {
   const delivery = selectedJob?.result?.delivery;
   const downloadLabel = selectedJob?.mode === 'group_agent' ? '下载任务记录 Markdown' : '下载当前成果 Markdown';
   const bundleUrl = selectedRawId === 'group:delivery' && managedDeliveryMedia(selectedJob, API_BASE).length ? mediaBundleUrl(selectedJob, API_BASE) : null;
+  const documentFiles = preparedDocuments(selectedJob, selected);
+  const documentExport = canExportDocument(selectedJob, selected);
   const choose = (id) => {
     setSelection({ jobId: job?.id, id });
     if (viewMode === 'diff' && diffCandidates.length === 0) setViewMode('preview');
@@ -187,10 +191,11 @@ export default function ArtifactPanel({ job, onClose }) {
         </div>
         <div className="artifact-toolbar-actions">
           {hasText && <CopyTextButton text={selected.content} label="复制" />}
-          {hasText && <a className="artifact-icon-button" title={downloadLabel} aria-label={downloadLabel} href={downloadUrl(selectedJob, selected)} download={downloadName(selectedJob, selected)}><Icon name="export" size={15} /></a>}
+          {documentExport ? <DocumentExportControl key={`${selectedJob.id}:${selectedRawId}`} job={selectedJob} artifact={selected} /> : hasText && <a className="artifact-icon-button" title={downloadLabel} aria-label={downloadLabel} href={downloadUrl(selectedJob, selected)} download={downloadName(selectedJob, selected)}><Icon name="export" size={15} /></a>}
           <button className="artifact-icon-button" type="button" title="放大预览" aria-label="放大预览" onClick={() => dialog.current?.showModal()}><Icon name="expand" size={15} /></button>
         </div>
       </div>
+      {documentFiles.length > 0 && <div className="artifact-prepared-documents" aria-label="已生成的交付文件"><span>交付文件</span>{documentFiles.map((file) => <a key={file.id} href={file.url} download={file.filename}><Icon name="file" size={14} /><strong>{DOCUMENT_FORMATS.find((item) => item.id === file.format)?.label}</strong><small>{DOCUMENT_LAYOUTS.find((item) => item.id === file.layout)?.label}</small><Icon name="export" size={13} /></a>)}</div>}
       {viewMode === 'diff' && diffCandidates.length > 0 && (
         <div className="artifact-diff-Selector">
           <label>
@@ -205,7 +210,7 @@ export default function ArtifactPanel({ job, onClose }) {
       )}
       <div className="artifact-preview-scroll"><div className="artifact-document-heading"><h2>{selected.title}</h2><p>{selected.source}{selected.model && ` · ${selected.model}`}</p></div>{selected.status === 'partial' && <p className="artifact-partial-note">这是已收到的部分内容，整体任务尚未完整完成。</p>}<ArtifactPreview artifact={selected} viewMode={viewMode} diffTarget={diffTarget} job={selectedJob} />{(selected.note || selectedRawId === 'group:delivery') && <details className="artifact-validation"><summary>查看验收意见与运行依据</summary>{selected.note && <p className="artifact-content-note">{selected.note}</p>}{selectedRawId === 'group:delivery' && viewMode !== 'diff' && <DeliveryMediaProgress job={selectedJob} />}</details>}</div>
       <footer className="artifact-panel-footer"><span>{selected.status === 'live' ? '内容随模型输出更新' : '来自当前任务的实际输出'}</span><div className="artifact-download-links">{bundleUrl && <a href={bundleUrl} download={`ModelDesk-${selectedJob.id.slice(0, 8)}.zip`}><Icon name="export" size={13} />下载图文成果包</a>}{hasText && <a href={downloadUrl(selectedJob, selected)} download={downloadName(selectedJob, selected)}>{selectedJob?.mode === 'group_agent' ? '下载任务记录' : '下载 Markdown'}</a>}</div></footer>
-      <dialog className="artifact-preview-dialog" ref={dialog}><header><div><strong>{selected.title}</strong><span>{selected.source} · {statusLabel(selected)}</span></div><div>{bundleUrl && <a className="artifact-bundle-button" href={bundleUrl} download={`ModelDesk-${selectedJob.id.slice(0, 8)}.zip`}>下载图文成果包</a>}{hasText && <><CopyTextButton text={selected.content} label="复制内容" /><a className="artifact-icon-button" href={downloadUrl(selectedJob, selected)} download={downloadName(selectedJob, selected)} aria-label={downloadLabel}><Icon name="export" size={17} /></a></>}<button type="button" className="artifact-icon-button" aria-label="关闭放大预览" onClick={() => dialog.current?.close()}><Icon name="close" size={18} /></button></div></header><div className="artifact-dialog-content">{selected.status === 'partial' && <p className="artifact-partial-note">部分输出，任务尚未完整完成。</p>}<ArtifactPreview artifact={selected} viewMode={viewMode} diffTarget={diffTarget} job={selectedJob} />{(selected.note || selectedRawId === 'group:delivery') && <details className="artifact-validation"><summary>查看验收意见与运行依据</summary>{selected.note && <p className="artifact-content-note">{selected.note}</p>}{selectedRawId === 'group:delivery' && viewMode !== 'diff' && <DeliveryMediaProgress job={selectedJob} />}</details>}</div></dialog>
+      <dialog className="artifact-preview-dialog" ref={dialog}><header><div><strong>{selected.title}</strong><span>{selected.source} · {statusLabel(selected)}</span></div><div>{bundleUrl && <a className="artifact-bundle-button" href={bundleUrl} download={`ModelDesk-${selectedJob.id.slice(0, 8)}.zip`}>下载图文成果包</a>}{hasText && <><CopyTextButton text={selected.content} label="复制内容" />{documentExport ? <DocumentExportControl key={`${selectedJob.id}:${selectedRawId}:expanded`} job={selectedJob} artifact={selected} /> : <a className="artifact-icon-button" href={downloadUrl(selectedJob, selected)} download={downloadName(selectedJob, selected)} aria-label={downloadLabel}><Icon name="export" size={17} /></a>}</>}<button type="button" className="artifact-icon-button" aria-label="关闭放大预览" onClick={() => dialog.current?.close()}><Icon name="close" size={18} /></button></div></header><div className="artifact-dialog-content">{selected.status === 'partial' && <p className="artifact-partial-note">部分输出，任务尚未完整完成。</p>}<ArtifactPreview artifact={selected} viewMode={viewMode} diffTarget={diffTarget} job={selectedJob} />{(selected.note || selectedRawId === 'group:delivery') && <details className="artifact-validation"><summary>查看验收意见与运行依据</summary>{selected.note && <p className="artifact-content-note">{selected.note}</p>}{selectedRawId === 'group:delivery' && viewMode !== 'diff' && <DeliveryMediaProgress job={selectedJob} />}</details>}</div></dialog>
     </> : <div className="artifact-empty"><Icon name="file" size={29} /><strong>{delivery?.status === 'blocked' || delivery?.status === 'partial' ? '本次未形成完整成果' : job ? ['error', 'failed', 'cancelled', 'interrupted'].includes(job.status) ? '本次没有可预览的成果' : '等待成果生成' : '成果会显示在这里'}</strong><p>{delivery ? '模型与 Agent 的执行进度显示在群聊中。完整交付正文生成后会在此呈现，讨论发言单独保留在时间线。' : job ? '实际回答、交付内容或保留下来的证据生成后，会自动出现在此处。' : '选择一条记录或发起任务，查看本次输出并复制、下载。'}</p>{delivery && <DeliveryMediaProgress job={job} />}{Array.isArray(delivery?.limitations) && delivery.limitations.filter((item) => typeof item === 'string').map((limit, index) => <p key={index}>{limit}</p>)}</div>}
   </aside>;
 }

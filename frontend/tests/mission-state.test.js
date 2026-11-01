@@ -157,3 +157,25 @@ test('CAMEL plan states its actual two-member participation before launch', () =
   const html = renderToStaticMarkup(React.createElement(MissionPlan, { steps, models: ['a', 'b', 'c'], editable: false, onChange() {} }));
   assert.match(html, /CAMEL 双角色对话使用前两位成员：a \+ b/);
 });
+
+test('MCP Agent keeps explicitly configured execution endpoint and role skills in saved roster', () => {
+  const catalog = [{ id: 'model-a' }, { id: 'model-b' }];
+  const base = { name: 'Task group', members: temporaryMembers(['model-a', 'model-b']) };
+  const draft = appendTeamMember(base, catalog, 'mcp');
+  const member = draft.members.at(-1);
+  assert.equal(member.kind, 'mcp');
+  assert.equal(member.model, null);
+  assert.ok(teamIssues(draft, catalog, { allowRepeatedModels: true, allowExecutableMembers: true }).some((message) => message.includes('MCP Agent')));
+  Object.assign(member, { mcp_server_id: 'server-id', mcp_tool: 'execute_task', mcp_prompt_field: 'task', skill_ids: ['workflow'] });
+  assert.deepEqual(teamIssues(draft, catalog, { allowRepeatedModels: true, allowExecutableMembers: true }), []);
+  const saved = teamRequest(draft, null).members.at(-1);
+  assert.equal(saved.mcp_server_id, 'server-id');
+  assert.equal(saved.mcp_tool, 'execute_task');
+  assert.equal(saved.mcp_prompt_field, 'task');
+  assert.deepEqual(saved.skill_ids, ['workflow']);
+  assert.equal(supportsRoleSkills('mcp'), true);
+  const changed = changeMemberKind(saved, 'model', catalog);
+  assert.equal(changed.mcp_server_id, undefined);
+  assert.equal(changed.mcp_tool, undefined);
+  assert.equal(changed.mcp_prompt_field, undefined);
+});

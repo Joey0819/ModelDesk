@@ -15,7 +15,11 @@ def capture_revisions(body, resource_store=None):
     records = []
     with store.lock:
         for kind, field in [("knowledge", "knowledge_ids"), ("memories", "memory_ids"), ("mcp", "mcp_server_ids")]:
-            for identifier in body.get(field, []):
+            identifiers = list(body.get(field, []))
+            if kind == "mcp":
+                identifiers += [str(member["mcp_server_id"]) for member in (body.get("group_team_snapshot") or {}).get("members", [])
+                                if member.get("kind") == "mcp" and member.get("mcp_server_id")]
+            for identifier in dict.fromkeys(identifiers):
                 record = store.get(kind, identifier)
                 if record.get("project_id") not in {None, body.get("project_id")}:
                     raise HTTPException(403, "所选资料不属于当前项目")

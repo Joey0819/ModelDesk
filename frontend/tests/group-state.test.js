@@ -19,6 +19,7 @@ import {
   groupDraftKey,
   readGroupSelection,
   readGroupDraft,
+  documentOutputOptions,
   scopedRooms,
   mergeRoomJobs,
   groupMessageRequest,
@@ -53,6 +54,31 @@ test('group rooms and drafts remain isolated by project and room', () => {
   assert.equal(readGroupDraft(storage, 'project-a', 'room-a').deliveryMode, 'auto');
   assert.equal(readGroupDraft({ getItem: () => JSON.stringify({ deliveryMode: 'discussion' }) }, 'p', 'r').deliveryMode, 'discussion');
   assert.deepEqual(scopedRooms([room, { id: 'other', project_id: 'project-b' }, { id: 'standalone' }], 'project-a'), [room]);
+});
+
+test('document delivery choices survive room reload and map to exact backend fields without becoming shared context', () => {
+  const values = {};
+  const storage = { getItem: (key) => values[key] };
+  for (const formats of [null, [], ['docx', 'pdf', 'html']]) {
+    values[groupDraftKey('project-a', 'room-a')] = JSON.stringify({ prompt: 'Prepare our report', documentFormats: formats, documentLayout: 'article' });
+    const restored = readGroupDraft(storage, 'project-a', 'room-a');
+    assert.deepEqual(restored.documentFormats, formats);
+    assert.equal(restored.documentLayout, 'article');
+    const request = groupMessageRequest({ ...restored, context: { document_formats: ['unsafe'], document_layout: 'unknown' } });
+    assert.deepEqual(request.document_formats, formats);
+    assert.equal(request.document_layout, 'article');
+    if (Array.isArray(restored.documentFormats)) {
+      restored.documentFormats.push('invalid');
+      assert.deepEqual(request.document_formats, formats);
+    }
+    assert.deepEqual(readGroupDraft(storage, 'project-a', 'room-b').documentFormats, null);
+    assert.deepEqual(readGroupDraft(storage, 'project-b', 'room-a').documentFormats, null);
+  }
+  assert.deepEqual(documentOutputOptions({ documentFormats: ['docx', 'docx', 'unsafe', 'pdf'], documentLayout: 'unsafe' }), { documentFormats: ['docx', 'pdf'], documentLayout: 'auto' });
+  assert.deepEqual(documentOutputOptions({ documentFormats: 'docx' }), { documentFormats: null, documentLayout: 'auto' });
+  const legacy = groupMessageRequest({ prompt: 'Old saved draft' });
+  assert.equal(Object.hasOwn(legacy, 'document_formats'), false);
+  assert.equal(Object.hasOwn(legacy, 'document_layout'), false);
 });
 
 test('paginated group messages deduplicate, preserve older turns, and reject foreign room responses', () => {

@@ -61,6 +61,15 @@ class MessageRequest(BaseModel):
     output_format: Literal["auto", "text", "illustrated", "video"] = "auto"
     image_count: int = Field(default=2, ge=1, le=4)
     media_provider: Literal["auto", "openai", "gemini", "muse"] = "auto"
+    document_formats: list[Literal["docx", "pdf", "html"]] | None = Field(default=None, max_length=3)
+    document_layout: Literal["auto", "report", "article", "compact"] = "auto"
+
+    @field_validator("document_formats")
+    @classmethod
+    def unique_document_formats(cls, value):
+        if value is not None and len(value) != len(set(value)):
+            raise ValueError("交付文件格式不能重复")
+        return value
 
     @field_validator("prompt")
     @classmethod
@@ -326,8 +335,10 @@ async def send_message(identifier: str, request: MessageRequest, transport: Requ
     # Stable roster order defines the relay order, regardless of chip click order.
     selected = [member["id"] for member in members if member["id"] in selected]
     broadcast = not request.recipient_member_ids
-    if not broadcast and any(member_kind(member) not in {"model", "image"} for member in members if member["id"] in selected):
+    if not broadcast and any(member_kind(member) not in {"model", "image", "mcp"} for member in members if member["id"] in selected):
         raise HTTPException(422, "已选择可执行 Agent；请使用派发任务，由其实际运行时执行")
+    if request.delivery_mode != "auto" and not broadcast and any(member_kind(member) == "mcp" for member in members if member["id"] in selected):
+        raise HTTPException(422, "MCP Agent 需要选择自动完成，由实际工具执行")
     if request.delivery_mode == 'discussion' and any(member_kind(member) == 'image' for member in members if member['id'] in (request.recipient_member_ids or [])):
         raise HTTPException(422, '绘图角色需要选择“自动完成”，不能通过文字讨论接口生图')
     try:
@@ -335,12 +346,12 @@ async def send_message(identifier: str, request: MessageRequest, transport: Requ
     except Exception as error:
         raise HTTPException(503, workbench.public_error(error)) from error
     requested_models = [member["model"] for member in members if member["id"] in selected and member_kind(member) == "model"]
-    if broadcast and room["team_snapshot"].get("coordinator_model"):
+    if (broadcast or any(member_kind(member) in {"mcp", "image"} for member in members if member["id"] in selected)) and room["team_snapshot"].get("coordinator_model"):
         requested_models.append(room["team_snapshot"]["coordinator_model"])
     missing = list(dict.fromkeys(model for model in requested_models if model not in catalog))
     if missing:
         raise HTTPException(422, "这些接收成员的模型尚未连接：" + "、".join(missing))
-    body = request.model_dump(mode="json", exclude={"recipient_member_ids", "muse_task_id", "delivery_mode", "output_format", "image_count", "media_provider", "context_mode"})
+    body = request.model_dump(mode="json", exclude={"recipient_member_ids", "muse_task_id", "delivery_mode", "output_format", "image_count", "media_provider", "context_mode", "document_formats", "document_layout"})
     try:
         job_request = workbench.JobRequest(**body, mode="group", project_id=room["project_id"], conversation_id=room["id"],
                                            models=room_models(room), roles=room_roles(room))
@@ -357,6 +368,7 @@ async def send_message(identifier: str, request: MessageRequest, transport: Requ
                 "group_agent_sources": freeze_agent_sources(room), "group_delivery_mode": request.delivery_mode,
                 "group_harness_version": 1 if request.delivery_mode == "auto" else None,
                 "group_output_format": request.output_format, "group_image_count": request.image_count, "group_media_provider": request.media_provider,
+                "group_document_formats": request.document_formats, "group_document_layout": request.document_layout,
                 "group_runtime_allowed": request.delivery_mode == "auto",
                 "group_native_allowed": request.delivery_mode == "auto" and not transport.headers.get("x-modeldesk-remote")}
     from .skill_library import frozen_skills

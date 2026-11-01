@@ -46,6 +46,9 @@ class Plan(BaseModel):
     requirements: list[Requirement] = Field(min_length=1, max_length=10)
     steps: list[Step] = Field(min_length=1, max_length=8)
     reuse_media_ids: list[str] = Field(default_factory=list, max_length=12)
+    document_formats: list[Literal["docx", "pdf", "html"]] = Field(default_factory=list, max_length=3)
+    document_layout: Literal["report", "article", "compact"] | None = None
+    reset_document_formats: bool = False
 
 
 class ReviewItem(BaseModel):

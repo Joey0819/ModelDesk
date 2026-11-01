@@ -5,6 +5,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { UI_URL, HEALTH_URLS, workspaceRoot, serviceEnvironment, isWorkbenchURL, isOriginalFrameURL, isExportURL, exportFormat, isExternalURL, isStatusURL, isTrustedWorkbenchIPC } = require('./runtime.cjs');
 const { INPUT_EXTENSIONS, collectSelectedFiles } = require('./input-files.cjs');
+const { installMusePermissionActions } = require('./muse-permissions.cjs');
 
 const execFileAsync = promisify(execFile);
 const statusPath = path.join(__dirname, 'status.html');
@@ -69,6 +70,7 @@ function openExternal(value) {
 }
 
 function installProjectPicker() {
+  installMusePermissionActions({ ipcMain, shell, getWindow: () => mainWindow });
   ipcMain.handle('modeldesk:open-muse', async event => {
     const owner = mainWindow;
     if (!owner || owner.isDestroyed() || !isTrustedWorkbenchIPC(event, owner.webContents)) return false;
@@ -169,11 +171,15 @@ function createWindow() {
       item.cancel();
       return;
     }
-    const format = exportFormat(chain[0]);
+    let format = exportFormat(chain[0]);
+    if (format === 'document') {
+      const extension = path.extname(item.getFilename()).slice(1).toLowerCase();
+      if (['docx', 'pdf', 'html'].includes(extension)) format = extension;
+    }
     item.setSaveDialogOptions({
       title: format === 'attachment' ? '保存已选附件' : '保存 ModelDesk 导出',
       buttonLabel: '保存',
-      ...(['md', 'json', 'zip'].includes(format) ? { filters: [{ name: { md: 'Markdown 文档', json: 'JSON 数据', zip: '完整图文成果包' }[format], extensions: [format] }] } : {}),
+      ...(['md', 'json', 'zip', 'docx', 'pdf', 'html'].includes(format) ? { filters: [{ name: { md: 'Markdown 文档', json: 'JSON 数据', zip: '完整图文成果包', docx: 'Word 文档', pdf: 'PDF 文档', html: '独立网页' }[format], extensions: [format] }] } : {}),
     });
     // Do not call setSavePath: the native save dialog keeps file choice/overwrite with the user.
   };

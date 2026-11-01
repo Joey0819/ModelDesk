@@ -1095,10 +1095,21 @@ async def job_attachment_content(job_id: str, asset_id: str):
 
 
 @router.get("/jobs/{job_id}/export")
-async def export_job(job_id: str, format: Literal["md", "json"] = Query(default="md"), artifact_id: str | None = Query(default=None, min_length=1, max_length=200)):
+async def export_job(job_id: str, format: Literal["md", "json", "docx", "pdf", "html"] = Query(default="md"), artifact_id: str | None = Query(default=None, min_length=1, max_length=200), layout: Literal["report", "article", "compact"] = Query(default="report")):
     job = copy.deepcopy(manager.get(job_id))
     filename = f"ModelDesk-{job['mode']}-{job['id']}.{format}"
-    if artifact_id is not None:
+    document_url = None
+    if format in {"docx", "pdf", "html"}:
+        if not artifact_id:
+            raise HTTPException(422, "请先选择要导出的实际成果")
+        from .document_exports import render_document
+        from .document_delivery import store
+        rendered = await render_document(job, artifact_id, format, layout)
+        receipt = await asyncio.to_thread(store.save, job, artifact_id, rendered)
+        _, content = await asyncio.to_thread(store.read, job, receipt["id"])
+        filename, media_type = receipt["filename"], receipt["media_type"]
+        document_url = receipt["url"]
+    elif artifact_id is not None:
         if format != "md":
             raise HTTPException(422, "单份成果导出请选择 Markdown。")
         from .artifacts import artifact_markdown
@@ -1112,7 +1123,24 @@ async def export_job(job_id: str, format: Literal["md", "json"] = Query(default=
     else:
         content = markdown_export(job)
         media_type = "text/markdown"
-    return Response(content=content, media_type=media_type, headers={"Content-Disposition": f'attachment; filename="{filename}"', "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"})
+    headers = {"Content-Disposition": f'attachment; filename="{filename}"', "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"}
+    if document_url:
+        headers["X-ModelDesk-Document-URL"] = document_url
+        headers["Content-Security-Policy"] = "default-src 'none'; img-src data:; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'"
+    return Response(content=content, media_type=media_type, headers=headers)
+
+
+@router.get("/jobs/{job_id}/documents/{document_id}")
+async def download_document(job_id: str, document_id: str, project_id: str | None = None):
+    from .document_delivery import store
+    job = copy.deepcopy(manager.get(job_id))
+    if job.get("project_id") != project_id:
+        raise HTTPException(404, "文档不属于当前项目")
+    entry, content = await asyncio.to_thread(store.read, job, document_id)
+    return Response(content=content, media_type=entry["media_type"], headers={
+        "Content-Disposition": f'attachment; filename="{entry["filename"]}"',
+        "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff",
+        "Content-Security-Policy": "default-src 'none'; img-src data:; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'"})
 
 
 @router.post("/jobs", status_code=202)

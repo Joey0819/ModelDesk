@@ -2,20 +2,22 @@ export function temporaryMembers(models) {
   return models.map((model, index) => ({ id: `member_${index + 1}`, name: `助手 ${index + 1}`, model, role: index === 0 ? '研究任务，提出有依据的方案。' : index === 1 ? '独立核查依据、指出遗漏并完善交付。' : '补充不同视角，检查执行细节。' }));
 }
 
-export const MEMBER_KINDS = { model: 'LLM 模型', image: '绘图模型', codex: 'Codex Agent', claude: 'Claude Code Agent', muse: 'Muse 应用 Agent' };
+export const MEMBER_KINDS = { model: 'LLM 模型', image: '绘图模型', codex: 'Codex Agent', claude: 'Claude Code Agent', muse: 'Muse 应用 Agent', mcp: 'MCP 外部 Agent' };
 export const isImageModel = (id = '') => /^(gpt-image(?:-|$)|grok.*image|gemini.*image)/i.test(id.split(':').at(-1).split('/').at(-1));
 export const memberKind = (member) => (!member?.kind || member.kind === 'model') && isImageModel(member?.model) ? 'image' : member?.kind || 'model';
 export const memberKindLabel = (member) => MEMBER_KINDS[memberKind(member)] || '未知类型';
 
-export const supportsRoleSkills = (kind) => ['model', 'codex', 'claude', 'muse'].includes(kind);
+export const supportsRoleSkills = (kind) => ['model', 'codex', 'claude', 'muse', 'mcp'].includes(kind);
 export function roleSkillHelp(kind, skill) {
+  if (kind === 'mcp') return '将冻结的角色技能随完整任务传入指定 MCP 工具；不安装插件或扩展权限。';
   if (kind === 'muse') return '随任务发送创作指引；长技能由统筹模型整理。使用 Muse 自身能力，不安装原生插件。';
   if (skill.renderer && kind === 'codex') return '编写动画代码，由平台渲染并回收 MP4。';
   if (skill.renderer) return '使用导演与审片指令；平台自动渲染需 Codex 成员。';
   return kind === 'model' ? '本角色回复时使用技能指令。' : '在现有执行权限内使用技能指令；外部依赖需单独配置。';
 }
 export function changeMemberKind(member, kind, catalog) {
-  return { ...member, kind, skill_ids: supportsRoleSkills(kind) ? [...(member.skill_ids || [])] : [],
+  const { mcp_server_id: server, mcp_tool: tool, mcp_prompt_field: field, ...base } = member;
+  return { ...base, kind, ...(kind === 'mcp' ? { mcp_server_id: server || null, mcp_tool: tool || null, mcp_prompt_field: field || 'prompt' } : {}), skill_ids: supportsRoleSkills(kind) ? [...(member.skill_ids || [])] : [],
     model: ['model', 'image'].includes(kind) ? catalog.find((model) => isImageModel(model.id) === (kind === 'image'))?.id || '' : null };
 }
 
@@ -59,6 +61,7 @@ export function appendTeamMember(team, catalog = [], kind = 'model') {
     image: { name: '绘图者', model: catalog.find((item) => isImageModel(item.id))?.id || '', role: '根据上游审核后的分镜生成真实图片，交给后续制片角色。' },
     codex: { name: 'Codex 工程师', model: null, role: '在隔离项目副本中实现任务、运行测试，并报告实际改动与验证结果。' },
     claude: { name: 'Claude Code 工程师', model: null, role: '在受限项目副本中检查和修改代码，保留实际执行结果与能力限制。' },
+    mcp: { name: 'MCP 执行助手', model: null, role: '接收完整任务与上游成果，调用已获准的 MCP 能力，返回实际文本结果。', mcp_server_id: null, mcp_tool: null, mcp_prompt_field: 'prompt' },
     muse: { name: 'Muse 创意助手', model: null, role: '使用本机 Muse 应用处理明确交付的任务，并返回原始回复与实际成果。' },
   };
   draft.members.push({ id: `member_${index}`, kind, ...defaults[kind] });
@@ -73,6 +76,7 @@ export function teamIssues(team, catalog = [], { allowRepeatedModels = false, al
   if (members.length < 2 || members.length > 4) errors.push('每个协作组需要 2–4 名成员。');
   const llms = members.filter((member) => memberKind(member) === 'model');
   if (members.some((member) => !member.name?.trim() || !member.role?.trim() || !MEMBER_KINDS[memberKind(member)] || (['model', 'image'].includes(memberKind(member)) && !member.model))) errors.push('每名成员需要名称、类型与职责；LLM 成员还需要选择模型。');
+  if (members.some((member) => memberKind(member) === 'mcp' && (!member.mcp_server_id || !member.mcp_tool || !/^[A-Za-z][A-Za-z0-9_]*$/.test(member.mcp_prompt_field || 'prompt')))) errors.push('MCP Agent 需要选择服务、获准工具和任务参数名。');
   if (!allowExecutableMembers && members.some((member) => memberKind(member) !== 'model')) errors.push('可执行 Agent 请在项目群聊中使用；此协作流程需要模型成员。');
   if (!llms.length && !team.coordinator_model) errors.push('请添加一名 LLM 成员，或选择一个统筹模型。');
   if (!allowRepeatedModels && new Set(llms.map((member) => member.model)).size !== llms.length) errors.push('协作任务中的模型不能重复；同一模型的多个角色请使用项目群聊。');
@@ -86,7 +90,7 @@ export function teamIssues(team, catalog = [], { allowRepeatedModels = false, al
 }
 
 export function teamRequest(team, projectId) {
-  return { name: team.name.trim(), description: team.description || '', coordinator_model: team.coordinator_model || null, project_id: projectId || null, members: team.members.map((member) => ({ id: member.id, name: member.name.trim(), kind: memberKind(member), model: memberKind(member) === 'muse' ? null : member.model?.trim() || null, role: member.role.trim(), ...(member.skill_ids?.length ? { skill_ids: member.skill_ids } : {}) })) };
+  return { name: team.name.trim(), description: team.description || '', coordinator_model: team.coordinator_model || null, project_id: projectId || null, members: team.members.map((member) => ({ id: member.id, name: member.name.trim(), kind: memberKind(member), model: ['muse', 'mcp'].includes(memberKind(member)) ? null : member.model?.trim() || null, role: member.role.trim(), ...(memberKind(member) === 'mcp' ? { mcp_server_id: member.mcp_server_id, mcp_tool: member.mcp_tool, mcp_prompt_field: member.mcp_prompt_field || 'prompt' } : {}), ...(member.skill_ids?.length ? { skill_ids: member.skill_ids } : {}) })) };
 }
 
 export function runTeamSelection(team, models = []) {

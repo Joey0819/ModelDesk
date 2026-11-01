@@ -435,6 +435,7 @@ class MuseManager:
                        "error": str(error) if isinstance(error, RuntimeError) else "Muse 原生桥接无法启动，请重新构建或安装 ModelDesk。"}
         native_ready = all(allowed.get(field) is True for field in ["ok", "installed", "permission", "composer_ready"])
         return {**allowed, "native_ready": native_ready, "kind": "external_agent", "transport": "native_ui", "name": "Muse", "verification": VERIFICATION,
+                "bridge_helper_path": str(self.helper.absolute()),
                 "active_tasks": [task["id"] for task in self.records.values() if task.get("monitoring")],
                 "remote_cancel_supported": False}
 

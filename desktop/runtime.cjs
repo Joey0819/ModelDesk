@@ -48,6 +48,9 @@ function isExportURL(value) {
   const rawPath = value.match(/^[a-z][a-z0-9+.-]*:\/\/[^/?#]+([^?#]*)/i)?.[1];
   if (rawPath !== url.pathname) return false;
   const query = Array.from(url.searchParams.entries());
+  if (/^\/api\/workbench\/jobs\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/documents\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(url.pathname)) {
+    return query.length === 0 || query.length === 1 && query[0][0] === 'project_id' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(query[0][1]);
+  }
   if (/^\/api\/media\/jobs\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/(?:bundle|assets\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/content)$/i.test(url.pathname)) {
     const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
     return new Set(query.map(([key]) => key)).size === query.length && query.every(([key, value]) =>
@@ -70,9 +73,11 @@ function isExportURL(value) {
   }
   if (!/^\/api\/workbench\/jobs\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/export$/i.test(url.pathname)) return false;
   if (query.length === 1) return query[0][0] === 'format' && ['md', 'json'].includes(query[0][1]);
-  if (query.length !== 2 || new Set(query.map(([key]) => key)).size !== 2 || url.searchParams.get('format') !== 'md') return false;
+  const document = ['docx', 'pdf', 'html'].includes(url.searchParams.get('format'));
+  if (query.length !== (document && url.searchParams.has('layout') ? 3 : 2) || new Set(query.map(([key]) => key)).size !== query.length || !['md', 'docx', 'pdf', 'html'].includes(url.searchParams.get('format'))) return false;
+  if (url.searchParams.has('layout') && (!document || !['report', 'article', 'compact'].includes(url.searchParams.get('layout')))) return false;
   const artifact = url.searchParams.get('artifact_id');
-  return query.every(([key]) => ['format', 'artifact_id'].includes(key)) && typeof artifact === 'string' && artifact.length <= 200 && /^(chat:|council:(?:synthesis$|response:)|camel:|group:|task:|workflow:answer$|failure:|format:|review:findings$|sdk:(?:answer|result)$)/.test(artifact) && !/[\x00-\x1f\x7f]/.test(artifact);
+  return query.every(([key]) => ['format', 'artifact_id', ...(document ? ['layout'] : [])].includes(key)) && typeof artifact === 'string' && artifact.length <= 200 && /^(chat:|council:(?:synthesis$|response:)|camel:|group:|task:|workflow:answer$|failure:|format:|review:findings$|sdk:(?:answer|result)$)/.test(artifact) && !/[\x00-\x1f\x7f]/.test(artifact);
 }
 
 function exportFormat(value) {
@@ -80,6 +85,7 @@ function exportFormat(value) {
   const url = new URL(value);
   if (url.pathname.endsWith('/content')) return 'attachment';
   if (url.pathname.endsWith('/bundle')) return 'zip';
+  if (/\/documents\//.test(url.pathname)) return 'document';
   return url.pathname === '/api/platform/data/export' ? 'json' : url.searchParams.get('format');
 }
 

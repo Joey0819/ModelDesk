@@ -31,7 +31,7 @@ export function museReadiness(probe) {
   if (!probe) return { ready: false, label: '正在检查连接', detail: '读取 Muse 原生窗口状态。' };
   if (probe.installed == null) return { ready: false, label: '连接尚未确认', detail: probe.error || '请检查本地桥接服务后重新连接。' };
   if (!probe.installed) return { ready: false, label: '未找到 Muse', detail: probe.error || '请先安装并打开 Muse Mac。' };
-  if (probe.permission !== true) return { ready: false, label: '需要辅助功能授权', detail: probe.error || '在 macOS 系统设置 → 隐私与安全性 → 辅助功能中允许 ModelDesk 桥接，再检查连接。' };
+  if (probe.permission !== true) return { ready: false, label: '需要辅助功能授权', permission_required: true, detail: 'Muse 已安装，但 macOS 尚未允许本机桥接读取和操作窗口。请为 muse-bridge 开启辅助功能权限，再检查连接。' };
   if (!probe.ok) return { ready: false, label: '暂不可用', detail: probe.error || '暂时无法读取 Muse 原生窗口，请打开 Muse 后重试。' };
   if (!probe.composer_ready) return { ready: false, label: '等待 Muse 输入窗口', detail: '辅助功能已授权。请打开 Muse 的可用输入窗口，再检查连接。' };
   return { ready: true, label: '原生输入窗口已就绪', detail: '通过已登录的 Muse Mac 窗口发送并读取回复。' };

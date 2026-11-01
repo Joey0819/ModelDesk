@@ -20,6 +20,20 @@ def turn(index, prompt, **extra):
 
 
 class TaskMemoryTests(unittest.TestCase):
+    def test_document_preferences_survive_first_run_failure_and_reset_at_task_boundary(self):
+        initial = turn(0, "写报告", group_context_mode="fresh", group_document_formats=["docx", "pdf"], group_document_layout="compact")
+        initial["status"] = "error"
+        followup = turn(1, "继续完成")
+        context = task_context.build_task_context({initial["id"]: initial}, followup)
+        self.assertIsNone(context["artifact"])
+        self.assertEqual(context["document_preferences"]["formats"], ["docx", "pdf"])
+        self.assertEqual(context["document_preferences"]["layout"], "compact")
+        followup["group_document_formats"] = []
+        self.assertEqual(task_context.build_task_context({initial["id"]: initial}, followup)["document_preferences"]["formats"], [])
+        followup.pop("group_document_formats")
+        followup["group_context_mode"] = "fresh"
+        self.assertNotIn("document_preferences", task_context.build_task_context({initial["id"]: initial}, followup))
+
     def test_long_outputs_failures_and_turn_limit_do_not_evict_requests(self):
         initial = turn(0, "原始要求：七章，20条实践，不编造经历", group_context_mode="fresh",
             result={"delivery": {"title": "文章", "status": "complete", "content": "完整底稿" * 4000, "media": []}})

@@ -22,6 +22,7 @@ from .harness.store import RunStore, checked_id
 from .platform_store import store as resources
 from .mcp_protocol import (list_all_tools, validate_output_schema, complete_result_text,
                            result_provenance)
+from . import mcp_tasks
 
 MAX_OUTPUT = 80000
 TIMEOUT_SECONDS = 120
@@ -37,7 +38,8 @@ async def agent_session(config):
     else:
         from mcp.client.streamable_http import streamablehttp_client
         transport = streamablehttp_client(config["url"], timeout=timedelta(seconds=15),
-                                          sse_read_timeout=timedelta(seconds=TIMEOUT_SECONDS))
+                                          sse_read_timeout=timedelta(seconds=TIMEOUT_SECONDS),
+                                          httpx_client_factory=mcp_tasks.http_client_factory)
     async with transport as streams:
         async with ClientSession(streams[0], streams[1], read_timeout_seconds=timedelta(seconds=TIMEOUT_SECONDS)) as session:
             await session.initialize()
@@ -74,6 +76,7 @@ async def discover_snapshot(job, member):
     config = configured_server(job, member)
     async with asyncio.timeout(25), agent_session(config) as session:
         tools = await list_all_tools(session)
+        tasks_protocol = await mcp_tasks.discover(session) if config["transport"] == "streamable_http" else None
     tool = next((item for item in tools if item.name == member["mcp_tool"]), None)
     if tool is None:
         raise ValueError("MCP 服务未发布所选工具，请重新检查连接")
@@ -84,7 +87,7 @@ async def discover_snapshot(job, member):
             "prompt_field": field, "input_schema": copy.deepcopy(tool.inputSchema),
             "schema_sha256": revision(tool.inputSchema), "output_schema": copy.deepcopy(tool.outputSchema),
             "output_schema_sha256": revision(tool.outputSchema),
-            "output_kind": "text", "timeout_seconds": TIMEOUT_SECONDS}
+            "output_kind": "text", "timeout_seconds": TIMEOUT_SECONDS, "tasks_protocol": tasks_protocol}
 
 
 async def freeze_mcp_members(job, members=None):
@@ -122,14 +125,25 @@ def public_record(record):
     status = record["status"]
     if status == "dispatching":
         status = "uncertain"
-    return {"status": "complete" if status == "complete" else "blocked" if status == "uncertain" else "error",
+    return {"status": "complete" if status == "complete" else "blocked" if status in {"uncertain", "observing"} else "error",
             "task_id": record["id"], "engine": "mcp", "output": record.get("output", ""), "sources": [],
             "output_sha256": record.get("output_sha256"), "error": record.get("error") or
-            ("MCP 调用结果未确认；请检查原服务，不会重复派发。" if status == "uncertain" else None),
+            ("MCP 调用结果未确认；请检查原服务，不会重复派发。" if status == "uncertain" else
+             "MCP 服务已接收任务，后台会继续查询原任务的结果。" if status == "observing" else None),
             "remote_state": status, "dispatch_count": record.get("dispatch_count", 0),
             "mcp_receipt": {key: record.get(key) for key in ["server_id", "tool", "schema_sha256", "output_schema_sha256",
-                                                          "prompt_sha256", "warning", "result_provenance"]},
+                                                          "prompt_sha256", "warning", "result_provenance", "tasks_protocol"]},
+            "external_task_id": (record.get("remote_task") or {}).get("taskId"),
+            "task_observation": public_observation(record),
             "skill_application": record.get("skill_application")}
+
+
+def public_observation(record):
+    if not record.get("remote_task"):
+        return None
+    task = {key:value for key,value in record["remote_task"].items() if key not in {"result", "error"}}
+    task["input_request_hashes"] = {key:revision(value) for key,value in task.get("inputRequests", {}).items()}
+    return {**{key:record.get(key) for key in ["tasks_protocol", "next_poll_at", "last_observed_at", "observation_error", "cancel_requested", "input_responses"]}, "remote_task":task}
 
 
 async def run_mcp_step(job, member, prompt, *, scope, skill_snapshot=None, observe_only=False):
@@ -169,7 +183,7 @@ async def run_mcp_step(job, member, prompt, *, scope, skill_snapshot=None, obser
             record = json.loads(path.read_text())
             if any(record.get(key) != value for key, value in expected.items()):
                 raise ValueError("已有 MCP Agent 执行记录与交接不一致，不会重复派发")
-            if (record.get('status') not in {'dispatching', 'uncertain', 'error', 'complete'}
+            if (record.get('status') not in {'dispatching', 'uncertain', 'error', 'complete', 'observing'}
                     or record.get('dispatch_count') not in {0, 1}
                     or (record.get('status') == 'complete' and (not isinstance(record.get('output'), str)
                         or hashlib.sha256(record['output'].encode()).hexdigest() != record.get('output_sha256')))):
@@ -199,7 +213,19 @@ async def run_mcp_step(job, member, prompt, *, scope, skill_snapshot=None, obser
                     raise ValueError("MCP Agent 连接已变化，任务未发送")
                 record.update(status="dispatching", dispatch_count=1, sent_at=now())
                 STORE.save(record)
-                result = await session.call_tool(frozen["tool"], {frozen["prompt_field"]: actual_prompt})
+                if frozen.get("tasks_protocol"):
+                    value = await mcp_tasks.call(session, frozen["tool"], {frozen["prompt_field"]: actual_prompt})
+                    if value.get("resultType") == "task":
+                        remote = mcp_tasks.task_state(value, seed=True)
+                        record.update(status="observing", remote_task=remote, tasks_protocol=mcp_tasks.PROTOCOL,
+                                      next_poll_at=mcp_tasks.next_poll(remote), accepted_at=now(), seed_pending=True,
+                                      output_schema=copy.deepcopy(frozen.get("output_schema")))
+                        STORE.save(record)
+                        return public_record(record)
+                    from mcp.types import CallToolResult
+                    result = CallToolResult.model_validate(value)
+                else:
+                    result = await session.call_tool(frozen["tool"], {frozen["prompt_field"]: actual_prompt})
                 _scope(job, member)
                 if not result.isError:
                     validate_output_schema(tool.outputSchema, result)
@@ -208,13 +234,14 @@ async def run_mcp_step(job, member, prompt, *, scope, skill_snapshot=None, obser
                               result_provenance=result_provenance(result.model_dump(mode="json")))
                 STORE.save(record)
         except asyncio.CancelledError:
-            record.update(status="uncertain" if record["dispatch_count"] else "error", error="MCP 本地等待已停止；远端执行状态请核对原服务，不会自动重发")
+            if record["status"] not in {"complete", "observing"}:
+                record.update(status="uncertain" if record["dispatch_count"] else "error", error="MCP 本地等待已停止；远端执行状态请核对原服务，不会自动重发")
             STORE.save(record)
             raise
         except Exception as error:
             # Do not expose connection URLs, transport errors or server secrets.
             known = str(error) if isinstance(error, ValueError) and str(error).startswith("MCP") else None
-            if record["status"] != "complete":
+            if record["status"] not in {"complete", "observing"}:
                 record.update(status="uncertain" if record["dispatch_count"] and not known else "error",
                               error=known or "MCP Agent 未返回可确认的完整结果，请检查原服务；没有自动重发")
                 STORE.save(record)

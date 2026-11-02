@@ -40,17 +40,27 @@ class MediaEvidenceTests(unittest.TestCase):
         self.assertEqual(foreign['assets'][0]['status'], 'unavailable')
 
     @unittest.skipUnless(shutil.which('ffmpeg') and shutil.which('ffprobe'), 'ffmpeg is optional')
-    def test_video_duration_and_three_real_frame_inputs(self):
+    def test_video_duration_samples_and_all_frames_distinguish_static_from_motion(self):
         path = Path(self.tmp.name) / 'fixture.mp4'
         subprocess.run([shutil.which('ffmpeg'), '-v', 'error', '-f', 'lavfi', '-i',
                         'color=c=blue:s=160x120:r=10:d=2', '-c:v', 'libx264', str(path)], check=True)
         asset = self.store.save_bytes(self.job, path.read_bytes(), kind='video', provider='fixture')
         with patch.object(delivery_media, 'store', self.store):
             report, parts = inspect_media(self.job, [asset])
-        self.assertEqual(len(parts), 3, report)
+        self.assertEqual(len(parts), 12, report)
         record = report['assets'][0]
         self.assertEqual(record['duration_seconds'], 2)
-        self.assertEqual([sample['timestamp_seconds'] for sample in record['samples']], [.2, 1, 1.8])
+        self.assertEqual([sample['timestamp_seconds'] for sample in record['samples']], [round(min(1.9, 2 * (i + .5) / 12), 3) for i in range(12)])
+        self.assertEqual(record['motion_evidence']['decoded_frames'], 20)
+        self.assertEqual(record['motion_evidence']['changed_frame_fraction'], 0)
+        moving = Path(self.tmp.name) / 'moving.mp4'
+        subprocess.run([shutil.which('ffmpeg'), '-v', 'error', '-f', 'lavfi', '-i',
+                        'testsrc2=s=160x120:r=10:d=2', '-c:v', 'libx264', str(moving)], check=True)
+        second = self.store.save_bytes(self.job, moving.read_bytes(), kind='video', provider='fixture')
+        with patch.object(delivery_media, 'store', self.store):
+            motion, _ = inspect_media(self.job, [second])
+        self.assertTrue(motion['assets'][0]['motion_evidence']['full_video_decoded'])
+        self.assertGreater(motion['assets'][0]['motion_evidence']['changed_frame_fraction'], .8)
         self.assertIn('不包含音轨', report['scope'])
 
 

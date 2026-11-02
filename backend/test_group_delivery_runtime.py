@@ -466,6 +466,10 @@ class RuntimeDeliveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["status"], "complete", result)
         child = self.tasks.records[result["task_id"]]
         self.assertEqual(result["patch_sha256"], child["diff_sha256"])
+        self.assertEqual(result["patch_evidence"]["content"], self.tasks.read_patch(child["id"], self.project["id"], self.room["id"]))
+        self.assertFalse(result["patch_evidence"]["truncated"])
+        from backend.group_delivery import execution_evidence
+        self.assertIn("Deliverable written in isolation", execution_evidence([result])[0]["patch_evidence"]["content"])
         self.assertEqual(result["sources"][0]["patch_sha256"], child["diff_sha256"])
         self.assertEqual(result["changed_files"], [{"path": "readme.md", "status": "modified"}])
         self.assertEqual((self.repo / "readme.md").read_text(), "original\n")

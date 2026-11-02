@@ -13,7 +13,7 @@ const compiled = buildSync({ stdin: { contents: 'export {FeishuConfigurationForm
 const filename = path.join(root, 'tests/feishu-virtual.cjs');
 const module = new Module(filename); module.paths = Module._nodeModulePaths(path.dirname(filename)); module._compile(compiled.outputFiles[0].text, filename);
 const { FeishuConfigurationForm, FeishuConnectionOverview, FeishuRecentReceipts, feishuApi } = module.exports;
-const binding = { chat_id: 'oc_allowed', name: 'Work group', project_id: 'project-a', room_id: 'room-a', allowed_sender_ids: ['ou_owner'], allow_native: false };
+const binding = { chat_id: 'oc_allowed', name: 'Work group', project_id: 'project-a', room_id: 'room-a', allowed_sender_ids: ['ou_owner'], allow_native: false, natural_language_tasks: false };
 const config = { app_id: 'cli_myapp', enabled: true, has_app_secret: true, bindings: [binding] };
 
 test('Feishu drafts never restore credentials or arbitrary server fields and body preserves only explicit grants', () => {
@@ -27,6 +27,8 @@ test('Feishu drafts never restore credentials or arbitrary server fields and bod
   assert.equal(feishuBody({ ...draft, app_secret: ' replacement ' }).app_secret, 'replacement');
   assert.deepEqual(feishuSenderIds('ou_a\nou_b,ou_a， ou_c'), ['ou_a', 'ou_b', 'ou_c']);
   assert.equal(feishuBinding().allow_native, false);
+  assert.equal(feishuBinding().natural_language_tasks, false);
+  assert.equal(feishuBody({ ...draft, bindings: [{ ...binding, natural_language_tasks: true }] }).bindings[0].natural_language_tasks, true);
 });
 
 test('Feishu validation permits a discovery-only listener and validates explicit chat destinations', () => {

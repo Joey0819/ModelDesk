@@ -191,10 +191,18 @@ def _finished(manager, item, engine, project_id, room_id):
     elif status == "complete":
         if item.get("exit_code") != 0 or not isinstance(item.get("output"), str) or not item["output"].strip():
             return _result(item, engine, "error", "执行 Agent 没有成功的实际输出")
+        patch = None
         if item.get("changed_files") and item.get("kind") != "creative":
             # read_patch validates the saved bytes against the immutable hash.
-            manager.read_patch(item["id"], project_id, room_id)
-        return _result(item, engine, "complete")
+            patch = manager.read_patch(item["id"], project_id, room_id)
+        result = _result(item, engine, "complete")
+        if patch is not None:
+            from .attachments import secret_text
+            hidden = secret_text(patch)
+            result["patch_evidence"] = {"sha256": item["diff_sha256"], "characters": len(patch),
+                "content": "[补丁包含疑似凭据，未传入模型]" if hidden else patch[:24000],
+                "truncated": len(patch) > 24000, "redacted": hidden, "source": "verified_changes.patch"}
+        return result
     if status in {"error", "cancelled", "interrupted"}:
         return _result(item, engine, "error", item.get("error") or "执行 Agent 未完成交付")
     return None
@@ -255,7 +263,11 @@ async def _run_runtime_step(job, member, prompt, *, native_allowed=False, revisi
             if revision_of or output_kind not in {None, "text"}:
                 raise ValueError("MCP Agent 当前回传文本成果；不自动重发或将外部链接视为已生成文件")
             from .mcp_agent import run_mcp_step
-            return await run_mcp_step(job, member, prompt, scope=scope, skill_snapshot=skill_snapshot, observe_only=observe_only)
+            result = await run_mcp_step(job, member, prompt, scope=scope, skill_snapshot=skill_snapshot, observe_only=observe_only)
+            if result.get("remote_state") == "observing" and not observe_only:
+                from .mcp_observation import wait_for_result
+                result = await wait_for_result(job, member, prompt, result)
+            return result
         if engine == "muse" and native_allowed is not True:
             return {"status": "blocked", "task_id": None, "engine": engine, "output": "", "sources": [],
                     "error": "Muse 原生任务只能由本机入口授权执行；请在 Mac 上继续"}

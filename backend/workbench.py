@@ -288,6 +288,8 @@ class JobManager:
         from .attachments import store as assets
         if metadata:
             job.update(metadata)
+        from .project_memory import capture as capture_project_memory
+        job["project_memory"] = capture_project_memory(job.get("project_id"))
         manifest = (assets.clone_frozen(attachment_source[0], attachment_source[1], job, self.directory / "attachment-inputs")
                     if attachment_source else assets.freeze(job, self.directory / "attachment-inputs"))
         if manifest:
@@ -1171,7 +1173,7 @@ async def export_job(job_id: str, format: Literal["md", "json", "docx", "pdf", "
     headers = {"Content-Disposition": f'attachment; filename="{filename}"', "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"}
     if document_url:
         headers["X-ModelDesk-Document-URL"] = document_url
-        headers["Content-Security-Policy"] = "default-src 'none'; img-src data:; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'"
+        headers["Content-Security-Policy"] = "default-src 'none'; img-src data:; media-src data:; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'"
     return Response(content=content, media_type=media_type, headers=headers)
 
 
@@ -1185,7 +1187,7 @@ async def download_document(job_id: str, document_id: str, project_id: str | Non
     return Response(content=content, media_type=entry["media_type"], headers={
         "Content-Disposition": f'attachment; filename="{entry["filename"]}"',
         "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff",
-        "Content-Security-Policy": "default-src 'none'; img-src data:; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'"})
+        "Content-Security-Policy": "default-src 'none'; img-src data:; media-src data:; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'"})
 
 
 @router.post("/jobs", status_code=202)

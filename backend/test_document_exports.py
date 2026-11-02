@@ -1,4 +1,8 @@
 import io
+import base64
+import re
+import shutil
+import subprocess
 import tempfile
 import unittest
 import uuid
@@ -97,6 +101,30 @@ class DocumentExportTests(unittest.IsolatedAsyncioTestCase):
         self.job['result']['delivery']['media'][0]['sha256'] = entry['sha256']
         self.job['project_id'] = str(uuid.uuid4())
         with self.assertRaises(HTTPException): self.source()
+
+    @unittest.skipUnless(shutil.which('ffmpeg') and shutil.which('ffprobe'), 'ffmpeg is optional')
+    async def test_html_embeds_exact_verified_video_and_print_exports_keep_explanation(self):
+        path = Path(self.directory.name) / 'video.mp4'
+        subprocess.run([shutil.which('ffmpeg'), '-v', 'error', '-f', 'lavfi', '-i',
+                        'testsrc2=s=160x120:r=10:d=1', '-c:v', 'libx264', str(path)], check=True)
+        raw = path.read_bytes()
+        entry = self.store.save_bytes(self.job, raw, kind='video', provider='fixture', caption='离线播放')
+        self.job['result']['delivery'].update(media=[entry], content=f'[打开视频]({entry["url"]})\n\n真实作品说明')
+        result = await render_document(self.job, 'group:delivery', 'html')
+        markup = result['content'].decode()
+        encoded = re.findall(r'<video[^>]*src="data:video/mp4;base64,([^"]+)"', markup)
+        self.assertEqual(len(encoded), 1)
+        self.assertEqual(base64.b64decode(encoded[0]), raw)
+        self.assertIn('href="#video-' + entry['id'] + '"', markup)
+        self.assertIn('media-src data:', markup)
+        self.assertNotIn('/api/media/', markup)
+        self.assertFalse(result['warnings'])
+        printed = self.source()
+        self.assertFalse(printed.videos)
+        self.assertTrue(any('视频不嵌入' in warning for warning in printed.warnings))
+        self.job['result']['delivery']['media'][0] = {**entry, 'sha256': 'f' * 64}
+        with self.assertRaises(HTTPException):
+            await render_document(self.job, 'group:delivery', 'html')
 
     def test_tampered_actual_image_file_fails_closed(self):
         entry = self.image()

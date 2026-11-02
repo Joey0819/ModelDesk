@@ -186,6 +186,46 @@ class AutonomyTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(self.job["autonomy"]["attempts"], 0)
             self.assertFalse(self.manager.tasks)
 
+    async def test_untouched_dependent_agent_can_start_but_any_attempt_or_receipt_blocks_it(self):
+        from backend.operation_recovery import unstarted_operation
+        from backend import group_tasks
+        from types import SimpleNamespace
+        await self.failure()
+        step=self.job['result']['delivery']['steps'][1]
+        member=self.job['group_team_snapshot']['members'][1]
+        member['kind']='codex'
+        step.update(kind='codex',status='blocked',attempts=[])
+        with patch.object(group_tasks,'manager',SimpleNamespace(records={})):
+            self.assertEqual(unstarted_operation(self.job,step)['mode'],'initial_dispatch')
+            self.assertIsNone(autonomy.continuation_blocker(self.job))
+            step['attempts']=[{'status':'running'}]
+            self.assertIsNone(unstarted_operation(self.job,step))
+            step['attempts']=[]
+            group_tasks.manager.records['existing']={'parent_job_id':self.job['id'],'member_id':member['id']}
+            self.assertIsNone(unstarted_operation(self.job,step))
+            group_tasks.manager.records.clear()
+            self.job['group_native_allowed']=False
+            self.assertIsNone(unstarted_operation(self.job,step))
+
+    async def test_missing_parent_media_does_not_block_verified_child_collection(self):
+        await self.failure()
+        delivery = self.job['result']['delivery']
+        step = delivery['steps'][1]
+        step.update(kind='muse', status='error', attempts=[{'status': 'error'}])
+        delivery['task_spec']['requirements'].append({'id': 'video', 'kind': 'video'})
+        missing = [{'requirement_id': 'video', 'met': False, 'reason': 'actual files 0/1'}]
+        with patch('backend.coordination.actual_checks', return_value=missing), \
+             patch('backend.operation_recovery.unstarted_operation', return_value=None), \
+             patch('backend.operation_recovery.completed_operation', return_value={'mode': 'collect_only'}):
+            self.assertIsNone(autonomy.continuation_blocker(self.job))
+            # After collection, an absent real file still blocks completion.
+            step['status'] = 'complete'
+            self.assertIn('actual files 0/1', autonomy.continuation_blocker(self.job))
+            step['status'] = 'error'
+            # A lost/unknown child receipt cannot authorize a new submission.
+            with patch('backend.operation_recovery.completed_operation', return_value=None):
+                self.assertIn('未确认完成', autonomy.continuation_blocker(self.job))
+
     async def test_two_automatic_continuations_max(self):
         await self.failure()
         async def always_fail(*args, **kwargs):
@@ -199,7 +239,35 @@ class AutonomyTests(unittest.IsolatedAsyncioTestCase):
             await self.supervisor.tick()
         self.assertEqual(self.job["autonomy"]["state"], "needs_attention")
         self.assertFalse(self.manager.tasks)
+
         self.assertEqual(self.job["result"]["delivery"]["workflow"]["resume_count"], 2)
+
+    async def test_recovered_prerequisite_dispatches_untouched_downstream_agent_once(self):
+        from backend import group_tasks
+        from types import SimpleNamespace
+        import hashlib
+        self.job['group_team_snapshot']['members'].append({'id':'builder','kind':'codex','name':'工程师','role':'完成实际工作'})
+        self.job['group_recipient_member_ids'].append('builder')
+        first=True
+        async def provider(job,model,system,prompt,**kwargs):
+            nonlocal first
+            if '你是项目统筹者' in system:
+                value=plan();value['steps'].append({'id':'build','member_id':'builder','instruction':'按前置要求完成工作','expected_output':'实际成果','depends_on':['facts']})
+                return json.dumps(value),False
+            if first and system.startswith('你是 审阅者'):
+                first=False
+                raise RuntimeError('temporary upstream failure')
+            return await self.provider(job,model,system,prompt,**kwargs)
+        dispatched=AsyncMock(return_value={'status':'complete','output':'真实正文','output_sha256':hashlib.sha256('真实正文'.encode()).hexdigest()})
+        with patch.object(group_tasks,'manager',SimpleNamespace(records={})), patch('backend.group_delivery_runtime.run_runtime_step',dispatched), patch.object(group_delivery,'model_output',side_effect=provider):
+            delivery=await self.initial(provider)
+            self.assertEqual(delivery['steps'][-1]['attempts'],[])
+            dispatched.assert_not_awaited()
+            await self.supervisor.tick(); await self.supervisor.tick(); await self.settle()
+            dispatched.assert_awaited_once()
+            self.assertFalse(dispatched.await_args.kwargs.get('observe_only'))
+            self.assertEqual(self.job['autonomy']['state'],'complete')
+        self.assertEqual(self.job["result"]["delivery"]["workflow"]["resume_count"], 1)
 
     async def test_tampered_content_and_missing_documents_cannot_be_complete(self):
         self.job["group_document_formats"] = ["html"]

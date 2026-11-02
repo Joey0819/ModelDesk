@@ -112,6 +112,47 @@ class FeishuTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(all(row["state"] == "monitoring" for row in self.store.events()))
         self.assertEqual({row["job_id"] for row in self.controller.public()["recent"]}, set(self.jobs.jobs))
 
+    async def test_mobile_whitespace_preserves_prompt_and_ignored_message_has_private_diagnostic(self):
+        self.assertIsNone(self.store.ingest(self.event(text='unrelated private message')))
+        observed = self.store.observed('cli_test')[0]
+        self.assertEqual(observed['last_outcome'], 'not_command')
+        self.assertNotIn('unrelated private message', json.dumps(observed))
+        self.received(text='/modeldesk\ntask\u00a0第一行\n第二行')
+        with patch.object(groups, 'submit_message', AsyncMock(side_effect=self.submit)) as submit:
+            await self.controller.tick()
+        self.assertEqual(submit.await_args.args[1].prompt, '第一行\n第二行')
+        self.assertEqual(self.store.observed('cli_test')[0]['last_outcome'], 'command_received')
+
+    async def test_rejected_attachment_replies_once_without_starting_task(self):
+        self.received(message_type='post', input_error='unsupported_content')
+        with patch.object(groups, 'submit_message', AsyncMock()) as submit:
+            await self.controller.tick()
+            await self.controller.tick()
+        submit.assert_not_awaited()
+        self.assertEqual(len(self.sdk.calls), 1)
+        self.assertIn('未派发任务', self.sdk.calls[0][3]['text'])
+        self.assertEqual(self.store.events()[0]['notifications'], ['rejected'])
+
+    async def test_natural_language_is_opt_in_scoped_and_keeps_explicit_continuation(self):
+        self.assertIsNone(self.store.ingest(self.event(text='写150字清单')))
+        self.store.save_config(ConfigInput(enabled=True, app_id='cli_test', bindings=[{**self.binding, 'natural_language_tasks': True}]))
+        self.assertIsNone(self.store.ingest(self.event(sender_id='ou_stranger', text='写150字清单')))
+        self.received(text='写150字清单\n交付Word、PDF和HTML')
+        self.received(text='继续：保留要求，调整结尾')
+        self.received(text='你好')
+        self.received(text='/unknown delete all')
+        with patch.object(groups, 'submit_message', AsyncMock(side_effect=self.submit)) as submit:
+            await self.controller.tick()
+        self.assertEqual(submit.await_count, 2)
+        first, second = submit.await_args_list
+        self.assertEqual(first.args[1].prompt, '写150字清单\n交付Word、PDF和HTML')
+        self.assertEqual(first.args[1].context_mode, 'fresh')
+        self.assertEqual(second.args[1].prompt, '保留要求，调整结尾')
+        self.assertEqual(second.args[1].context_mode, 'continue')
+        self.assertFalse(first.kwargs['native_allowed'])
+        self.assertEqual({row['input_mode'] for row in self.store.events()}, {'natural_language'})
+        self.assertEqual(self.store.events()[-1]['reason'], '已回传指令用法，没有创建任务')
+
     async def test_restart_reconciles_created_job_and_never_replays_unknown_dispatch(self):
         record = self.received()
         self.store.update(record, state="dispatching")
@@ -128,6 +169,26 @@ class FeishuTests(unittest.IsolatedAsyncioTestCase):
             await self.controller.tick()
         self.assertEqual(self.store.events()[-1]["state"], "monitoring")
         submit.assert_not_awaited()
+
+    async def test_one_bot_routes_two_chats_to_separate_groups_without_new_secret(self):
+        second_project, second_room = str(uuid.uuid4()), str(uuid.uuid4())
+        second = {**self.binding, 'chat_id': 'oc_two', 'project_id': second_project, 'room_id': second_room}
+        self.store.save_config(ConfigInput(enabled=True, app_id='cli_test', bindings=[self.binding, second]))
+        self.assertEqual(self.store.config()['app_secret'], 'test-secret')
+        self.received()
+        self.received(chat_id='oc_two', text='/modeldesk task 独立项目报告')
+        destinations = []
+        async def submit(room, request, project, **kwargs):
+            destinations.append((room, project, request.prompt))
+            job = {'id': kwargs['job_id'], 'status': 'running', 'project_id': project, 'group_room_id': room,
+                   'external_source': kwargs['external_source'], 'events': [], 'autonomy': {'state': 'running'}}
+            self.jobs.jobs[job['id']] = job
+            return job
+        with patch.object(groups, 'submit_message', AsyncMock(side_effect=submit)):
+            await self.controller.tick()
+        self.assertCountEqual(destinations, [(self.room_id, self.project_id, '写报告'),
+                                            (second_room, second_project, '独立项目报告')])
+        self.assertEqual({row['state'] for row in self.store.events()}, {'monitoring'})
 
     async def test_uncertain_ack_keeps_monitoring_and_completion_is_separate(self):
         record = self.received()
@@ -273,6 +334,25 @@ class FeishuTests(unittest.IsolatedAsyncioTestCase):
         result = normalize_event(data, "cli_test", "ou_bot")
         self.assertEqual(result["text"], "/modeldesk task 请参考 @Alice 的要求")
         self.assertIsNone(normalize_event(data, "cli_test", "ou_otherbot"))
+
+    async def test_mobile_rich_post_keeps_text_links_and_rejects_unsupported_assets(self):
+        message = NS(message_id='om_mobile', chat_id='oc_one', chat_type='p2p', message_type='post',
+                     create_time=str(int(time.time() * 1000)), mentions=[])
+        data = NS(header=NS(app_id='cli_test'), event=NS(message=message, sender=NS(sender_type='user', sender_id=NS(open_id='ou_person'))))
+        content = {'title': '', 'content': [[{'tag':'text','text':'/modeldesk\ntask 写报告'}],
+                                           [{'tag':'a','text':'资料','href':'https://example.com/source'}]]}
+        message.content = json.dumps(content)
+        result = normalize_event(data, 'cli_test', 'ou_bot')
+        self.assertEqual(result['text'], '/modeldesk\ntask 写报告\n资料 (https://example.com/source)')
+        identifier = self.store.ingest(result)
+        self.assertIsNotNone(identifier)
+        self.assertEqual(self.store.events()[0]['command'], 'task 写报告\n资料 (https://example.com/source)')
+        content['content'][1].append({'tag':'img','image_key':'unread_asset'})
+        message.content, message.message_id = json.dumps(content), 'om_with_image'
+        self.store.ingest(normalize_event(data, 'cli_test', 'ou_bot'))
+        self.assertEqual(self.store.events()[-1]['state'], 'rejected')
+        message.content = '{malformed'
+        self.assertEqual(normalize_event(data, 'cli_test', 'ou_bot')['input_error'], 'invalid_content')
         with patch("backend.feishu_worker.emit") as emit:
             SanitizedConnectionLog().emit(logging.LogRecord("Lark", logging.INFO, "", 1, "connected to wss://secret-token", (), None))
         emit.assert_called_once_with("connected")

@@ -30,6 +30,7 @@ from .council import run_full_council, generate_conversation_title, stage1_colle
 from .skill_library import router as skills_router
 from .execution_store import WorkerOwnership
 from .readiness import router as readiness_router
+from .mcp_observation import router as mcp_observation_router
 
 worker_ownership = WorkerOwnership(workbench_manager.directory)
 
@@ -50,6 +51,7 @@ app.include_router(model_runtime_router)
 app.include_router(delivery_media_router)
 app.include_router(autonomy_router)
 app.include_router(readiness_router)
+app.include_router(mcp_observation_router)
 app.include_router(feishu_router)
 app.add_event_handler("startup", worker_ownership.acquire)
 app.add_event_handler("startup", group_tasks_manager.recover)

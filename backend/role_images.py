@@ -75,8 +75,11 @@ async def execute_images(job, member, step, prompt, delivery, changed, *, collec
                 picture_prompt = slots[index].prompt if slots else prepared
                 caption = slots[index].caption if slots else f"{member['name']} · 图片 {index + 1}"
                 task.update(caption=caption, prompt=picture_prompt)
+                def record_provider_attempt(value):
+                    attempt.setdefault('provider_events', []).append(value)
+                    changed()
                 asset = await generate_image(job, f'只创作第 {index + 1}/{count} 张独立图片：{caption}。\n' + picture_prompt,
-                    model=member['model'], slot_id=slot, caption=caption)
+                    model=member['model'], slot_id=slot, caption=caption, on_attempt=record_provider_attempt)
                 delivery['media'].append(asset)
                 attempt.update(status='complete', asset_id=asset['id'])
             except asyncio.CancelledError:

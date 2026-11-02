@@ -301,7 +301,7 @@ def _safe_error(error: Exception) -> str:
 
 
 async def generate_image(job: dict, prompt: str, *, provider="auto", model=None,
-                         slot_id="", caption="") -> dict:
+                         slot_id="", caption="", on_attempt=None) -> dict:
     """Generate and store one verified image, with bounded automatic fallback.
 
     Explicit provider/model selection is binding. Automatic selection prefers a
@@ -331,7 +331,32 @@ async def generate_image(job: dict, prompt: str, *, provider="auto", model=None,
     final_error = "图像生成未取得可校验的真实图片。"
     for entry in attempts:
         try:
-            data = await _request(_resolve(entry, prompt))
+            for request_number in range(1, 3):
+                receipt = {"number": request_number, "model": entry["id"], "provider": entry["provider"], "state": "dispatching"}
+                if on_attempt:
+                    on_attempt(receipt.copy())
+                try:
+                    data = await _request(_resolve(entry, prompt))
+                    receipt["state"] = "received"
+                    if on_attempt:
+                        on_attempt(receipt.copy())
+                    break
+                except httpx.HTTPStatusError as error:
+                    status = error.response.status_code
+                    receipt.update(state="rejected", http_status=status)
+                    if on_attempt:
+                        on_attempt(receipt.copy())
+                    # Retry only an explicit temporary HTTP failure, once on
+                    # this same model. A lost response/timeout is not replayed.
+                    if request_number == 2 or status not in {429, 500, 502, 503, 504}:
+                        raise
+                    try:
+                        delay = float(error.response.headers.get("retry-after", "2"))
+                    except ValueError:
+                        raise error
+                    if not 0 <= delay <= 30:
+                        raise error
+                    await asyncio.sleep(max(2, delay))
             outputs = extract_images(data)
             from . import delivery_media
             metadata = {"kind": "image", "provider": entry["provider"], "model": entry["id"],

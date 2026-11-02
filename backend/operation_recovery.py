@@ -1,15 +1,61 @@
-"""Reconcile saved external results without authorizing another submission.
+"""Reconcile saved results or prove a dependent step was never submitted.
 
 Each proof is scoped to the original job/member/prompt and rechecked at execution.
 Uncertain dispatch, missing bytes or a changed roster produces no proof. A proof
-permits collection only; it is never permission to create an operation.
+permits collection only unless unstarted_operation separately proves an initial
+dispatch remains within the originally authorized plan.
 """
 import hashlib
 import json
 import uuid
 import time
 
+from fastapi import HTTPException
+
 _observation_probes = {}
+
+
+def unstarted_operation(job, step, *, scheduled=False):
+    """Permit the first dispatch of a frozen dependent step, never a replay.
+
+    A step attempt is saved before every side effect. Missing/legacy attempts,
+    any child receipt, or changed membership therefore fails closed.
+    """
+    try:
+        if (step.get('kind') not in {'mcp','muse','codex','claude','image'}
+                or step.get('status') not in ({'running'} if scheduled else {'pending','blocked'}) or step.get('attempts') != []
+                or step.get('dispatch_prompt') or step.get('task_id') or step.get('approval_id')
+                or job.get('group_runtime_allowed') is not True or job.get('group_harness_version') != 1):
+            return None
+        from .groups import store as rooms
+        room=rooms.get(job['group_room_id'],job.get('project_id'))
+        if room['team_snapshot'] != job['group_team_snapshot']:
+            return None
+        member=next(item for item in room['team_snapshot']['members'] if item['id']==step['member_id'])
+        if member.get('kind','model') != step['kind']:
+            return None
+        if step['kind']=='image':
+            delivery=job['result']['delivery']
+            if any(item.get('member_id')==member['id'] for item in delivery.get('media_tasks',[])):
+                return None
+        elif step['kind']=='mcp':
+            from .mcp_agent import STORE
+            identifier=str(uuid.uuid5(uuid.UUID(job['id']), 'mcp-agent:'+member['id']))
+            path=STORE.directory/(identifier+'.json')
+            if STORE.directory.is_symlink() or path.exists() or path.is_symlink():
+                return None
+        else:
+            if job.get('group_native_allowed') is not True:
+                return None
+            if step['kind']=='muse':
+                from .muse_bridge import manager
+            else:
+                from .group_tasks import manager
+            if any(item.get('parent_job_id')==job['id'] and item.get('member_id')==member['id'] for item in manager.records.values()):
+                return None
+        return {'engine':step['kind'],'mode':'initial_dispatch','step_id':step['id']}
+    except (KeyError,TypeError,ValueError,StopIteration,OSError,HTTPException):
+        return None
 
 
 def completed_operation(job, step):
@@ -120,7 +166,8 @@ async def resume_confirmed_observation(job):
                 continue
             if child.get("status") == "waiting_user" or (child.get("_last_native_observation") or {}).get("waiting_user") is True:
                 continue
-            if child.get("monitoring") and child.get("background_observe_recoveries"):
+            if (child.get("monitoring") and child.get("sent") is True
+                    and valid_thread(child.get("thread_url")) and not unverified_generation(child)):
                 return {"task_id": child["id"], "state": "observing"}
             if (child.get("status") != "interrupted" or child.get("sent") is not True
                     or not valid_thread(child.get("thread_url")) or unverified_generation(child)

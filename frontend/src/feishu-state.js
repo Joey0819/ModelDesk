@@ -6,6 +6,7 @@ export function feishuBinding(value = {}) {
     chat_id: typeof value.chat_id === 'string' ? value.chat_id : '', name: typeof value.name === 'string' ? value.name : '',
     project_id: typeof value.project_id === 'string' && value.project_id ? value.project_id : null,
     room_id: typeof value.room_id === 'string' ? value.room_id : '', allowed_sender_ids: strings(value.allowed_sender_ids), allow_native: value.allow_native === true,
+    natural_language_tasks: value.natural_language_tasks === true,
   };
 }
 /** Only whitelisted public fields enter the draft; saved credentials never return to inputs. */
@@ -34,7 +35,7 @@ export function feishuIssue(draft) {
 export function feishuConnectionStatus(status, config) {
   if (!config?.app_id || !config.has_app_secret) return '未配置';
   if (!config.enabled) return '已停用';
-  return ({ not_configured: '未配置', disabled: '已停用', connecting: '正在连接', connected: '长连接在线', error: '连接失败' })[status?.state] || '连接状态未确认';
+  return ({ not_configured: '未配置', disabled: '已停用', connecting: '正在连接', reconnecting: '等待自动重连', connected: '长连接在线', error: '连接失败' })[status?.state] || '连接状态未确认';
 }
 export function safeFeishuError(error, secret = '') {
   const message = typeof error === 'string' ? error : error?.message || '飞书请求未完成，请重新检查配置。';

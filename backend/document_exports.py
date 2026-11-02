@@ -77,6 +77,7 @@ class DocumentSource:
     tokens: list
     source_sha256: str = ""
     images: dict = field(default_factory=dict)
+    videos: dict = field(default_factory=dict)
     warnings: list = field(default_factory=list)
 
     @property
@@ -84,7 +85,7 @@ class DocumentSource:
         return "部分输出；整体任务尚未完成" if self.partial else "已保存的实际输出"
 
 
-def prepare_document(job, artifact_id):
+def prepare_document(job, artifact_id, include_video=False):
     artifact = selected_artifact(job, artifact_id)
     content = artifact["content"]
     if len(content) > MAX_CONTENT or len(artifact["title"]) > 1000:
@@ -113,11 +114,12 @@ def prepare_document(job, artifact_id):
                     raise HTTPException(409, "交付媒体与已验证成果不匹配")
             seen.add(entry["id"])
             entries.append(entry)
-            if entry["kind"] == "image":
+            if entry["kind"] == "image" or include_video:
                 total += len(raw)
                 if total > 50_000_000:
-                    raise HTTPException(422, "文档内图片总大小超过 50 MB，请使用图文成果包")
-                document.images["media/" + entry["name"]] = {"entry": entry, "raw": raw}
+                    raise HTTPException(422, "文档内媒体总大小超过 50 MB，请使用图文成果包")
+                target = document.images if entry['kind'] == 'image' else document.videos
+                target["media/" + entry["name"]] = {"entry": entry, "raw": raw}
             else:
                 document.warnings.append("视频不嵌入打印文档，请从成果面板或图文成果包查看原视频：" + (entry["caption"] or entry["name"]))
         document.content = delivery_media._portable_markdown(content, entries, delivery.get("media_reuse_origins"))
@@ -138,6 +140,7 @@ def _css(layout):
 main{{max-width:820px;margin:auto;padding:36px}}h1{{font-size:26pt;line-height:1.25;color:#111827;margin:0 0 14pt}}h2{{font-size:18pt}}h3{{font-size:14pt}}h1,h2,h3,h4,h5,h6{{break-after:avoid}}p{{orphans:3;widows:3;margin:0 0 10pt}}.meta,.caption,figcaption{{font-size:9pt;color:#667085}}.meta{{padding-bottom:14pt;border-bottom:1px solid #dce1e8;margin-bottom:20pt}}.notice{{padding:10pt;border:1px solid #dce1e8;background:#f7f8fa;white-space:pre-wrap;margin:12pt 0}}.partial{{color:#864b1c;border-color:#dfc1a3}}img{{display:block;max-width:100%;max-height:215mm;width:auto;height:auto;object-fit:contain;margin:12pt auto;break-inside:avoid}}figure{{margin:16pt 0}}a{{color:#334e91;overflow-wrap:anywhere}}pre{{white-space:pre-wrap;word-break:break-word;background:#f4f6f8;padding:10pt;font:9pt/1.5 ui-monospace,monospace}}code{{font-size:.9em}}blockquote{{margin:10pt 0;padding-left:14pt;border-left:3px solid #b7c4d3;color:#435164}}table{{width:100%;border-collapse:collapse;table-layout:fixed;margin:14pt 0;font-size:.9em}}td,th{{border:1px solid #cdd5df;padding:7pt;overflow-wrap:anywhere;vertical-align:top}}th{{background:#f0f3f7;text-align:left}}thead{{display:table-header-group}}tr{{break-inside:avoid}}ul,ol{{padding-left:24pt}}hr{{border:0;border-top:1px solid #dce1e8;margin:18pt 0}}
 @media print{{main{{max-width:none;padding:0}}a{{color:inherit;text-decoration:none}}}}
 @media(max-width:600px){{main{{padding:20px}}h1{{font-size:23pt}}}}
+video{{display:block;width:100%;height:auto;max-height:80vh;background:#111;border-radius:8px}}
 """
 
 
@@ -159,6 +162,10 @@ def html_document(document, layout="report"):
 
     def link_open(renderer, tokens, index, options, env):
         target = tokens[index].attrGet("href") or ""
+        video = document.videos.get(target)
+        if video:
+            env.setdefault('links', []).append(True)
+            return '<a href="#video-' + html.escape(video['entry']['id'], quote=True) + '">'
         safe = _safe_link(target)
         env.setdefault("links", []).append(safe)
         return '<a href="' + html.escape(target, quote=True) + '" rel="noopener noreferrer">' if safe else "<span>"
@@ -175,9 +182,15 @@ def html_document(document, layout="report"):
             continue
         entry = image["entry"]
         body += '<figure><img alt="' + html.escape(entry["caption"], quote=True) + '" src="data:' + entry["mime_type"] + ';base64,' + base64.b64encode(image["raw"]).decode() + '"><figcaption>' + html.escape(entry["caption"]) + '</figcaption></figure>'
+    for video in document.videos.values():
+        entry = video['entry']
+        body += ('<figure id="video-' + html.escape(entry['id'], quote=True) + '"><video controls preload="metadata" playsinline'
+                 + ' aria-label="' + html.escape(entry['caption'] or entry['name'], quote=True) + '" src="data:'
+                 + entry['mime_type'] + ';base64,' + base64.b64encode(video['raw']).decode() + '"></video><figcaption>'
+                 + html.escape(entry['caption'] or entry['name']) + '</figcaption></figure>')
     note = document.note + ("\n" if document.note and document.warnings else "") + "\n".join(document.warnings)
     result = ('<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
-              '<meta http-equiv="Content-Security-Policy" content="default-src \'none\'; img-src data:; style-src \'unsafe-inline\'; base-uri \'none\'; form-action \'none\'; object-src \'none\'">'
+              '<meta http-equiv="Content-Security-Policy" content="default-src \'none\'; img-src data:; media-src data:; style-src \'unsafe-inline\'; base-uri \'none\'; form-action \'none\'; object-src \'none\'">'
               '<title>' + html.escape(document.title) + '</title><style>' + _css(layout) + '</style></head><body><main><h1>' + html.escape(document.title)
               + '</h1><p class="meta">' + html.escape(document.status + " · " + document.source) + '<br>任务记录：' + html.escape(document.job_id) + '</p>'
               + ('<aside class="notice partial">部分输出，尚未完整满足任务要求。</aside>' if document.partial else '') + body
@@ -383,7 +396,7 @@ async def document_capabilities():
 async def render_document(job_snapshot, artifact_id, format="docx", layout="report"):
     if format not in FORMATS or layout not in LAYOUTS:
         raise HTTPException(422, "请选择 Word、PDF 或 HTML，以及支持的文档版式")
-    document = await asyncio.to_thread(prepare_document, job_snapshot, artifact_id)
+    document = await asyncio.to_thread(prepare_document, job_snapshot, artifact_id, format == 'html')
     if format == "pdf":
         content = await pdf_document(document, layout)
     else:

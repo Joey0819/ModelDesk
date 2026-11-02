@@ -52,6 +52,8 @@ def build_task_context(jobs, job):
                "project_id": job.get("project_id"), "room_id": job["group_room_id"],
                "revision": len(previous) + 1, "requests": requests, "artifact": None,
                "reference_media": [], "warnings": []}
+    if job.get("project_memory"):
+        context["project_memory"] = copy.deepcopy(job["project_memory"])
     # Delivery preferences survive an interrupted first run without any prose.
     # They control local packaging only; no tool/agent permission is inherited.
     preferences = {}

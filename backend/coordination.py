@@ -665,7 +665,9 @@ async def run(manager, job, *, continuing=False):
                 changed()
 
             async def execute(step, parents):
-                collecting = bool(job.get("_autonomy_local_only") and step["kind"] != "model")
+                from .operation_recovery import unstarted_operation
+                initial_dispatch = bool(job.get("_autonomy_local_only") and unstarted_operation(job,step,scheduled=True))
+                collecting = bool(job.get("_autonomy_local_only") and step["kind"] != "model" and not initial_dispatch)
                 if job.get("_autonomy_local_only"):
                     from .operation_recovery import completed_operation
                     if job.get("tools") or (collecting and not completed_operation(job, step)):
@@ -815,6 +817,15 @@ async def run(manager, job, *, continuing=False):
                                 delivery['media'].append(verified)
                 if not job.get("_autonomy_local_only"):
                     await produce_media(manager, job, result, delivery, contract, steps=current)
+                else:
+                    # Collection of a verified child never creates a new media
+                    # request. Resume downstream work with its real files.
+                    from .delivery_harness import collect_native_media
+                    recovered, warnings = await collect_native_media(job, current)
+                    delivery['limitations'].extend(warnings)
+                    for asset in recovered:
+                        if not any(saved['id']==asset['id'] for saved in delivery['media']):
+                            delivery['media'].append(asset)
                 delivery["visual_evidence"], parts = await media_evidence(job, delivery["media"])
                 evidence = {"requirements": delivery["task_spec"]["requirements"], "execution": execution_evidence(current, output_limit=None),
                             "document_packaging": delivery["task_spec"].get("documents", {}),

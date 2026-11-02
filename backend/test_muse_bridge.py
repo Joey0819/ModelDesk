@@ -87,6 +87,34 @@ class MuseTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("不证明", result["verification"])
         self.assertFalse(result["monitoring"])
 
+    async def test_only_confirmed_owned_unsent_draft_can_be_resumed_once(self):
+        driver=self.driver()
+        async def fail_then_resume(command,payload=None):
+            if command == 'submit':
+                return {'ok':False,'sent':False,'uncertain':False,'request_id':payload['request_id'],
+                        'error':'draft_content_mismatch','draft_verification':{'request_marker_present':True,'copied_sha256':'a'*64}}
+            if command == 'resume_draft':
+                self.assertEqual(payload['draft_sha256'],'a'*64)
+                return await driver('submit',payload)
+            return await driver(command,payload)
+        with patch.object(self.manager,'helper_call',side_effect=fail_then_resume):
+            task=await self.manager.create(self.request())
+            failed=await self.settle(task)
+            self.assertFalse(failed['sent'])
+            failed['uncertain']=True
+            with self.assertRaises(HTTPException):
+                await self.manager.resume_unsent_draft(task['id'])
+            failed['uncertain']=False
+            resumed=await self.manager.resume_unsent_draft(task['id'])
+            self.assertEqual(resumed['draft_resume_attempts'],1)
+            with self.assertRaises(HTTPException):
+                await self.manager.resume_unsent_draft(task['id'])
+            completed=await self.settle(task)
+            self.assertEqual(completed['status'],'complete')
+            self.assertTrue(completed['sent'])
+            with self.assertRaises(HTTPException):
+                await self.manager.resume_unsent_draft(task['id'])
+
     async def test_current_completed_reply_keeps_only_valid_private_native_resources(self):
         url = "https://media.example/actual-video.mp4?X-Amz-Signature=private-download-grant"
         original = self.driver()

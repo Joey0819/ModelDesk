@@ -200,6 +200,52 @@ func draftVerificationError(expected: String, copied: String, sentinel: String,
 }
 // END DRAFT VERIFICATION CONTRACT
 
+// WebKit exposes Smart Quotes in the editor context menu, not Muse's Edit
+// menu. Change it only for our owned draft, then restore its original value.
+// Readback remains exact; this never treats typographic substitutions as equal.
+func smartQuotes(_ enabled: Bool? = nil) -> Bool? {
+    guard foreground(), emptyNewThread(snapshot()), let box = composer(snapshot()).flatMap(rect) else { return nil }
+    let point = CGPoint(x: box.minX + box.width * 0.35, y: box.midY)
+    CGEvent(mouseEventSource: nil, mouseType: .rightMouseDown, mouseCursorPosition: point, mouseButton: .right)?.post(tap: .cghidEventTap)
+    CGEvent(mouseEventSource: nil, mouseType: .rightMouseUp, mouseCursorPosition: point, mouseButton: .right)?.post(tap: .cghidEventTap)
+    settle()
+    let tree = snapshot()
+    guard let item = tree.first(where: { string($0, kAXIdentifierAttribute) == "WKMenuItemIdentifierSmartQuotes" }),
+          let mark = attr(item, "AXMenuItemMarkChar") as? String else {
+        if let menu = tree.first(where: { string($0, kAXRoleAttribute) == kAXMenuRole }) { AXUIElementPerformAction(menu, kAXCancelAction as CFString) }
+        return nil
+    }
+    let previous = !mark.isEmpty
+    if let enabled, enabled != previous {
+        guard press(item) else { return nil }
+        settle()
+    } else if let menu = tree.first(where: { string($0, kAXRoleAttribute) == kAXMenuRole }) {
+        AXUIElementPerformAction(menu, kAXCancelAction as CFString)
+    }
+    return previous
+}
+
+func pasteExact(_ payload: String, requestTag: String, expectedDraft: String, clipboard: TemporaryClipboard) -> (String, [String: Any]) {
+    guard emptyNewThread(snapshot()), let box = composer(snapshot()).flatMap(rect),
+          click(CGPoint(x: box.minX + box.width * 0.35, y: box.midY)), key(0, flags: .maskCommand) else { return ("draft_focus_lost", [:]) }
+    let sentinel = "MODELDESK_RECHECK_" + UUID().uuidString
+    clipboard.put(sentinel)
+    guard key(8, flags: .maskCommand) else { return ("draft_focus_lost", [:]) }
+    let currentDraft = clipboard.read()
+    guard expectedDraft.isEmpty ? (currentDraft == sentinel || currentDraft.isEmpty) : currentDraft == expectedDraft else { return ("draft_content_mismatch", [:]) }
+    let quotes = smartQuotes(false)
+    defer { if quotes == true { _ = smartQuotes(true) } }
+    guard click(CGPoint(x: box.minX + box.width * 0.35, y: box.midY)), key(0, flags: .maskCommand) else { return ("draft_focus_lost", [:]) }
+    // Recheck after menu interaction, so a user's new draft is never replaced.
+    clipboard.put(sentinel)
+    guard key(8, flags: .maskCommand), clipboard.read() == currentDraft || (expectedDraft.isEmpty && clipboard.read() == sentinel) else { return ("draft_content_mismatch", [:]) }
+    clipboard.put(payload)
+    guard key(9, flags: .maskCommand) else { return ("draft_focus_lost", [:]) }
+    var (error, diagnostics) = verifyDraft(payload, requestTag: requestTag, clipboard: clipboard)
+    diagnostics["smart_quotes_temporarily_disabled"] = quotes == true
+    return (error, diagnostics)
+}
+
 func verifyDraft(_ expected: String, requestTag: String, clipboard: TemporaryClipboard) -> (String, [String: Any]) {
     let sentinel = "MODELDESK_VERIFY_" + UUID().uuidString
     var copied = sentinel; var error = "draft_copy_unconfirmed"; var attempts = 0
@@ -241,6 +287,26 @@ func verifyDraft(_ expected: String, requestTag: String, clipboard: TemporaryCli
         "new_thread": newThread, "app_focused": appFocused, "window_focused": windowFocused,
         "expected_characters": expected.count, "copied_characters": ours ? copied.count : 0,
         "expected_sha256": digest(expected), "copied_sha256": ours ? digest(copied) : NSNull()]
+    if ours {
+        let left = Array(expected.unicodeScalars), right = Array(copied.unicodeScalars)
+        var spaces = 0, breaks = 0, quotes = 0, other = 0
+        var quotePairs: [String: Int] = [:]
+        if left.count == right.count {
+            for (a, b) in zip(left, right) where a != b {
+                if a.value == 32 && b.value == 160 { spaces += 1 }
+                else if [10,13,8232,8233].contains(a.value) && [10,13,8232,8233].contains(b.value) { breaks += 1 }
+                else if [34,39,8220,8221,8216,8217].contains(a.value) && [34,39,8220,8221,8216,8217].contains(b.value) {
+                    quotes += 1; quotePairs["\(a.value)->\(b.value)", default: 0] += 1
+                }
+                else { other += 1 }
+            }
+            diagnostics["nbsp_substitutions"] = spaces
+            diagnostics["linebreak_substitutions"] = breaks
+            diagnostics["quote_substitutions"] = quotes
+            diagnostics["other_substitutions"] = other
+            if command == "check_draft" { diagnostics["quote_pairs"] = quotePairs }
+        }
+    }
     if command == "check_draft" { diagnostics["focused_role"] = focusedRole }
     return (error, diagnostics)
 }
@@ -259,6 +325,7 @@ func stagingDirectory() -> URL? {
 }
 
 var downloadDiagnostic = "native_attachment_download_unconfirmed"
+var mediaPreviewControls: [String] = []
 func downloadFailed(_ code: String) -> [String: String]? { downloadDiagnostic = code; return nil }
 func downloadAttachment(_ button: AXUIElement, filename expectedFilename: String, directory: URL, expected: String) -> [String: String]? {
     guard threadURL(snapshot()) == expected else { return downloadFailed("native_download_thread_changed") }
@@ -372,7 +439,7 @@ func downloadAttachment(_ button: AXUIElement, filename expectedFilename: String
     cancelSave(); return downloadFailed("native_download_file_unconfirmed")
 }
 
-func downloadGalleryImage(_ button: AXUIElement, caption: String, directory: URL, expected: String) -> [String: String]? {
+func downloadMediaPreview(_ button: AXUIElement, caption: String, directory: URL, expected: String) -> [String: String]? {
     guard threadURL(snapshot()) == expected, activate(), mainWindowFocused() else { return downloadFailed("native_gallery_focus_changed") }
     // Never dismiss an existing user preview or save dialog. Only the modal
     // opened by this exact current-task attachment belongs to this operation.
@@ -386,6 +453,11 @@ func downloadGalleryImage(_ button: AXUIElement, caption: String, directory: URL
     }
     let downloads = preview.filter { string($0, kAXRoleAttribute) == kAXButtonRole && label($0) == "Download" }
     let closes = preview.filter { string($0, kAXRoleAttribute) == kAXButtonRole && label($0) == "Close" }
+    mediaPreviewControls = preview.filter { element in
+        let value = label(element).lowercased()
+        return [kAXButtonRole, kAXMenuItemRole].contains(string(element, kAXRoleAttribute))
+            && ["download", "close", "save", "play", "pause"].contains(where: { value.contains($0) })
+    }.prefix(20).map { String(label($0).prefix(200)) }
     guard threadURL(preview) == expected, downloads.count == 1, closes.count == 1 else { return downloadFailed("native_gallery_preview_unconfirmed") }
     var file = downloadAttachment(downloads[0], filename: caption, directory: directory, expected: expected)
     let after = snapshot()
@@ -486,7 +558,7 @@ if command == "check_draft" {
     emit(["ok": error.isEmpty, "error": error.isEmpty ? NSNull() : error,
           "sent": false, "uncertain": false, "request_id": requestID, "draft_verification": diagnostics, "geometry": draftGeometry(snapshot())])
 }
-if command == "submit" {
+if command == "submit" || command == "resume_draft" {
     guard let prompt = input["prompt"] as? String, !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, prompt.count <= 24000, input["thread_url"] == nil || input["thread_url"] is NSNull else { fail("invalid_request") }
     guard activate(), mainWindowFocused() else { fail("window_focus_lost") }
     var activeTree = snapshot()
@@ -511,16 +583,25 @@ if command == "submit" {
     clipboard.put(sentinel)
     guard key(0, flags: .maskCommand), key(8, flags: .maskCommand) else { clipboard.restore(); fail("window_focus_lost") }
     let existing = clipboard.read()
-    guard existing == sentinel || existing.isEmpty else { clipboard.owned.insert(existing); clipboard.restore(); fail("composer_has_draft") }
+    if command == "resume_draft" {
+        let digest = SHA256.hash(data: Data(existing.utf8)).map { String(format: "%02x", $0) }.joined()
+        guard existing.hasPrefix(requestTag), let expectedDigest = input["draft_sha256"] as? String,
+              expectedDigest == digest else { clipboard.restore(); fail("draft_content_mismatch") }
+        clipboard.owned.insert(existing)
+    } else {
+        guard existing == sentinel || existing.isEmpty else { clipboard.owned.insert(existing); clipboard.restore(); fail("composer_has_draft") }
+    }
     let payload = requestTag + "\n" + prompt
-    clipboard.put(payload)
-    guard key(9, flags: .maskCommand) else { clipboard.restore(); fail("window_focus_lost") }
-    let (draftError, draftDiagnostics) = verifyDraft(payload, requestTag: requestTag, clipboard: clipboard)
+    let (draftError, draftDiagnostics) = pasteExact(payload, requestTag: requestTag, expectedDraft: command == "resume_draft" ? existing : "", clipboard: clipboard)
     guard draftError.isEmpty else {
         clipboard.restore()
         emit(["ok": false, "error": draftError, "sent": false, "uncertain": false,
               "request_id": requestID, "draft_verification": draftDiagnostics])
     }
+    guard let editor = composer(snapshot()).flatMap(rect),
+          click(CGPoint(x: editor.minX + editor.width * 0.35, y: editor.midY)) else { clipboard.restore(); fail("draft_focus_lost") }
+    let (lastError, lastDiagnostics) = verifyDraft(payload, requestTag: requestTag, clipboard: clipboard)
+    guard lastError.isEmpty else { clipboard.restore(); emit(["ok":false,"error":lastError,"sent":false,"uncertain":false,"request_id":requestID,"draft_verification":lastDiagnostics]) }
     if let names = input["attachment_names"] as? [String], !names.isEmpty {
         guard names.count <= 4, let directory = stagingDirectory() else { clipboard.restore(); fail("reference_upload_unconfirmed") }
         for name in names {
@@ -534,7 +615,8 @@ if command == "submit" {
         settle(0.25)
         let sent = snapshot(); let url = threadURL(sent)
         if validThread(url), let chat = chatRoot(sent), textIn(chat).contains(requestTag) {
-            emit(["ok": true, "sent": true, "thread_url": url, "request_id": requestID])
+            emit(["ok": true, "sent": true, "thread_url": url, "request_id": requestID,
+                  "draft_verification": lastDiagnostics])
         }
     }
     fail("send_outcome_unknown", uncertain: true)
@@ -548,6 +630,7 @@ if command == "observe" {
     var replyParts: [String] = []
     var unavailableVideo = false
     var attachments: [(button: AXUIElement, filename: String, gallery: Bool)] = []
+    var observedAttachmentControls: [String] = []
     var sawRequest = false
     var sawAssistantText = false
     var completedReply = false
@@ -564,6 +647,12 @@ if command == "observe" {
         // Assistant containers expose their own Copy response control; dates,
         // user messages, suggested prompts and tool approval cards do not.
         let controls = nodes(item)
+        for control in controls where [kAXButtonRole, "AXLink"].contains(string(control, kAXRoleAttribute)) {
+            let value = String(label(control).prefix(200))
+            if !value.isEmpty && !observedAttachmentControls.contains(value) && observedAttachmentControls.count < 30 {
+                observedAttachmentControls.append(value)
+            }
+        }
         if controls.contains(where: { label($0).contains("Video not found") || string($0, kAXValueAttribute).contains("Video not found") }) { unavailableVideo = true }
         let legacyAssistant = controls.contains { label($0) == "Copy response" }
         // New Muse versions expose reply actions via a popup rather than a
@@ -573,6 +662,16 @@ if command == "observe" {
         let downloadButtons = controls.filter { string($0, kAXRoleAttribute) == kAXButtonRole && ["Download video", "Download image", "Download picture"].contains(label($0)) }
         let mediaOpen = controls.first { label($0).hasPrefix("Open animated video ") || label($0).hasPrefix("Open image ") || label($0).hasPrefix("Open picture ") }
         let mediaAttachment = !downloadButtons.isEmpty && mediaOpen != nil
+        // Some Muse versions expose video download only inside the preview,
+        // just like generated images. Keep it scoped to this assistant reply.
+        if downloadButtons.isEmpty, sawAssistantText, let opened = mediaOpen {
+            let openedLabel = label(opened)
+            let prefix = ["Open animated video ", "Open image ", "Open picture "].first { openedLabel.hasPrefix($0) } ?? ""
+            let filename = String(openedLabel.dropFirst(prefix.count))
+            if !attachments.contains(where: { $0.filename == filename }) {
+                attachments.append((button: opened, filename: filename, gallery: true))
+            }
+        }
         // Generated images now download from a preview modal, not inline.
         // Exclude explicitly labelled sampled video frames from keyframe output.
         for image in controls where string(image, kAXRoleAttribute) == kAXButtonRole && label(image).hasPrefix("Open generated image ") {
@@ -616,7 +715,7 @@ if command == "observe" {
         if let directory = stagingDirectory() {
             for attachment in attachments.prefix(5) {
                 let file = attachment.gallery
-                    ? downloadGalleryImage(attachment.button, caption: attachment.filename, directory: directory, expected: expected)
+                    ? downloadMediaPreview(attachment.button, caption: attachment.filename, directory: directory, expected: expected)
                     : downloadAttachment(attachment.button, filename: attachment.filename, directory: directory, expected: expected)
                 if let file = file { downloaded.append(file) }
                 else { downloadErrors.append(downloadDiagnostic) }
@@ -627,6 +726,8 @@ if command == "observe" {
     emit(["ok": true, "request_id": requestID, "thread_url": expected, "messages": messages,
           "busy": isBusy(initial), "waiting_user": hasApproval(initial),
           "resource_request_id": finished ? requestID : NSNull(), "resources": finished ? resources : [],
+          "attachment_controls": finished ? observedAttachmentControls : [],
+          "preview_controls": finished ? mediaPreviewControls : [],
           "file_request_id": finished ? requestID : NSNull(), "downloaded_files": downloaded, "download_errors": downloadErrors])
 }
 fail("unsupported_command")

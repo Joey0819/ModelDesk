@@ -1,0 +1,19 @@
+.memory-rules { margin: 20px 0; padding-top: 18px; border-top: 1px solid var(--border, #dfe4ee); }
+.memory-rules p { max-width: 68ch; color: var(--muted, #65748b); font-size: 13px; line-height: 1.7; }
+.memory-pin { display: flex; gap: 10px; align-items: flex-start; line-height: 1.6; }
+.memory-pin input { margin-top: 5px; flex: none; }
+.memory-version-history { margin: 18px 0; }
+.memory-version-history summary { cursor: pointer; font-weight: 600; }
+.memory-version-history article { padding: 18px 0; border-bottom: 1px solid var(--border, #dfe4ee); }
+.memory-version-history header { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 12px; }
+.memory-version-history time, .memory-version-history small { color: var(--muted, #65748b); font-size: 12px; }
+.memory-version-history pre { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; max-height: 260px; overflow: auto; line-height: 1.65; }
+.memory-version-history button { margin-left: 16px; padding: 6px 10px; border: 1px solid var(--border, #dfe4ee); background: var(--surface, white); color: inherit; border-radius: 6px; cursor: pointer; }
+.project-memory-dialog { width: min(1100px, calc(100vw - 32px)); max-height: calc(100dvh - 32px); padding: 0; color: var(--text, #263547); background: var(--surface, white); border: 1px solid var(--border, #dfe4ee); border-radius: 14px; }
+.project-memory-dialog::backdrop { background: #18283e66; }
+.project-memory-dialog > header { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 18px 24px; border-bottom: 1px solid var(--border, #dfe4ee); position: sticky; top: 0; background: inherit; z-index: 1; }
+.project-memory-dialog > header button { padding: 8px 12px; color: inherit; background: transparent; border: 1px solid var(--border, #dfe4ee); border-radius: 6px; }
+.project-memory-dialog .library-workspace { min-height: min(620px, 70dvh); padding: 24px; box-sizing: border-box; }
+.project-memory-dialog .platform-field :is(input, textarea, select) { box-sizing: border-box; }
+.project-memory-dialog .platform-field textarea { min-height: 150px; max-height: 300px; height: 180px; }
+@media (max-width: 760px) { .project-memory-dialog .library-workspace { display: block; } .project-memory-dialog .resource-list { max-height: 220px; overflow: auto; } .project-memory-dialog .resource-editor-heading { flex-wrap: wrap; } }

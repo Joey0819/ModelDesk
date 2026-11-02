@@ -266,7 +266,7 @@ class HandoffAndBatchTests(unittest.IsolatedAsyncioTestCase):
         delivery = {"model": "ruler", "media": [], "media_tasks": []}
         raw = json.dumps({"images": [{"caption": f"第{i}章", "prompt": f"chapter-{i} 独立画面"} for i in range(1, 8)]})
         calls = []
-        async def generate(job, prompt, **options):
+        async def generate(job, prompt, on_attempt=None, **options):
             calls.append(options["slot_id"])
             if len(calls) == 3:
                 raise RuntimeError("暂时失败")

@@ -7,6 +7,7 @@ from pathlib import Path
 import re
 import threading
 import uuid
+from typing import Literal
 
 import jieba
 from rank_bm25 import BM25Plus
@@ -44,6 +45,9 @@ class Resource(BaseModel):
     transport: str = "streamable_http"
     enabled: bool = True
     allowed_tools: list[str] = Field(default_factory=list, max_length=100)
+    memory_type: Literal["reference", "constraint", "decision"] = "reference"
+    pinned: bool = False
+    expected_revision: int | None = Field(default=None, ge=1)
 
     @field_validator("name")
     @classmethod
@@ -80,11 +84,8 @@ class PlatformStore:
             raise HTTPException(500, "平台资源文件无法读取，原文件已保留。") from error
 
     def save(self, data):
-        self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        temp = self.path.with_suffix(".tmp")
-        temp.write_text(json.dumps(data, ensure_ascii=False, indent=2))
-        temp.chmod(0o600)
-        temp.replace(self.path)
+        from .execution_store import save_json
+        save_json(self.path, data)
 
     def list(self, kind, archived=False, project_id=None, scope="all"):
         self.check_kind(kind)
@@ -120,9 +121,13 @@ class PlatformStore:
     def put(self, kind, resource, identifier=None, metadata=None):
         self.check_kind(kind)
         validated = validate_resource(kind, resource)
+        expected_revision = validated.pop("expected_revision", None)
+        validated["expected_revision"] = None
         with self.lock:
             data = self.read()
             existing = self.get(kind, identifier) if identifier else None
+            if expected_revision is not None and (not existing or expected_revision != existing.get("revision", 1)):
+                raise HTTPException(409, "记忆已在其他窗口更新；请刷新并核对后保存，原内容未被覆盖")
             identifier = existing["id"] if existing else str(uuid.uuid4())
             item = {**validated, "id": identifier, "created_at": existing["created_at"] if existing else timestamp(),
                     "updated_at": timestamp(), "archived": False}
@@ -133,6 +138,12 @@ class PlatformStore:
             if kind == "knowledge":
                 item["sha256"] = hashlib.sha256(item["content"].encode()).hexdigest()
                 item["chunks"] = chunks(item["content"])
+            if kind == "memories":
+                from .project_memory import memory_version, validate_pinned_budget
+                item["revision"] = existing.get("revision", 1) + 1 if existing else 1
+                item["versions"] = copy.deepcopy(existing.get("versions") or [memory_version(existing)]) if existing else []
+                item["versions"].append(memory_version(item))
+                validate_pinned_budget(data[kind], item)
             data[kind][identifier] = item
             self.save(data)
             return copy.deepcopy(item)
@@ -141,7 +152,15 @@ class PlatformStore:
         with self.lock:
             item = self.get(kind, identifier, allow_archived=True)
             data = self.read()
+            if kind == 'memories' and not item.get('versions'):
+                from .project_memory import memory_version
+                item['versions']=[memory_version(item)]
             item.update(archived=archived, updated_at=timestamp())
+            if kind == "memories":
+                from .project_memory import memory_version, validate_pinned_budget
+                item["revision"] = item.get("revision", 1) + 1
+                item.setdefault("versions", []).append(memory_version(item))
+                validate_pinned_budget(data[kind], item)
             data[kind][item["id"]] = item
             self.save(data)
             return {"id": item["id"], "archived": archived, "recoverable": True}
@@ -153,6 +172,7 @@ class PlatformStore:
             imported, skipped, mapping = 0, 0, {}
             prepared = []
             for kind, body, old_id in validated:
+                body=validate_resource(kind,body)
                 identifier = str(uuid.UUID(old_id)) if old_id else str(uuid.uuid4())
                 existing = data[kind].get(identifier)
                 same = next((item for item in data[kind].values() if item["name"] == body["name"] and item["content"] == body["content"] and item.get("project_id") == body.get("project_id")), None)
@@ -176,6 +196,11 @@ class PlatformStore:
                         "provenance": {"source": "data_import", "original_id": old_id}}
                 if kind == "knowledge":
                     item.update(sha256=hashlib.sha256(item["content"].encode()).hexdigest(), chunks=chunks(item["content"]))
+                if kind == 'memories':
+                    from .project_memory import memory_version, validate_pinned_budget
+                    item['revision']=1
+                    item['versions']=[memory_version(item)]
+                    validate_pinned_budget(data[kind],item)
                 data[kind][identifier] = item
                 imported += 1
             self.save(data)
@@ -217,6 +242,8 @@ def validate_resource(kind, value):
     item = Resource.model_validate(value).model_dump(mode="json")
     if kind in {"knowledge", "memories", "prompts"} and not item["content"].strip():
         raise HTTPException(422, "请填写内容")
+    if item["pinned"] and (kind != "memories" or not item["project_id"] or item["memory_type"] == "reference"):
+        raise HTTPException(422, "只有项目的约束或已确认决策可以固定为自动使用的记忆")
     if kind == "agents" and (not item["role"].strip() or not item["goal"].strip() or not item["model"]):
         raise HTTPException(422, "智能体需要角色、目标与模型")
     if not set(item["tools"]) <= TOOL_IDS:

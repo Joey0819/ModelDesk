@@ -97,13 +97,13 @@ class FeishuController:
             if state == "event":
                 self.status["last_event_at"] = now()
                 continue
-            reasons = {"connected": "飞书长连接在线，等待白名单聊天中的 /modeldesk 指令", "connecting": "正在连接或重连飞书",
+            reasons = {"connected": "飞书长连接在线，等待已绑定会话中的任务或控制消息", "connecting": "正在连接或重连飞书",
                        "error": "飞书连接失败，请检查应用凭据、网络及长连接配置"}
             self.status.update(state=state, reason=reasons[state])
             if state == "connected":
                 self.status["last_connected_at"] = now()
         if self.worker is worker:
-            self.status.update(state="error", reason="飞书长连接已退出；请检查设置并重新保存启用")
+            self.status.update(state="reconnecting", reason="飞书长连接已退出，正在等待自动重连；已有任务和消息回执保留")
 
     async def shutdown(self):
         task, self.task = self.task, None
@@ -115,6 +115,7 @@ class FeishuController:
     async def loop(self):
         while True:
             try:
+                await self.ensure_worker()
                 await self.tick()
             except asyncio.CancelledError:
                 raise
@@ -122,13 +123,37 @@ class FeishuController:
                 self.status.update(state="error", reason="飞书本地记录暂时无法处理，请检查设置")
             await asyncio.sleep(2)
 
+    async def ensure_worker(self):
+        if self.worker and self.worker.returncode is None:
+            return
+        async with self.config_lock:
+            config = self.store.config()
+            if not config["enabled"] or not config["app_id"] or not config["app_secret"]:
+                return
+            from .feishu_supervision import reserve
+            reservation = reserve(self.store.directory, config["revision"])
+            self.status.update(restart_attempts=reservation["attempts"], next_restart_at=reservation["next_at"])
+            if not reservation["allowed"]:
+                self.status.update(state="reconnecting", reason="飞书接收进程已退出，正在等待自动重连；已有任务与收发回执保留")
+                return
+            try:
+                await self.restart_worker()
+            except Exception:
+                self.status.update(state="error", reason="飞书接收进程暂未恢复，将按退避间隔重试；不会重复派发或发送已保留的消息")
+
     async def tick(self):
         async with self.lock:
-            for record in self.store.events(["received", "dispatching", "monitoring", "attention"]):
+            for record in self.store.events(["received", "dispatching", "monitoring", "attention", "rejected"]):
+                if record['state'] == 'rejected' and 'rejected' in record['notifications']:
+                    continue
                 if not self.store.current(record):
                     self.store.update(record, state="needs_attention", reason="飞书应用或绑定配置已改变；历史任务不会向新配置自动回传")
                     continue
                 try:
+                    if record['state'] == 'rejected':
+                        await self.reply_once(record, 'rejected', record['reason'])
+                        self.store.update(record, notifications=[*record['notifications'], 'rejected'])
+                        continue
                     if record["state"] in {"received", "dispatching"}:
                         await self.accept(record)
                     if record["state"] in {"monitoring", "attention"}:
@@ -151,8 +176,10 @@ class FeishuController:
             await self.reply_once(record, "status", text)
             self.store.update(record, state="delivered", reason="状态已回传")
             return
-        if command.startswith(("cancel ", "停止 ")):
-            target = command.split(" ", 1)[1].strip()
+        parts = command.split(maxsplit=1)
+        action, prompt = (parts + ['', ''])[:2]
+        if action in {'cancel', '停止'} and prompt:
+            target = prompt.strip()
             job = self.jobs.jobs.get(target)
             if not job or not self.belongs(job, record):
                 await self.reply_once(record, "cancel", "当前飞书聊天没有此任务，请使用 /modeldesk status 查看任务 ID。")
@@ -161,9 +188,10 @@ class FeishuController:
                 await self.reply_once(record, "cancel", "已停止任务 " + target + "；已有成果保留。")
             self.store.update(record, state="delivered", reason="停止指令已处理")
             return
-        action, _, prompt = command.partition(" ")
         if action not in {"task", "continue"} or not prompt.strip():
-            await self.reply_once(record, "usage", "使用方法：\n/modeldesk task 完整任务（新任务）\n/modeldesk continue 修改要求（使用绑定群的共享上下文）\n/modeldesk status\n/modeldesk cancel 完整任务ID")
+            direct_help = ('此会话已开启直接派发：直接描述需求即可开始新任务；用“继续：修改要求”接着上次任务。\n'
+                           if record['binding'].get('natural_language_tasks') else '')
+            await self.reply_once(record, "usage", direct_help + "使用方法：\n/modeldesk task 完整任务（新任务）\n/modeldesk continue 修改要求（使用绑定群的共享上下文）\n/modeldesk status\n/modeldesk cancel 完整任务ID")
             self.store.update(record, state="delivered", reason="已回传指令用法，没有创建任务")
             return
         job = self.jobs.jobs.get(record["job_id"])

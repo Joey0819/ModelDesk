@@ -14,14 +14,60 @@ def emit(state):
     print(json.dumps({"state": state}), flush=True)
 
 
+def message_text(message):
+    """Preserve textual rich posts from mobile paste; never drop attachments silently."""
+    try:
+        if not isinstance(message.content, str) or len(message.content) > 100000:
+            return '', 'message_too_large'
+        content = json.loads(message.content)
+        if not isinstance(content, dict):
+            return '', 'invalid_content'
+        if message.message_type == 'text':
+            text = content.get('text')
+            return (text, None) if isinstance(text, str) else ('', 'invalid_content')
+        if message.message_type != 'post':
+            return '', 'unsupported_content'
+        if 'content' not in content:
+            variants = [value for value in content.values() if isinstance(value, dict) and 'content' in value]
+            if len(variants) != 1:
+                return '', 'invalid_content'
+            content = variants[0]
+        lines = content.get('content')
+        if not isinstance(lines, list) or not isinstance(content.get('title', ''), str):
+            return '', 'invalid_content'
+        result = [content['title']] if content.get('title') else []
+        unsupported = False
+        for line in lines:
+            if not isinstance(line, list):
+                return '', 'invalid_content'
+            pieces = []
+            for item in line:
+                if not isinstance(item, dict):
+                    return '', 'invalid_content'
+                tag = item.get('tag')
+                if tag in {'text', 'md'} and isinstance(item.get('text'), str):
+                    pieces.append(item['text'])
+                elif tag == 'a' and isinstance(item.get('text'), str) and isinstance(item.get('href'), str):
+                    pieces.append(item['text'] if item['text'] == item['href'] else item['text'] + ' (' + item['href'] + ')')
+                elif tag == 'at' and isinstance(item.get('user_id'), str):
+                    # The authenticated mentions list supplies the only bot identity.
+                    mention = next((m for m in message.mentions or [] if getattr(getattr(m, 'id', None), 'open_id', None) == item['user_id']), None)
+                    pieces.append(getattr(mention, 'key', None) or '@' + (item.get('user_name') or item['user_id']))
+                else:
+                    unsupported = True
+            result.append(''.join(pieces))
+        return '\n'.join(result), 'unsupported_content' if unsupported else None
+    except (ValueError, TypeError, AttributeError):
+        return '', 'invalid_content'
+
+
 def normalize_event(data, app_id, bot_open_id):
     event = data.event
     message, sender = event.message, event.sender
     header_app = getattr(getattr(data, "header", None), "app_id", None)
     if header_app and header_app != app_id:
         return None
-    content = json.loads(message.content) if message.message_type == "text" else {}
-    text = content.get("text", "")
+    text, input_error = message_text(message)
     # Feishu's group mentions use placeholders; remove only actual mention
     # keys supplied by this authenticated event, rather than arbitrary text.
     bot_mentioned = False
@@ -38,7 +84,7 @@ def normalize_event(data, app_id, bot_open_id):
         return None
     return {"app_id": app_id, "message_id": message.message_id, "chat_id": message.chat_id,
             "create_time": message.create_time,
-            "chat_type": message.chat_type, "message_type": message.message_type, "text": text,
+            "chat_type": message.chat_type, "message_type": message.message_type, "text": text, "input_error": input_error,
             "sender_type": sender.sender_type, "sender_id": sender.sender_id.open_id}
 
 

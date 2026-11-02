@@ -123,6 +123,8 @@ def execution_evidence(steps, output_limit=5000):
             entry['platform_render']['asset_ids'] = [asset['id'] for asset in rendered.get('assets', [])]
         if step.get('skill_application'):
             entry['skill_application'] = step['skill_application']
+        if step.get('patch_evidence'):
+            entry['patch_evidence'] = step['patch_evidence']
         items.append(entry)
     return items
 

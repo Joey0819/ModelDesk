@@ -153,7 +153,7 @@ def _context_material(job):
     from .memory_context import memory_source, pack_context
     sources = []
     # Explicitly selected memory has priority over automatic retrieval.
-    selected = set()
+    selected = {item["id"] for item in (job.get("project_memory") or {}).get("entries", [])}
     for identifier in job.get("memory_ids") or []:
         item = store.get("memories", identifier)
         if item.get("project_id") not in {None, job.get("project_id")}:
@@ -184,7 +184,10 @@ def _context_material(job):
                     "name": item["path"], "project_id": job["project_id"], "snapshot_id": snapshot["id"],
                     "digest": snapshot["digest"], "coverage": snapshot["coverage"],
                     "start_line": current["start_line"], "end_line": current["end_line"]}})
-    return pack_context(sources)
+    from .project_memory import render
+    pinned_text, pinned_refs = render(job.get("project_memory"), job.get("project_id"))
+    text, refs, truncated = pack_context(sources)
+    return "\n\n".join(part for part in [pinned_text, text] if part), pinned_refs + refs, truncated
 
 
 def remember_result(job):

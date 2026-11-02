@@ -30,6 +30,7 @@ def build_brief(context, *, goal=None, requirements=None):
              "artifact_ref": {key: latest.get(key) for key in ["job_id", "title", "status", "content_sha256"]} if latest else None,
              "baseline_ref": {key: baseline.get(key) for key in ["job_id", "title", "status", "content_sha256"]} if baseline else None,
              "document_preferences": copy.deepcopy(context.get("document_preferences", {})),
+             "project_memory": copy.deepcopy(context.get("project_memory")),
              "requirements": copy.deepcopy(requirements or []), "requirements_origin": "planner_interpretation",
              "precedence": "later_user_revision_over_conflicts_keep_unmodified_originals"}
     # Full text already exists in requests. The summary endpoint can expose it

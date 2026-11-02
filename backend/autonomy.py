@@ -1,7 +1,8 @@
 """Bounded, durable supervision of an existing group delivery, not another executor.
 
-The job record is the single source of truth. Only pure model work and local
-assembly can continue automatically; uncertain external dispatch is never replayed.
+The job record is the single source of truth. Continue pure model work, verified
+result collection, and originally authorized dependent steps proven never sent.
+Uncertain external dispatch is never replayed.
 """
 
 import asyncio
@@ -79,8 +80,8 @@ def continuation_blocker(job):
     if workflow.get("resume_count", MAX_RESUMES) >= MAX_RESUMES or workflow.get("elapsed_seconds", run_budget(delivery)) >= run_budget(delivery):
         return "本轮继续次数或执行时间预算已用完，请检查现有成果"
     unfinished = [step for step in steps if step.get("status") != "complete"]
-    from .operation_recovery import completed_operation
-    if any(step.get("kind") != "model" and not completed_operation(job, step) for step in unfinished):
+    from .operation_recovery import completed_operation, unstarted_operation
+    if any(step.get("kind") != "model" and not (completed_operation(job, step) or unstarted_operation(job,step)) for step in unfinished):
         return "尚有原生 Agent、绘图或 MCP 步骤未确认完成；需要检查执行结果，后台不会重复派发"
     if unfinished and job.get("tools"):
         return "未完成的模型步骤启用了工具，可能已产生外部操作；请检查后手动继续"
@@ -90,7 +91,11 @@ def continuation_blocker(job):
         return None
     # Missing runtime evidence cannot be manufactured by another text response.
     requirements = {entry["id"]: entry for entry in delivery.get("task_spec", {}).get("requirements", [])}
-    for check in actual_checks(job, delivery):
+    # Verified child results can contain files not yet copied into the parent.
+    # Collection and final checks run during continuation; absence in the old
+    # parent manifest must not prevent that first collection from happening.
+    pending_external = any(step.get("kind") != "model" for step in unfinished)
+    for check in ([] if pending_external else actual_checks(job, delivery)):
         if check.get("met") is not True and requirements.get(check["requirement_id"], {}).get("kind") in {"image", "video", "code", "tests"}:
             return "缺少可验证的实际文件或执行证据：" + check["reason"]
     if not unfinished:
@@ -181,6 +186,12 @@ class AutonomySupervisor:
             self.set_state(job, "needs_attention", str(error.detail))
             return
         from .operation_recovery import resume_confirmed_observation
+        from .mcp_observation import observe_pending
+        mcp_observation = await observe_pending(job)
+        if mcp_observation:
+            self.jobs.save(job)
+            self.set_state(job, mcp_observation["state"], mcp_observation["reason"])
+            return
         observation = await resume_confirmed_observation(job)
         if observation:
             self.set_state(job, "running", "正在找回 Muse 原会话的结果；只继续观察，不重新发送创作任务")

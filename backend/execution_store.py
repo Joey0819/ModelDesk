@@ -15,6 +15,13 @@ def save_checkpoint(directory, identifier, value):
     directory = Path(directory)
     identifier = str(UUID(identifier))
     target = directory / (identifier + ".json")
+    save_json(target, value)
+
+
+def save_json(target, value):
+    """Atomic durable JSON for both execution receipts and versioned resources."""
+    target = Path(target)
+    directory = target.parent
     if directory.is_symlink() or target.is_symlink():
         raise ValueError("执行记录路径无效")
     directory.mkdir(parents=True, exist_ok=True, mode=0o700)

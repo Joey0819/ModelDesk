@@ -30,6 +30,7 @@ class Binding(BaseModel):
     room_id: uuid.UUID
     allowed_sender_ids: list[str] = Field(default_factory=list, max_length=100)
     allow_native: bool = False
+    natural_language_tasks: bool = False
 
     @field_validator("allowed_sender_ids")
     @classmethod
@@ -160,19 +161,40 @@ class FeishuStore:
         except (KeyError, TypeError, ValueError, OverflowError, OSError):
             return None
         stamp = now()
-        observed = {"chat_id": chat_id, "chat_type": event.get("chat_type", ""), "last_sender_id": sender, "last_seen_at": stamp}
-        with self.db() as db:
-            db.execute("INSERT OR REPLACE INTO observed VALUES (?, ?, ?)", (config["app_id"] + ":" + chat_id, config["app_id"], json.dumps(observed)))
+        observed = {"chat_id": chat_id, "chat_type": event.get("chat_type", ""), "last_sender_id": sender, "last_seen_at": stamp,
+                    "last_message_type": str(event.get('message_type', ''))[:30]}
+        def observe(outcome, reason):
+            # Only routing diagnostics, never the content of ignored or unbound messages.
+            observed.update(last_outcome=outcome, last_reason=reason)
+            with self.db() as db:
+                db.execute("INSERT OR REPLACE INTO observed VALUES (?, ?, ?)", (config["app_id"] + ":" + chat_id, config["app_id"], json.dumps(observed)))
         binding = next((item for item in config["bindings"] if item["chat_id"] == chat_id), None)
-        if not binding or (binding["allowed_sender_ids"] and sender not in binding["allowed_sender_ids"]):
+        if not binding:
+            observe('unbound', '消息已收到；此会话尚未绑定项目群，没有派发任务。')
+            return None
+        if binding["allowed_sender_ids"] and sender not in binding["allowed_sender_ids"]:
+            observe('sender_not_allowed', '消息已收到；发起人不在此会话的允许名单中，没有派发任务。')
             return None
         text = event.get("text")
-        if event.get("message_type") != "text" or not isinstance(text, str):
+        if event.get("message_type") not in {"text", "post"} or not isinstance(text, str):
+            observe('unsupported_content', '消息已收到；请使用文字或文字富文本发送 /modeldesk 指令。')
             return None
         text = re.sub(r"<at\b[^>]*>.*?</at>", "", text).strip()
-        if not (text == "/modeldesk" or text.startswith("/modeldesk ")):
+        prefix = re.match(r'^[/／]modeldesk(?:\s+|$)', text, flags=re.IGNORECASE)
+        direct = bool(binding.get('natural_language_tasks'))
+        if not prefix and not direct:
+            observe('not_command', '消息已收到；未识别到 /modeldesk 指令，没有派发任务。请使用 /modeldesk task 任务内容。')
             return None
-        command = text[len("/modeldesk"):].strip()
+        if prefix:
+            command = text[prefix.end():].strip()
+        elif not text or text.startswith(('/', '／')) or text.casefold() in {'你好', '您好', 'hi', 'hello', '帮助', 'help'}:
+            command = ''  # A greeting or unknown slash command shows help, never runs a task.
+        elif text.casefold() in {'status', '状态'}:
+            command = 'status'
+        else:
+            continuation = re.match(r'^(?:继续|continue)[：:\s]+(.+)$', text, flags=re.IGNORECASE | re.DOTALL)
+            command = 'continue ' + continuation[1] if continuation else 'task ' + text
+        observe('command_received', '已识别任务或控制消息；执行与回传情况见最近收发记录。')
         identifier = str(uuid.uuid5(uuid.NAMESPACE_URL, "modeldesk:feishu:" + config["app_id"] + ":" + message_id))
         with self.db() as db:
             db.execute("BEGIN IMMEDIATE")
@@ -182,8 +204,11 @@ class FeishuStore:
             since = (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat()
             rate = db.execute("SELECT count(*) FROM events WHERE app_id=? AND chat_id=? AND created_at>?", (config["app_id"], chat_id, since)).fetchone()[0]
             reason = "" if len(command) <= 12000 and pending < 32 and rate < 10 else "消息过长、请求过快或后台队列已满，请稍后在本机检查"
+            if event.get('input_error'):
+                reason = '此指令含暂不支持的消息内容，未派发任务。请发送纯文字或文字富文本；图片和附件请先添加到 ModelDesk 项目。'
             record = {"id": identifier, "app_id": config["app_id"], "message_id": message_id, "chat_id": chat_id,
                       "sender_id": sender, "command": command[:12000], "binding": binding, "config_revision": config["revision"],
+                      "input_mode": "command" if prefix else "natural_language",
                       "job_id": str(uuid.uuid5(uuid.NAMESPACE_URL, "modeldesk:feishu-job:" + identifier)),
                       "state": "rejected" if reason else "received", "reason": reason, "created_at": stamp, "updated_at": stamp,
                       "notifications": []}

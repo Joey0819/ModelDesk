@@ -39,7 +39,7 @@ export function MusePermissionRecovery({ probe, bridge = globalThis.modelDesk, r
   </section>;
 }
 
-export function MuseTaskCard({ task: rawTask, projectId, roomId, busy, onCancel, onObserve, onRefreshMedia, onUseReply }) {
+export function MuseTaskCard({ task: rawTask, projectId, roomId, busy, onCancel, onObserve, onResumeDraft, onRefreshMedia, onUseReply }) {
   const task = normalizeMuseSource(rawTask);
   const threadUrl = safeMuseThreadUrl(task.thread_url);
   const usable = canUseMuseReply(task, projectId, roomId);
@@ -49,6 +49,7 @@ export function MuseTaskCard({ task: rawTask, projectId, roomId, busy, onCancel,
     <details className="muse-task-prompt"><summary>{task.prompt?.slice(0, 100) || '交给 Muse 的任务'}</summary><Markdown>{task.prompt || ''}</Markdown><CopyTextButton text={task.prompt || ''} label="复制 Muse 任务" /></details>
     {task.skill_application && <details className="muse-task-prompt"><summary>本次 Skills · {task.skill_application.skills.map((skill) => skill.name).join('、')} · {task.sent === true ? '已随任务发送' : '已准备，尚未确认送达'}</summary><p>{task.skill_application.mode === 'adapted_guidance' ? `由 ${task.skill_application.prepared_by} 整理为 Muse 创作指引` : '按角色传递技能指令'}。使用 Muse 自身能力；未安装原生插件。</p>{task.skill_application.skills.map((skill) => <p key={skill.id}>{skill.name} · 版本 {(skill.revision || skill.sha256).slice(0, 12)}</p>)}<Markdown>{task.skill_application.guidance || ''}</Markdown><CopyTextButton text={task.skill_application.guidance || ''} label="复制本次 Skill 指引" /></details>}
     {task.error && <p className="output-error" role="status">{task.error}</p>}
+    {onResumeDraft && task.status === 'error' && task.sent === false && task.uncertain === false && task.native_error_code === 'draft_content_mismatch' && <button type="button" className="subtle-button" disabled={busy} onClick={() => onResumeDraft(task)}>核对并恢复未发送的原草稿</button>}
     {videoUrl && (
       <div className="muse-video-card" aria-label="Muse 已回传视频">
         <div className="muse-video-header">
@@ -137,7 +138,7 @@ export default function MuseDesktopPanel({ projectId, roomId, onUseReply }) {
       {REMOTE_CLIENT && <p className="mission-form-note">Muse 原生窗口操作需要在 Mac 端派发。</p>}
       {(readError || actionError) && <p className="output-error" role="alert">{actionError || readError}{readError && <button type="button" className="subtle-button" onClick={refresh}>重新读取</button>}</p>}
       {tasks.length > 0 && <label className="muse-task-picker"><span>本群 Muse 任务</span><select aria-label="查看 Muse 任务" value={taskId || ''} onChange={(event) => setTaskId(event.target.value)}>{taskId && !task && <option value={taskId}>所选任务暂不可用</option>}{tasks.map((item) => <option key={item.id} value={item.id}>{MUSE_STATUS[item.status] || item.status} · {item.prompt?.slice(0, 60)} · {dateLabel(item.created_at)}</option>)}</select></label>}
-      {task && <MuseTaskCard task={task} projectId={projectId} roomId={roomId} busy={busy} onCancel={(selected) => mutateTask(selected, museApi.cancel)} onObserve={(selected) => mutateTask(selected, museApi.observe)} onRefreshMedia={(selected) => mutateTask(selected, museApi.refreshMedia)} onUseReply={useReply} />}
+      {task && <MuseTaskCard task={task} projectId={projectId} roomId={roomId} busy={busy} onCancel={(selected) => mutateTask(selected, museApi.cancel)} onObserve={(selected) => mutateTask(selected, museApi.observe)} onResumeDraft={(selected) => mutateTask(selected, museApi.resumeDraft)} onRefreshMedia={(selected) => mutateTask(selected, museApi.refreshMedia)} onUseReply={useReply} />}
     </div>
   </details>;
 }

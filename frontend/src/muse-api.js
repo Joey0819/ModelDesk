@@ -19,5 +19,6 @@ export const museApi = {
   cancel: (id, projectId) => request(`/tasks/${encodeURIComponent(id)}/cancel?${scope(projectId)}`, 'POST'),
   refreshMedia: (id, projectId) => request(`/tasks/${encodeURIComponent(id)}/refresh-media?${scope(projectId)}`, 'POST'),
   observe: (id, projectId) => request(`/tasks/${encodeURIComponent(id)}/observe?${scope(projectId)}`, 'POST'),
+  resumeDraft: (id, projectId) => request(`/tasks/${encodeURIComponent(id)}/resume-draft?${scope(projectId)}`, 'POST'),
   exportUrl: (id, projectId, format = 'md') => `${API_BASE}/api/muse/tasks/${encodeURIComponent(id)}/export?${scope(projectId, { format })}`,
 };

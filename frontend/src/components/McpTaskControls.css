@@ -1,0 +1,9 @@
+.mcp-task-controls { padding: 16px 0; border-top: 1px solid var(--border, #dfe4ee); overflow-wrap: anywhere; }
+.mcp-task-controls > header { display: flex; flex-wrap: wrap; gap: 16px; justify-content: space-between; }
+.mcp-task-controls small { display: block; color: var(--muted, #65748b); line-height: 1.6; }
+.mcp-task-input { margin: 18px 0; padding: 16px; background: var(--surface-subtle, #f6f8fb); border-radius: 8px; }
+.mcp-task-input label { display: flex; flex-direction: column; gap: 6px; margin: 14px 0; }
+.mcp-task-input input, .mcp-task-input select { padding: 9px 12px; color: inherit; background: var(--surface, white); border: 1px solid var(--border, #dfe4ee); border-radius: 6px; max-width: 100%; }
+.mcp-task-actions { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 16px; }
+.mcp-task-actions button { padding: 8px 12px; color: inherit; background: var(--surface, white); border: 1px solid var(--border, #dfe4ee); border-radius: 6px; cursor: pointer; }
+.mcp-task-controls [role=alert] { color: #a43b50; }

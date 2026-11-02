@@ -181,6 +181,27 @@ class ImageProviderTests(unittest.IsolatedAsyncioTestCase):
                 await media.generate_image({"id": "job"}, "Draw", provider="openai")
             request.assert_not_awaited()
 
+    async def test_temporary_http_failure_retries_once_same_model_and_records_attempts(self):
+        entry = candidate('gpt-image-fixture', 'openai')
+        wire = httpx.Request('POST', 'https://api.example/v1/images/generations')
+        failure = httpx.HTTPStatusError('private body', request=wire, response=httpx.Response(503, request=wire))
+        request = AsyncMock(side_effect=[failure, {'data': [{'b64_json': B64}]}])
+        events = []
+        with patch.object(media, 'capabilities', AsyncMock(return_value=[entry])), patch.object(media, '_request', request), patch.object(media.asyncio, 'sleep', AsyncMock()):
+            await media.generate_image({'id':'job'}, 'Draw', model=entry['id'], on_attempt=events.append)
+        self.assertEqual(request.await_count, 2)
+        self.assertEqual([event['state'] for event in events], ['dispatching','rejected','dispatching','received'])
+        self.assertEqual({event['model'] for event in events}, {entry['id']})
+        self.assertNotIn('private body', str(events))
+
+    async def test_image_response_timeout_is_not_retried(self):
+        entry = candidate('gpt-image-fixture', 'openai')
+        request = AsyncMock(side_effect=httpx.ReadTimeout('private details'))
+        with patch.object(media, 'capabilities', AsyncMock(return_value=[entry])), patch.object(media, '_request', request):
+            with self.assertRaisesRegex(media.MediaProviderError, '超时'):
+                await media.generate_image({'id':'job'}, 'Draw', model=entry['id'])
+        self.assertEqual(request.await_count, 1)
+
     async def test_auto_text_only_gemini_falls_back_to_openai_real_saved_image(self):
         from PIL import Image
         content = io.BytesIO()

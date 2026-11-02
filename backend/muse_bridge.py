@@ -58,29 +58,36 @@ NATIVE_FAILURES = {
 }
 
 
+def draft_diagnostics(raw):
+    if not isinstance(raw, dict):
+        return {}
+    checked = {}
+    for key in ["clipboard_changed", "request_marker_present", "text_matches", "new_thread", "app_focused", "window_focused",
+                "frontmost_is_muse", "activation_requested", "busy", "waiting_user", "composer_found", "composer_focused",
+                "request_marker_found", "expected_payload_found", "outer_whitespace_only"]:
+        if type(raw.get(key)) is bool:
+            checked[key] = raw[key]
+    for key, limit in [("attempts", 6), ("expected_characters", 32000), ("copied_characters", 32000),
+                       ("nbsp_substitutions", 32000), ("linebreak_substitutions", 32000),
+                       ("quote_substitutions", 32000), ("other_substitutions", 32000)]:
+        if type(raw.get(key)) is int and 0 <= raw[key] <= limit:
+            checked[key] = raw[key]
+    for key in ["expected_sha256", "copied_sha256"]:
+        if isinstance(raw.get(key), str) and re.fullmatch(r"[a-f0-9]{64}", raw[key]):
+            checked[key] = raw[key]
+    if raw.get("focused_role") in {"AXTextArea", "AXTextField", "AXComboBox", "AXGroup", "AXWebArea", "AXButton", "AXWindow", "other", "unavailable"}:
+        checked["focused_role"] = raw["focused_role"]
+    return checked
+
+
 def native_failure(result):
     code = result.get("error") if isinstance(result, dict) else None
     if not isinstance(code, str) or code not in NATIVE_FAILURES:
         return "", {}
     diagnostic = {"native_error_code": code}
-    raw = result.get("draft_verification")
-    if code.startswith("draft_") and isinstance(raw, dict):
-        checked = {}
-        for key in ["clipboard_changed", "request_marker_present", "text_matches", "new_thread", "app_focused", "window_focused",
-                    "frontmost_is_muse", "activation_requested", "busy", "waiting_user", "composer_found", "composer_focused",
-                    "request_marker_found", "expected_payload_found", "outer_whitespace_only"]:
-            if type(raw.get(key)) is bool:
-                checked[key] = raw[key]
-        for key, limit in [("attempts", 6), ("expected_characters", 32000), ("copied_characters", 32000)]:
-            if type(raw.get(key)) is int and 0 <= raw[key] <= limit:
-                checked[key] = raw[key]
-        for key in ["expected_sha256", "copied_sha256"]:
-            if isinstance(raw.get(key), str) and re.fullmatch(r"[a-f0-9]{64}", raw[key]):
-                checked[key] = raw[key]
-        if raw.get("focused_role") in {"AXTextArea", "AXTextField", "AXComboBox", "AXGroup", "AXWebArea", "AXButton", "AXWindow", "other", "unavailable"}:
-            checked["focused_role"] = raw["focused_role"]
-        if checked:
-            diagnostic["draft_verification"] = checked
+    checked = draft_diagnostics(result.get("draft_verification")) if code.startswith("draft_") else {}
+    if checked:
+        diagnostic["draft_verification"] = checked
     return " " + NATIVE_FAILURES[code], diagnostic
 
 
@@ -423,7 +430,7 @@ class MuseManager:
                 continue
 
     async def helper_call(self, command, payload=None):
-        if command not in {"probe", "submit", "observe", "check_draft"}:
+        if command not in {"probe", "submit", "observe", "check_draft", "resume_draft"}:
             raise ValueError("unsupported helper command")
         async with self.helper_lock:
             if not self.helper.is_file() or self.helper.is_symlink():
@@ -432,7 +439,7 @@ class MuseManager:
                 str(self.helper), command, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
                 env={key: os.environ[key] for key in ["HOME", "PATH", "LANG", "TMPDIR"] if key in os.environ})
             try:
-                timeout = (90 if (payload or {}).get("attachment_names") else 30) if command == "submit" else 120 if (payload or {}).get("download_directory") else 20
+                timeout = (90 if (payload or {}).get("attachment_names") else 30) if command in {"submit", "resume_draft"} else 120 if (payload or {}).get("download_directory") else 20
                 output, _ = await asyncio.wait_for(process.communicate(json.dumps(payload or {}, ensure_ascii=False).encode()), timeout=timeout)
                 if process.returncode != 0 or len(output) > 1500000:
                     raise RuntimeError("Muse 原生桥接未返回有效结果，请查看 Muse 窗口。")
@@ -561,9 +568,9 @@ class MuseManager:
         self.tasks[identifier] = asyncio.create_task(self.execute(task))
         return copy.deepcopy(task)
 
-    async def execute(self, task, *, observe_only=False):
+    async def execute(self, task, *, observe_only=False, resume_draft=False):
         try:
-            if not observe_only and task.get('_skill_snapshots'):
+            if not observe_only and not resume_draft and task.get('_skill_snapshots'):
                 from .native_skills import prepare_native_skills
                 self.validate_member(task)
                 self.save(task, 'skill_guidance_preparing')
@@ -593,15 +600,21 @@ class MuseManager:
                     task.update(status="dispatching", sent=None, uncertain=True, remote_state="unknown")
                     self.save(task, "dispatch_started")
                     submit_payload = {"prompt": prepared_prompt, "request_id": task["request_id"], "thread_url": None}
+                    if resume_draft:
+                        submit_payload['draft_sha256'] = task['_resume_draft_sha256']
                     if task.get('_reference_names'):
                         folder, descriptor = native_stage(task['id'])
                         os.close(descriptor)
                         submit_payload.update(download_directory=str(folder), attachment_names=task['_reference_names'])
-                    receipt = await self.task_helper_call(task, "submit", submit_payload)
+                    receipt = await self.task_helper_call(task, "resume_draft" if resume_draft else "submit", submit_payload)
                     if receipt.get("request_id") != task["request_id"]:
                         raise RuntimeError("Muse 发送回执与当前任务不匹配；请在 Muse 核对，不能自动重发。")
                     if receipt.get("sent") is True and valid_thread(receipt.get("thread_url")):
                         task.update(sent=True, thread_url=receipt["thread_url"], submitted_at=now(), remote_state="submitted")
+                        task.pop('native_error_code', None)
+                        task.pop('draft_verification', None)
+                        if receipt.get('draft_verification', {}).get('text_matches') is True:
+                            task['draft_verification'] = draft_diagnostics(receipt['draft_verification'])
                     if not receipt.get("ok") or task["sent"] is not True:
                         confirmed_unsent = receipt.get("sent") is False and receipt.get("uncertain") is False
                         detail, diagnostic = native_failure(receipt)
@@ -717,6 +730,21 @@ class MuseManager:
         self.tasks[task["id"]] = asyncio.create_task(self.execute(task, observe_only=True))
         return copy.deepcopy(task)
 
+    async def resume_unsent_draft(self, identifier, project_id=None):
+        task = self.get(identifier, project_id)
+        self.validate_member(task)
+        diagnostic = task.get('draft_verification') or {}
+        if (task.get('status') != 'error' or task.get('sent') is not False or task.get('uncertain') is not False
+                or task.get('remote_state') != 'not_sent' or task.get('native_error_code') != 'draft_content_mismatch'
+                or diagnostic.get('request_marker_present') is not True or not re.fullmatch(r'[a-f0-9]{64}', str(diagnostic.get('copied_sha256','')))
+                or task['id'] in self.tasks or task.get('monitoring')):
+            raise HTTPException(409, '只可手动核对已确认未发送且仍保留原草稿指纹的任务；未知送达不会重发')
+        task.update(_resume_draft_sha256=diagnostic['copied_sha256'], draft_resume_attempts=task.get('draft_resume_attempts',0)+1,
+                    monitoring=True, status='queued', error=None, finished_at=None)
+        self.save(task, 'unsent_draft_resume_requested')
+        self.tasks[task['id']] = asyncio.create_task(self.execute(task, resume_draft=True))
+        return copy.deepcopy(task)
+
     async def cancel(self, identifier, project_id=None):
         task = self.get(identifier, project_id)
         if task["status"] == "complete" or not task.get("monitoring"):
@@ -778,6 +806,11 @@ async def resume_observing(identifier: str, project_id: str | None = None):
 @router.post('/tasks/{identifier}/refresh-media', dependencies=[Depends(local_mutation)])
 async def refresh_task_media(identifier: str, project_id: str | None = None):
     return public_task(await manager.refresh_media(identifier, project_id))
+
+
+@router.post('/tasks/{identifier}/resume-draft', status_code=202, dependencies=[Depends(local_mutation)])
+async def resume_unsent_draft(identifier: str, project_id: str | None = None):
+    return public_task(await manager.resume_unsent_draft(identifier, project_id))
 
 
 @router.get("/tasks/{identifier}/export")

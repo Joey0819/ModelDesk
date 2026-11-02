@@ -347,7 +347,7 @@ function ModelDeskWorkspace() {
     });
   }, []);
   const toggleArtifacts = useCallback(() => {
-    if (window.innerWidth <= 1400) { setArtifactsOpen(true); setMobileArtifactsOpen((current) => !current); return; }
+    if (window.innerWidth <= 1600) { setArtifactsOpen(true); setMobileArtifactsOpen((current) => !current); return; }
     setArtifactsOpen((current) => {
       const next = !current;
       localStorage.setItem('modeldesk.artifactsOpen', next ? 'on' : 'off');

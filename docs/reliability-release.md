@@ -40,7 +40,7 @@ No new external permissions, paid subscriptions, or public deployment are implie
 ## Interface direction
 
 Retain the existing white/navy surface, indigo actions, jade success states and
-system font. Below 1400px, conversation and result are separate reading views;
+system font. At 1600px and below, conversation and result are separate reading views;
 wide screens retain the adjustable split. Long original prompts remain expandable
 and copyable in full. Use dated status text and quiet dividers rather than more
 badges or configuration panels. Reuse the existing Agent and task-center entry

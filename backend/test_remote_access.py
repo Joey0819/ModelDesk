@@ -235,6 +235,27 @@ class GatewayTests(unittest.IsolatedAsyncioTestCase):
         finally:
             await self.app.state.upstream.aclose()
 
+    async def test_autonomy_actions_are_scoped_and_desktop_inbox_is_not_exposed(self):
+        await self.pair()
+        identifier = str(uuid.uuid4())
+        for action in ['read', 'pause']:
+            response = await self.client.post(f'/api/autonomy/tasks/{identifier}/{action}', headers={'Origin': ORIGIN})
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(self.calls[-1].headers['origin'], 'http://localhost:5173')
+            self.assertEqual(self.calls[-1].headers['x-modeldesk-remote'], 'phone')
+        before = len(self.calls)
+        self.assertEqual((await self.client.get('/api/autonomy/inbox')).status_code, 403)
+        self.assertEqual(len(self.calls), before)
+        self.assertEqual((await self.client.get('/api/autonomy/tasks')).status_code, 200)
+
+    async def test_feishu_credentials_and_channel_grants_are_local_only(self):
+        await self.pair()
+        for method, path in [('GET', '/api/feishu'), ('GET', '/api/feishu/chats'),
+                             ('PUT', '/api/feishu'), ('POST', '/api/feishu/test')]:
+            response = await self.client.request(method, path, headers={'Origin': ORIGIN})
+            self.assertEqual(response.status_code, 403, (method, path))
+        self.assertFalse(self.calls)
+
     async def test_native_sdk_execution_is_blocked_before_forwarding(self):
         await self.pair()
         for headers in [{"Origin": ORIGIN}, {"Origin": ORIGIN, "Content-Type": "application/json"}]:

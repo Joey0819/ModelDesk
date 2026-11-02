@@ -1,0 +1,32 @@
+.project-hub-bar .autonomy-center-trigger { margin-left: auto; display: inline-flex; align-items: center; gap: 6px; padding: 4px 8px; color: var(--accent); border: 1px solid var(--line); background: var(--shell-wash); border-radius: 7px; }
+.autonomy-center-trigger b { padding: 1px 5px; min-width: 10px; text-align: center; border-radius: 999px; background: var(--accent); color: white; font-size: 10px; }
+.autonomy-trigger-running { font-size: 10px; color: var(--muted); }
+.autonomy-center-dialog { padding: 0; width: min(620px, calc(100vw - 28px)); max-height: calc(100dvh - 40px); border: 1px solid var(--line); border-radius: 14px; color: var(--ink); background: var(--shell-paper); box-shadow: 0 24px 100px #18233333; }
+.autonomy-center-dialog::backdrop { background: #14203166; }
+.autonomy-center-dialog > header { display: flex; justify-content: space-between; align-items: center; gap: 15px; padding: 18px 20px 12px; border-bottom: 1px solid var(--line); }
+.autonomy-center-dialog > header strong { font-size: 16px; }
+.autonomy-center-dialog > header p { color: var(--muted); font-size: 11px; margin: 5px 0 0; }
+.autonomy-center-explanation { color: var(--muted); font-size: 11px; line-height: 1.7; margin: 12px 20px; }
+.autonomy-task-list { padding: 0 20px 20px; }
+.autonomy-task { padding: 14px 0; border-top: 1px solid var(--line); }
+.autonomy-task > header { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; }
+.autonomy-task > header > strong { flex: 1; min-width: 120px; font-size: 13px; overflow-wrap: anywhere; }
+.autonomy-state { color: var(--muted); font-size: 11px; padding: 3px 6px; border-radius: 5px; background: var(--shell-wash); }
+.autonomy-task-complete .autonomy-state { color: #3e7960; }
+.autonomy-task-needs_attention .autonomy-state { color: #b06935; }
+.autonomy-unread { font-size: 10px; color: var(--accent); }
+.autonomy-task > p { font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; margin: 8px 0 0; white-space: pre-wrap; }
+.autonomy-task-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; font-size: 10px; color: var(--muted); margin-top: 8px; }
+.autonomy-task-actions { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 11px; }
+.autonomy-task-note { color: var(--muted); }
+.autonomy-connection-error { border: 1px solid var(--line); border-radius: 7px; padding: 10px; margin-bottom: 12px; font-size: 12px; line-height: 1.6; }
+.autonomy-connection-error p { margin: 0 0 7px; }
+.autonomy-connection-error small { display: block; color: var(--muted); margin-bottom: 8px; }
+.autonomy-empty { display: grid; justify-items: center; gap: 10px; padding: 30px 10px; text-align: center; color: var(--muted); font-size: 12px; line-height: 1.7; }
+.autonomy-empty p { margin: 0; }
+.background-delegate-setting { padding: 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--shell-wash); margin: 12px 0; }
+.background-delegate-setting > label { display: flex; align-items: center; gap: 7px; font-size: 12px; cursor: pointer; }
+.background-delegate-setting > p { margin: 7px 0 0; color: var(--muted); font-size: 11px; line-height: 1.7; }
+@media (max-width: 600px) { .autonomy-trigger-running { display: none; } .autonomy-task-actions > button { min-height: 34px; } .autonomy-center-dialog { max-height: calc(100dvh - 20px); } }
+
+.autonomy-feishu-link { margin: 0 20px 14px; }

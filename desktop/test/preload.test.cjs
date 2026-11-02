@@ -9,12 +9,12 @@ test('sandbox bridge exposes only fixed picker and application methods', async (
   let invocation;
   const electron = {
     contextBridge: { exposeInMainWorld: (name, value) => { exposed = { name, value }; } },
-    ipcRenderer: { invoke: async (...args) => { invocation = args; return '/Users/example/Project'; } },
+    ipcRenderer: { on: () => {}, invoke: async (...args) => { invocation = args; return '/Users/example/Project'; } },
   };
   const source = fs.readFileSync(path.join(__dirname, '..', 'preload.cjs'), 'utf8');
   vm.runInNewContext(source, { require: name => { assert.equal(name, 'electron'); return electron; } });
   assert.equal(exposed.name, 'modelDesk');
-  assert.deepEqual(Object.keys(exposed.value), ['chooseProjectDirectory', 'chooseInputFiles', 'chooseAttachmentDirectory', 'openMuse', 'openAccessibilitySettings', 'revealMuseBridge', 'openOriginalApp']);
+  assert.deepEqual(Object.keys(exposed.value), ['onOpenAutonomyTask', 'chooseProjectDirectory', 'chooseInputFiles', 'chooseAttachmentDirectory', 'openMuse', 'openAccessibilitySettings', 'revealMuseBridge', 'openOriginalApp']);
   assert.equal(Object.isFrozen(exposed.value), true);
   assert.equal(await exposed.value.chooseProjectDirectory('/arbitrary/path', 'execute'), '/Users/example/Project');
   assert.deepEqual(invocation, ['modeldesk:choose-project-directory']);
@@ -34,4 +34,15 @@ test('sandbox bridge exposes only fixed picker and application methods', async (
     assert.equal(await exposed.value.openOriginalApp(invalid), false);
     assert.deepEqual(invocation, ['modeldesk:open-original-app', 'chathub']);
   }
+});
+
+
+test('notification navigation queues until renderer listener mounts and unsubscribes safely', () => {
+  let api, receive;
+  const source = fs.readFileSync(path.join(__dirname, '..', 'preload.cjs'), 'utf8');
+  vm.runInNewContext(source, { require: () => ({ contextBridge: { exposeInMainWorld: (_name, value) => {api=value;} }, ipcRenderer: { on: (_channel, callback) => {receive=callback;} } }) });
+  receive({}, {task_id:'id1',project_id:null});
+  const calls=[]; const unsubscribe=api.onOpenAutonomyTask(value => calls.push(value.task_id));
+  assert.deepEqual(calls,['id1']); receive({}, {task_id:'id2'}); unsubscribe(); receive({}, {task_id:'id3'});
+  assert.deepEqual(calls,['id1','id2']); api.onOpenAutonomyTask(value => calls.push(value.task_id)); assert.deepEqual(calls,['id1','id2','id3']);
 });

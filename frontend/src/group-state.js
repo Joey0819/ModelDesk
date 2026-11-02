@@ -52,6 +52,7 @@ export function readGroupDraft(storage, projectId, roomId) {
     recipientIds: Array.isArray(value.recipientIds) ? value.recipientIds.filter((id) => typeof id === 'string') : [],
     includeMuse: Boolean(value.includeMuse),
     deliveryMode: value.deliveryMode === 'discussion' ? 'discussion' : 'auto',
+    backgroundMode: value.backgroundMode !== false,
     ...groupOutputOptions(value),
     ...documentOutputOptions(value),
     harnessMode: GROUP_HARNESS_MODES.some((item) => item.id === value.harnessMode) ? value.harnessMode : 'relay',
@@ -71,7 +72,7 @@ export function mergeRoomJobs(current, incoming, projectId, roomId) {
   }
   return [...values.values()].sort((a, b) => String(a.created_at || '').localeCompare(String(b.created_at || '')) || a.id.localeCompare(b.id));
 }
-export function groupMessageRequest({ prompt, recipientIds = [], context = {}, contextTurns = 6, contextMode = 'continue', rounds = 1, deliveryMode = 'auto', outputFormat, imageCount, mediaProvider, documentFormats, documentLayout }) {
+export function groupMessageRequest({ prompt, recipientIds = [], context = {}, contextTurns = 6, contextMode = 'continue', rounds = 1, deliveryMode = 'auto', backgroundMode = true, outputFormat, imageCount, mediaProvider, documentFormats, documentLayout }) {
   const allowed = ['snapshot_id', 'attachment_ids', 'include_project_assets', 'knowledge_ids', 'memory_ids', 'memory_scope', 'remember', 'tools', 'mcp_server_ids', 'muse_task_id'];
   const boundedRounds = [1, 2, 3, 4, 5, 6].includes(Number(rounds)) ? Number(rounds) : 1;
   const output = groupOutputOptions({ outputFormat, imageCount, mediaProvider });
@@ -81,7 +82,7 @@ export function groupMessageRequest({ prompt, recipientIds = [], context = {}, c
     memory.document_formats = documents.documentFormats;
     memory.document_layout = documents.documentLayout;
   }
-  return { ...memory, ...Object.fromEntries(allowed.filter((key) => context[key] !== undefined).map((key) => [key, structuredClone(context[key])])), prompt: prompt.trim(), recipient_member_ids: [...recipientIds], context_turns: contextTurns, rounds: boundedRounds, delivery_mode: deliveryMode === 'discussion' ? 'discussion' : 'auto', output_format: output.outputFormat, image_count: output.imageCount, media_provider: output.mediaProvider };
+  return { ...memory, ...Object.fromEntries(allowed.filter((key) => context[key] !== undefined).map((key) => [key, structuredClone(context[key])])), prompt: prompt.trim(), recipient_member_ids: [...recipientIds], context_turns: contextTurns, rounds: boundedRounds, delivery_mode: deliveryMode === 'discussion' ? 'discussion' : 'auto', background_mode: deliveryMode !== 'discussion' && backgroundMode === true, output_format: output.outputFormat, image_count: output.imageCount, media_provider: output.mediaProvider };
 }
 export function groupMessages(job, room) {
   const members = job.group_team_snapshot?.members || room.team_snapshot?.members || [];

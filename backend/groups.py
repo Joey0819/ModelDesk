@@ -58,6 +58,7 @@ class MessageRequest(BaseModel):
     mcp_server_ids: list[uuid.UUID] = Field(default_factory=list, max_length=20)
     system_prompt: str = Field(default="", max_length=4000)
     delivery_mode: Literal["auto", "discussion"] = "discussion"
+    background_mode: bool = False
     output_format: Literal["auto", "text", "illustrated", "video"] = "auto"
     image_count: int = Field(default=2, ge=1, le=4)
     media_provider: Literal["auto", "openai", "gemini", "muse"] = "auto"
@@ -323,9 +324,20 @@ async def list_messages(identifier: str, project_id: str | None = None, before: 
 
 @router.post("/{identifier}/messages", status_code=202)
 async def send_message(identifier: str, request: MessageRequest, transport: Request, project_id: str | None = None):
+    if request.background_mode and request.delivery_mode != "auto":
+        raise HTTPException(422, "后台托管需要选择自动完成")
     if request.delivery_mode == "auto":
         from .muse_bridge import local_mutation
         local_mutation(transport)
+    return await submit_message(identifier, request, project_id,
+                                native_allowed=not transport.headers.get("x-modeldesk-remote"))
+
+
+async def submit_message(identifier: str, request: MessageRequest, project_id: str | None = None, *,
+                         native_allowed=False, job_id=None, external_source=None, admission_check=None):
+    """Shared submission after the browser or a trusted local channel authenticates."""
+    if request.background_mode and request.delivery_mode != "auto":
+        raise HTTPException(422, "后台托管需要选择自动完成")
     room = await asyncio.to_thread(store.get, identifier, project_id)
     muse_source = freeze_muse_source(room, request.muse_task_id)
     members = room["team_snapshot"]["members"]
@@ -351,7 +363,7 @@ async def send_message(identifier: str, request: MessageRequest, transport: Requ
     missing = list(dict.fromkeys(model for model in requested_models if model not in catalog))
     if missing:
         raise HTTPException(422, "这些接收成员的模型尚未连接：" + "、".join(missing))
-    body = request.model_dump(mode="json", exclude={"recipient_member_ids", "muse_task_id", "delivery_mode", "output_format", "image_count", "media_provider", "context_mode", "document_formats", "document_layout"})
+    body = request.model_dump(mode="json", exclude={"recipient_member_ids", "muse_task_id", "delivery_mode", "background_mode", "output_format", "image_count", "media_provider", "context_mode", "document_formats", "document_layout"})
     try:
         job_request = workbench.JobRequest(**body, mode="group", project_id=room["project_id"], conversation_id=room["id"],
                                            models=room_models(room), roles=room_roles(room))
@@ -370,12 +382,19 @@ async def send_message(identifier: str, request: MessageRequest, transport: Requ
                 "group_output_format": request.output_format, "group_image_count": request.image_count, "group_media_provider": request.media_provider,
                 "group_document_formats": request.document_formats, "group_document_layout": request.document_layout,
                 "group_runtime_allowed": request.delivery_mode == "auto",
-                "group_native_allowed": request.delivery_mode == "auto" and not transport.headers.get("x-modeldesk-remote")}
+                "group_native_allowed": request.delivery_mode == "auto" and native_allowed is True}
+    if external_source:
+        metadata["external_source"] = copy.deepcopy(external_source)
     from .skill_library import frozen_skills
     metadata['_skill_snapshots'] = frozen_skills(members)
+    if request.background_mode:
+        from .autonomy import initial_state
+        metadata["autonomy"] = initial_state()
     if muse_source:
         metadata["group_muse_source"] = muse_source
-    job = workbench.manager.create(job_request, metadata=metadata, group_authorization=_ROOM_WRITE)
+    if admission_check:
+        admission_check()
+    job = workbench.manager.create(job_request, job_id=job_id, metadata=metadata, group_authorization=_ROOM_WRITE)
     room["updated_at"] = job["created_at"]
     store.save(room)
     return job

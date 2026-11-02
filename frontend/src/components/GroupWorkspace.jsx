@@ -54,6 +54,7 @@ import MissionTeamPicker from './MissionTeamPicker';
 import AttachmentComposer from './AttachmentComposer';
 import ContextAttachments from './ContextAttachments';
 import TaskContextControl from './TaskContextControl';
+import { BackgroundDelegateSetting } from './AutonomyTaskCenter';
 import HandoffReceipt from './HandoffReceipt';
 import './TaskContextControl.css';
 import JobAttachments from './JobAttachments';
@@ -228,15 +229,16 @@ function GroupTeamSettings({ room, models, catalog, addRequested, onOpenAgentSet
   </dialog>;
 }
 
-function GroupRoom({ roomId, projectId, status, models, context, onContextChange, onOpenArtifacts, onClearArtifacts, onOpenProjects, onOpenAgentSettings, renderIntegration, focusHistory, onToggleFocusHistory }) {
+function GroupRoom({ roomId, projectId, initialJob, status, models, context, onContextChange, onOpenArtifacts, onClearArtifacts, onOpenProjects, onOpenAgentSettings, renderIntegration, focusHistory, onToggleFocusHistory }) {
   const { assets, transfers } = useProjects();
-  const [workMode, setWorkMode] = useState(() => { const value = localStorage.getItem(`modeldesk.group.mode.${projectId || 'none'}.${roomId}`); return ['code', 'review'].includes(value) ? value : 'discussion'; });
+  const [workMode, setWorkMode] = useState(() => { const value = localStorage.getItem(`modeldesk.group.mode.${projectId || 'none'}.${roomId}`); return !initialJob && ['code', 'review'].includes(value) ? value : 'discussion'; });
   useEffect(() => { localStorage.setItem(`modeldesk.group.mode.${projectId || 'none'}.${roomId}`, workMode); }, [workMode, projectId, roomId]);
   const [saved] = useState(() => readGroupDraft(localStorage, projectId, roomId));
   const [prompt, setPrompt] = useState(saved.prompt);
   const [recipientIds, setRecipientIds] = useState(saved.recipientIds);
   const [harnessMode, setHarnessMode] = useState(saved.harnessMode || 'relay');
   const [deliveryMode, setDeliveryMode] = useState(saved.deliveryMode);
+  const [backgroundMode, setBackgroundMode] = useState(saved.backgroundMode);
   const [outputOptions, setOutputOptions] = useState({ outputFormat: saved.outputFormat, imageCount: saved.imageCount, mediaProvider: saved.mediaProvider });
   const [documentOptions, setDocumentOptions] = useState({ documentFormats: saved.documentFormats, documentLayout: saved.documentLayout });
   const [contextTurns, setContextTurns] = useState(saved.contextTurns);
@@ -245,7 +247,7 @@ function GroupRoom({ roomId, projectId, status, models, context, onContextChange
   const settingsDialog = useRef(null);
   const museDialog = useRef(null);
   const [showLatest, setShowLatest] = useState(false);
-  const [selectedArtifactId, setSelectedArtifactId] = useState(() => localStorage.getItem(`modeldesk.group.artifact.${projectId || 'none'}.${roomId}`) || null);
+  const [selectedArtifactId, setSelectedArtifactId] = useState(() => initialJob?.id || localStorage.getItem(`modeldesk.group.artifact.${projectId || 'none'}.${roomId}`) || null);
   useEffect(() => {
     const key = `modeldesk.group.artifact.${projectId || 'none'}.${roomId}`;
     if (selectedArtifactId) localStorage.setItem(key, selectedArtifactId);
@@ -266,6 +268,7 @@ function GroupRoom({ roomId, projectId, status, models, context, onContextChange
   const composerInputRef = useRef(null);
   const pendingHarnessJobRef = useRef(null);
   const pendingDeliveryRevealRef = useRef(null);
+  const initialResultRevealRef = useRef(Boolean(initialJob));
   const museMonitoring = museTasks.some((task) => task.monitoring);
 
   useEffect(() => {
@@ -300,7 +303,7 @@ function GroupRoom({ roomId, projectId, status, models, context, onContextChange
   }, [refreshMuseAndAgents, museMonitoring]);
 
   const integrationRef = useRef(null);
-  const roomState = useGroupRoom(projectId, roomId);
+  const roomState = useGroupRoom(projectId, roomId, initialJob);
   const attachmentRef = useRef(null);
   const timelineRef = useRef(null);
   const nearBottom = useRef(true);
@@ -398,9 +401,9 @@ function GroupRoom({ roomId, projectId, status, models, context, onContextChange
   useEffect(() => { onContextChange(saved.context); onClearArtifacts(); }, [saved, onContextChange, onClearArtifacts]);
   useEffect(() => {
     if ((context.project_id || null) === (projectId || null)) {
-      localStorage.setItem(groupDraftKey(projectId, roomId), JSON.stringify({ prompt, recipientIds, harnessMode, deliveryMode, ...outputOptions, ...documentOptions, contextTurns, context }));
+      localStorage.setItem(groupDraftKey(projectId, roomId), JSON.stringify({ prompt, recipientIds, harnessMode, deliveryMode, backgroundMode, ...outputOptions, ...documentOptions, contextTurns, context }));
     }
-  }, [prompt, recipientIds, harnessMode, deliveryMode, outputOptions, documentOptions, contextTurns, context, projectId, roomId]);
+  }, [prompt, recipientIds, harnessMode, deliveryMode, backgroundMode, outputOptions, documentOptions, contextTurns, context, projectId, roomId]);
   useEffect(() => {
     if (workMode !== 'discussion') return;
     if (!selectedArtifactId && groupDeliveryMode(artifactJob) !== 'auto' && latestMuseWithVideo && (!artifactJob || String(latestMuseWithVideo.created_at || '') >= String(artifactJob.created_at || ''))) {
@@ -417,6 +420,12 @@ function GroupRoom({ roomId, projectId, status, models, context, onContextChange
     pendingDeliveryRevealRef.current = null;
     if (selectedArtifactId === pendingId && completed.status === 'complete' && completed.result?.delivery?.content?.trim()) onOpenArtifacts(withRoomHistory(completed), true);
   }, [jobs, onOpenArtifacts, selectedArtifactId, workMode, withRoomHistory]);
+  useEffect(() => {
+    if (initialResultRevealRef.current && initialJob?.id === artifactJob?.id && workMode === 'discussion') {
+      initialResultRevealRef.current = false;
+      onOpenArtifacts(withRoomHistory(artifactJob), true);
+    }
+  }, [artifactJob, initialJob, workMode, onOpenArtifacts, withRoomHistory]);
   useEffect(() => { if (workMode !== 'discussion') onClearArtifacts(); }, [workMode, onClearArtifacts]);
   useEffect(() => {
     const element = timelineRef.current;
@@ -521,6 +530,7 @@ function GroupRoom({ roomId, projectId, status, models, context, onContextChange
       contextMode,
       rounds: deliveryMode === 'discussion' ? activeHarness.rounds || 1 : 1,
       deliveryMode,
+      backgroundMode,
       ...outputOptions,
       ...documentOptions,
     }));
@@ -528,7 +538,8 @@ function GroupRoom({ roomId, projectId, status, models, context, onContextChange
       setContextMode('continue');
       if (deliveryMode === 'auto') {
         pendingDeliveryRevealRef.current = job.id;
-        setHarnessNotice('任务已启动。系统会按要求安排群内成员，执行后整理完整成果；请在本轮进度中查看实际状态。');
+        setHarnessNotice(backgroundMode ? '后台托管已启动。你可以离开本页面，在顶部“后台任务”查看进度、成果和待处理通知。Mac 需保持唤醒并联网。' : '任务已启动。系统会按要求安排群内成员，执行后整理完整成果；请在本轮进度中查看实际状态。');
+        globalThis.dispatchEvent?.(new Event('modeldesk-autonomy-changed'));
       } else if (harnessMode === 'discuss_muse') {
         pendingHarnessJobRef.current = { jobId: job.id, mode: 'discuss_muse', userPrompt: sentPrompt };
         setHarnessNotice('群内模型正在讨论，完成后准备 Muse 草稿；需要你点击派发才会执行。');
@@ -676,7 +687,7 @@ function GroupRoom({ roomId, projectId, status, models, context, onContextChange
         {context.muse_task_id && <div className="group-muse-source-chip"><strong>Muse 回复待引用</strong><span>{context.muse_task_label || '已选定本群的已完成回复'}</span><button type="button" className="icon-button" aria-label="移除 Muse 回复引用" onClick={() => onContextChange((current) => ({ ...current, muse_task_id: null, muse_task_label: '', muse_harness_response: '' }))}><Icon name="close" size={14} /></button></div>}
         <div className="group-compose-summary" aria-label="本轮任务设置摘要">
           <button type="button" className="subtle-button group-target-summary" aria-haspopup="dialog" onClick={() => settingsDialog.current?.showModal()} title="选择参与成员、分配 Agent 或调整协作方式"><Icon name="group" size={15} /><span>{recipientIds.length ? members.filter((member) => recipientIds.includes(member.id)).map((member) => `@${member.name}`).join('、') : '全组协作'}</span><Icon name="chevron" size={12} /></button>
-          <span className="group-mode-summary">{runtimeMember ? '单独派发' : deliveryMode === 'auto' ? '自动完成' : '仅讨论'}</span>
+          <span className="group-mode-summary">{runtimeMember ? '单独派发' : deliveryMode === 'auto' ? backgroundMode ? '自动完成 · 后台托管' : '自动完成' : '仅讨论'}</span>
           <button type="button" className="subtle-button group-memory-summary" aria-haspopup="dialog" onClick={() => settingsDialog.current?.showModal()}><Icon name="memory" size={14} />{contextMode === 'fresh' ? '新任务 · 不带旧对话' : `继续任务${lastJob?.task_context?.requests?.length ? ` · ${lastJob.task_context.requests.length} 条记忆` : ''}`}</button>
           <button type="button" className="subtle-button" aria-haspopup="dialog" onClick={() => settingsDialog.current?.showModal()}><Icon name="settings" size={14} />任务设置</button>
         </div>
@@ -706,6 +717,7 @@ function GroupRoom({ roomId, projectId, status, models, context, onContextChange
             </label>
           )}
         </div>
+        {!runtimeMember && deliveryMode === 'auto' && <BackgroundDelegateSetting checked={backgroundMode} onChange={setBackgroundMode} disabled={busy || Boolean(activeJob)} />}
         {!runtimeMember && deliveryMode === 'auto' && <DeliveryOutputOptions value={outputOptions} onChange={setOutputOptions} disabled={busy || Boolean(activeJob)} />}
         {!runtimeMember && deliveryMode === 'auto' && <DocumentOutputOptions value={documentOptions} onChange={setDocumentOptions} disabled={busy || Boolean(activeJob)} />}
         <div className="group-quick-recipe-bar" role="toolbar" aria-label="快捷协作配方">
@@ -822,7 +834,7 @@ function GroupRoom({ roomId, projectId, status, models, context, onContextChange
   </>;
 }
 
-export default function GroupWorkspace({ initialRoomId, initialTeam, renderIntegration, status, models, context, onContextChange, onOpenNavigation, onOpenProjects, onOpenAgentSettings, onOpenArtifacts, onClearArtifacts, onToggleArtifacts }) {
+export default function GroupWorkspace({ initialRoomId, initialTeam, initialJob, renderIntegration, status, models, context, onContextChange, onOpenNavigation, onOpenProjects, onOpenAgentSettings, onOpenArtifacts, onClearArtifacts, onToggleArtifacts }) {
   const { activeProjectId, activeProject } = useProjects();
   const initialProjectTeam = initialTeam?.id && (initialTeam.project_id || null) === activeProjectId ? initialTeam : null;
   const [roomId, setRoomId] = useState(() => initialProjectTeam ? null : initialRoomId || readGroupSelection(localStorage, activeProjectId));
@@ -886,6 +898,6 @@ export default function GroupWorkspace({ initialRoomId, initialTeam, renderInteg
       </div>
     </header>
     {error && <div className="error-banner" role="alert">{error}<button type="button" className="subtle-button" onClick={refresh}>重试</button></div>}
-    {roomId ? <GroupRoom key={`${activeProjectId || 'unassigned'}:${roomId}`} roomId={roomId} projectId={activeProjectId} status={status} models={models} onOpenAgentSettings={onOpenAgentSettings} context={context} onContextChange={onContextChange} onOpenArtifacts={onOpenArtifacts} onClearArtifacts={onClearArtifacts} onOpenProjects={onOpenProjects} renderIntegration={renderIntegration} focusHistory={focusHistory} onToggleFocusHistory={toggleFocusHistory} /> : <div className="group-create-scroll"><form className="group-create-room" onSubmit={createRoom}><div className="mission-introduction"><h2>一个项目，多个多智能体协作群。</h2><p>把不同 LLM 模型、Muse 与 Codex/Claude 组成研究组、代码审查组或内容创作团队，在同一个群里由自研 Harness 持续协同。</p></div><label className="group-title-input"><span>群聊名称</span><input aria-label="群聊名称" value={title} maxLength={100} placeholder="例如：产品方案讨论、发布前审查" onChange={(event) => setTitle(event.target.value)} /></label><MissionTeamPicker projectId={activeProjectId} team={team} models={models} catalog={status?.models || []} onChange={chooseTeam} onPending={setTeamPending} onOpenAgentSettings={onOpenAgentSettings} requireSaved /><div className="group-create-actions"><p>{team?.id ? '建群后会保存当前成员与分工，已有讨论不受后续编辑影响。' : '选择已有协作组，或新建并保存协作组后开始。'}</p><button type="submit" className="primary-button" disabled={creating || loading || !title.trim() || !team?.id || teamPending}><Icon name="plus" size={15} />{creating ? '正在创建' : '创建群聊'}</button></div></form></div>}
+    {roomId ? <GroupRoom key={`${activeProjectId || 'unassigned'}:${roomId}:${initialJob?.group_room_id === roomId ? initialJob.id : ''}`} initialJob={initialJob?.group_room_id === roomId && (initialJob.project_id || null) === (activeProjectId || null) ? initialJob : null} roomId={roomId} projectId={activeProjectId} status={status} models={models} onOpenAgentSettings={onOpenAgentSettings} context={context} onContextChange={onContextChange} onOpenArtifacts={onOpenArtifacts} onClearArtifacts={onClearArtifacts} onOpenProjects={onOpenProjects} renderIntegration={renderIntegration} focusHistory={focusHistory} onToggleFocusHistory={toggleFocusHistory} /> : <div className="group-create-scroll"><form className="group-create-room" onSubmit={createRoom}><div className="mission-introduction"><h2>一个项目，多个多智能体协作群。</h2><p>把不同 LLM 模型、Muse 与 Codex/Claude 组成研究组、代码审查组或内容创作团队，在同一个群里由自研 Harness 持续协同。</p></div><label className="group-title-input"><span>群聊名称</span><input aria-label="群聊名称" value={title} maxLength={100} placeholder="例如：产品方案讨论、发布前审查" onChange={(event) => setTitle(event.target.value)} /></label><MissionTeamPicker projectId={activeProjectId} team={team} models={models} catalog={status?.models || []} onChange={chooseTeam} onPending={setTeamPending} onOpenAgentSettings={onOpenAgentSettings} requireSaved /><div className="group-create-actions"><p>{team?.id ? '建群后会保存当前成员与分工，已有讨论不受后续编辑影响。' : '选择已有协作组，或新建并保存协作组后开始。'}</p><button type="submit" className="primary-button" disabled={creating || loading || !title.trim() || !team?.id || teamPending}><Icon name="plus" size={15} />{creating ? '正在创建' : '创建群聊'}</button></div></form></div>}
   </main>;
 }

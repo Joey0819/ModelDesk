@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Menu, shell, screen, ipcMain, dialog } = require('electron');
+const { app, BrowserWindow, Menu, shell, screen, ipcMain, dialog, Notification } = require('electron');
 const { execFile } = require('node:child_process');
 const { promisify } = require('node:util');
 const fs = require('node:fs');
@@ -7,6 +7,8 @@ const { UI_URL, HEALTH_URLS, workspaceRoot, serviceEnvironment, isWorkbenchURL, 
 const { INPUT_EXTENSIONS, collectSelectedFiles } = require('./input-files.cjs');
 const { installMusePermissionActions } = require('./muse-permissions.cjs');
 
+const { installAutonomyNotifications } = require('./autonomy-notifications.cjs');
+const { createAutonomyTaskNavigator } = require('./autonomy-navigation.cjs');
 const execFileAsync = promisify(execFile);
 const statusPath = path.join(__dirname, 'status.html');
 let mainWindow;
@@ -258,6 +260,14 @@ if (!app.requestSingleInstanceLock()) {
     installMenu();
     installProjectPicker();
     createWindow();
+    const openAutonomyTask = createAutonomyTaskNavigator({
+      getWindow: () => {
+        if (!mainWindow || mainWindow.isDestroyed()) createWindow();
+        return mainWindow;
+      },
+      connectWorkbench, isWorkbenchURL,
+    });
+    installAutonomyNotifications({ app, Notification, openTask: openAutonomyTask });
     app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
   });
   // Services are shared with ChatHub/browser clients; closing this window never stops them.

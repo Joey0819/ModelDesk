@@ -1,0 +1,35 @@
+.feishu-connection { max-width: 880px; }
+.feishu-setup-steps { margin: 16px 0; padding-left: 22px; color: var(--muted); font-size: 12px; line-height: 1.9; }
+.feishu-setup-steps li { padding-left: 3px; margin: 7px 0; }
+.feishu-connection a { color: var(--accent); }
+.feishu-command-guide { padding: 14px 16px; border: 1px solid var(--line); border-radius: 9px; background: var(--shell-wash); font-size: 12px; }
+.feishu-command-guide > code { display: block; margin-top: 9px; font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.feishu-command-guide > p { color: var(--muted); line-height: 1.7; margin: 9px 0 0; }
+.feishu-unbound-note { padding: 10px 12px; border-left: 3px solid var(--accent); color: var(--ink); background: var(--shell-wash); font-size: 12px; line-height: 1.8; }
+.feishu-connection-actions { margin: 18px 0; }
+.feishu-required-permissions, .feishu-observed-chats { font-size: 12px; line-height: 1.8; color: var(--muted); margin: 16px 0; }
+.feishu-required-permissions > summary, .feishu-observed-chats > summary { cursor: pointer; }
+.feishu-required-permissions code, .feishu-observed-chats code { overflow-wrap: anywhere; }
+.feishu-observed-chats ul { list-style: none; padding: 0; }
+.feishu-observed-chats li { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; justify-content: space-between; padding: 10px 0; border-top: 1px solid var(--line); }
+.feishu-observed-chats small { display: block; overflow-wrap: anywhere; }
+.feishu-recent-receipts { margin: 18px 0; padding: 12px 14px; border: 1px solid var(--line); border-radius: 8px; font-size: 12px; line-height: 1.7; }
+.feishu-recent-receipts > summary { cursor: pointer; color: var(--ink); }
+.feishu-recent-receipts > p { color: var(--muted); margin: 8px 0; }
+.feishu-recent-receipts > ol { list-style: none; padding: 0; margin: 8px 0 0; }
+.feishu-recent-receipts li { border-top: 1px solid var(--line); padding: 10px 0; }
+.feishu-recent-receipts li > header { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; justify-content: space-between; }
+.feishu-recent-receipts time { color: var(--muted); font-size: 10px; }
+.feishu-recent-receipts li p { margin: 5px 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.feishu-recent-receipts li code { display: block; overflow-wrap: anywhere; color: var(--muted); font-size: 10px; }
+.feishu-receipt-issue { color: #b06935; }
+.feishu-config-form { margin-top: 22px; }
+.feishu-config-form h3 { font-size: 14px; margin: 22px 0 7px; }
+.feishu-config-form h3:first-child { margin-top: 0; }
+.feishu-binding { margin: 14px 0; padding: 14px; border: 1px solid var(--line); border-radius: 8px; background: var(--shell-paper); }
+.feishu-binding > header { display: flex; justify-content: space-between; gap: 10px; align-items: center; font-size: 12px; }
+.feishu-binding-destination { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.feishu-binding-advanced { margin-top: 14px; font-size: 12px; }
+.feishu-binding-advanced > summary { cursor: pointer; color: var(--muted); }
+.feishu-binding textarea { box-sizing: border-box; width: 100%; resize: vertical; padding: 10px; border: 1px solid var(--line); background: var(--shell-paper); color: var(--ink); border-radius: 6px; font: inherit; line-height: 1.6; }
+@media (max-width: 600px) { .feishu-binding-destination { grid-template-columns: 1fr; gap: 0; } .feishu-binding { padding: 12px; } .feishu-binding textarea { font-size: 16px; } }

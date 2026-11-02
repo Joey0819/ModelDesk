@@ -663,6 +663,8 @@ async def run(manager, job, *, continuing=False):
                 changed()
 
             async def execute(step, parents):
+                if job.get("_autonomy_local_only") and (step["kind"] != "model" or job.get("tools")):
+                    raise ValueError("后台继续不能重新派发原生 Agent、绘图或带工具的步骤，请人工检查")
                 member = next(item for item in members if item["id"] == step["member_id"])
                 attempt = {"number": len(step["attempts"]) + 1, "started_at": now(), "status": "running"}
                 step["attempts"].append(attempt)
@@ -799,7 +801,8 @@ async def run(manager, job, *, continuing=False):
                                 raise ValueError('Skill 媒体校验失败')
                             if not any(old['id'] == asset['id'] for old in delivery['media']):
                                 delivery['media'].append(verified)
-                await produce_media(manager, job, result, delivery, contract, steps=current)
+                if not job.get("_autonomy_local_only"):
+                    await produce_media(manager, job, result, delivery, contract, steps=current)
                 delivery["visual_evidence"], parts = await media_evidence(job, delivery["media"])
                 evidence = {"requirements": delivery["task_spec"]["requirements"], "execution": execution_evidence(current, output_limit=None),
                             "document_packaging": delivery["task_spec"].get("documents", {}),
@@ -910,7 +913,7 @@ async def run(manager, job, *, continuing=False):
                             "补齐这些机械验收未通过的交付：" + "；".join(item["reason"] for item in failed_media)
                             + "。返回真实附件；图片需独立下载。保留其他已合格交付，不扩大任务。\n"
                             + review.revision_instructions)[:2000])
-                if revision and schedule_native_revision(delivery, revision, replacement_kinds):
+                if revision and not job.get("_autonomy_local_only") and schedule_native_revision(delivery, revision, replacement_kinds):
                     changed()  # Reserve the sole revision before any dispatch.
                     await run_graph(delivery["steps"], execute, changed, concurrency=2)
                     delivery["limitations"] = []
@@ -954,11 +957,17 @@ async def run(manager, job, *, continuing=False):
 
 
 async def continue_run(manager, identifier, room_id, project_id, request, transport):
-    from .groups import store as rooms
     from .muse_bridge import local_mutation
+    local_mutation(transport)
+    return await continue_job(manager, identifier, room_id, project_id, request,
+                              native_allowed=not transport.headers.get("x-modeldesk-remote"))
+
+
+async def continue_job(manager, identifier, room_id, project_id, request, *, native_allowed, automatic=False):
+    """Continue frozen work without manufacturing a browser request for the supervisor."""
+    from .groups import store as rooms
     from .super_platform import prepare_runtime, release_runtime
     from .workbench import public_error, TERMINAL
-    local_mutation(transport)
     job = manager.get(checked_id(identifier))
     room = rooms.get(room_id, project_id)
     delivery = (job.get("result") or {}).get("delivery") or {}
@@ -975,6 +984,15 @@ async def continue_run(manager, identifier, room_id, project_id, request, transp
     if sum(item["status"] not in TERMINAL for item in manager.jobs.values()) >= 4:
         raise HTTPException(429, "当前任务已满，请稍后继续")
     packet = load_inputs(manager, job)
+    if automatic:
+        from .autonomy import continuation_blocker
+        reason = continuation_blocker(job)
+        if reason:
+            raise HTTPException(409, reason)
+    elif job.get("autonomy"):
+        # A new explicit user action can resume previously stopped work; merely
+        # observing an outer complete/partial status must never do so.
+        job["autonomy"].pop("stop_reason", None)
     # Reserve synchronously before scheduling; double-clicks/stale pages cannot
     # start duplicate runs. Original context and exact runtime prompts persist.
     for step in delivery.get("steps", []):
@@ -994,7 +1012,8 @@ async def continue_run(manager, identifier, room_id, project_id, request, transp
                 execution = copy.deepcopy(job)
                 execution.update(prompt=packet["prompt"], system_prompt=packet["system_prompt"], _attachments=packet["attachments"],
                                  harness_resource_revisions=packet["resource_revisions"],
-                                 group_native_allowed=job.get("group_native_allowed") is True and not transport.headers.get("x-modeldesk-remote"))
+                                 group_native_allowed=job.get("group_native_allowed") is True and native_allowed,
+                                 _autonomy_local_only=automatic)
                 runtime = prepare_runtime(execution)
                 execution["_runtime"] = runtime
                 job["status"] = "running"
@@ -1021,4 +1040,8 @@ async def continue_run(manager, identifier, room_id, project_id, request, transp
                 release_runtime(runtime["token"])
             manager.tasks.pop(identifier, None)
     manager.tasks[identifier] = asyncio.create_task(execute())
+    task = manager.tasks[identifier]
+    # A task cancelled before its first coroutine instruction never enters finally.
+    task.add_done_callback(lambda done: manager.tasks.pop(identifier, None)
+                           if manager.tasks.get(identifier) is done else None)
     return copy.deepcopy(job)

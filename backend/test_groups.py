@@ -197,6 +197,47 @@ class GroupRoomTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(flagged.json()["group_runtime_allowed"])
         self.assertFalse(flagged.json()["group_native_allowed"])
 
+    async def test_background_delegation_is_persisted_before_execution(self):
+        room = await self.room()
+        endpoint = f"/api/groups/{room['id']}/messages"
+        headers = {"Origin": "http://localhost:5173"}
+        with patch.object(self.jobs, "run", AsyncMock()):
+            response = await self.client.post(endpoint, params=self.params(room), headers=headers,
+                json={"prompt": "完成后通知我", "delivery_mode": "auto", "background_mode": True})
+            legacy = await self.client.post(endpoint, params=self.params(room), headers=headers,
+                json={"prompt": "仅执行本轮", "delivery_mode": "auto"})
+        self.assertEqual(response.status_code, 202, response.text)
+        job = response.json()
+        self.assertNotIn("background_mode", job)
+        self.assertEqual(job["autonomy"]["state"], "running")
+        self.assertEqual(job["autonomy"]["attempts"], 0)
+        self.assertEqual(job["autonomy"]["max_attempts"], 2)
+        persisted = json.loads((self.jobs.directory / (job["id"] + ".json")).read_text())
+        self.assertEqual(persisted["autonomy"], job["autonomy"])
+        self.assertNotIn("autonomy", legacy.json())
+
+    async def test_channel_authorization_rechecked_after_async_admission_validation(self):
+        room = await self.room()
+        entered, release = asyncio.Event(), asyncio.Event()
+        allowed = True
+        async def catalog():
+            entered.set()
+            await release.wait()
+            return ["a", "b"]
+        def guard():
+            if not allowed:
+                raise HTTPException(403, "channel disabled")
+        with patch.object(workbench, "model_catalog", side_effect=catalog):
+            pending = asyncio.create_task(groups.submit_message(room["id"], groups.MessageRequest(prompt="task", delivery_mode="auto", background_mode=True),
+                                         room["project_id"], admission_check=guard))
+            await entered.wait()
+            allowed = False
+            release.set()
+            with self.assertRaises(HTTPException) as denied:
+                await pending
+        self.assertEqual(denied.exception.status_code, 403)
+        self.assertFalse(self.jobs.jobs)
+
     async def test_paired_phone_automatic_delivery_can_never_gain_native_authority(self):
         from backend import remote_access
         room = await self.room()

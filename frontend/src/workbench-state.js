@@ -31,6 +31,9 @@ export function applyEvent(job, event) {
       next.result = { ...job.result, delivery: { ...job.result?.delivery, ...delivery } };
     }
   }
+  if (event.type === 'autonomy' && event.autonomy && typeof event.autonomy === 'object' && !Array.isArray(event.autonomy)) {
+    next.autonomy = { ...job.autonomy, ...event.autonomy };
+  }
   if (event.type === 'framework_message') {
     next.result = { ...job.result, partial: true, messages: [...(job.result?.messages || []), { role: event.role, model: event.model, round: event.round, content: event.content }] };
     if (['research', 'finalization', 'finalization_error'].includes(event.phase)) {

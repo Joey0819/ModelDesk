@@ -834,8 +834,12 @@ class JobManager:
             if job.get("workflow"):
                 self.save(self.jobs[job["id"]])
 
-    async def cancel(self, job_id):
+    async def cancel(self, job_id, *, _service_shutdown=False):
         job = self.get(job_id)
+        if (job.get("autonomy") and not _service_shutdown
+                and (job["status"] not in TERMINAL or (job.get("result") or {}).get("delivery", {}).get("status") != "complete")):
+            job["autonomy"]["stop_reason"] = "user_cancel"
+            self.save(job)
         if job["status"] in TERMINAL:
             return copy.deepcopy(job)
         task = self.tasks.get(job_id)
@@ -848,7 +852,19 @@ class JobManager:
         return copy.deepcopy(job)
 
     async def shutdown(self):
-        await asyncio.gather(*(self.cancel(job_id) for job_id in list(self.tasks)), return_exceptions=True)
+        async def drain(job_id):
+            job = self.get(job_id)
+            delegated = bool(job.get("autonomy")) and job["status"] not in TERMINAL
+            if delegated:
+                job["autonomy"]["stop_reason"] = "service_shutdown"
+                self.save(job)
+            await self.cancel(job_id, _service_shutdown=True)
+            if delegated and job["autonomy"].get("stop_reason") == "service_shutdown":
+                # Explicit user cancellation remains cancelled. A service drain
+                # is recoverable only through the supervisor's stricter policy.
+                job.update(status="interrupted", error="服务关闭中断了任务；后台托管将检查安全的剩余步骤")
+                self.emit(job, "interrupted", message=job["error"])
+        await asyncio.gather(*(drain(job_id) for job_id in list(self.tasks)), return_exceptions=True)
 
     async def events(self, job_id, after=0):
         job = self.get(job_id)

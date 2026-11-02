@@ -5,9 +5,9 @@ import { applyEvent } from '../workbench-state';
 import { groupActive, mergeRoomJobs } from '../group-state';
 
 /** A room owns its history. Engine jobs remain the source of truth for execution. */
-export default function useGroupRoom(projectId, roomId) {
+export default function useGroupRoom(projectId, roomId, initialJob = null) {
   const [room, setRoom] = useState(null);
-  const [jobs, setJobs] = useState([]);
+  const [jobs, setJobs] = useState(() => initialJob ? mergeRoomJobs([], [initialJob], projectId, roomId) : []);
   const [before, setBefore] = useState(null);
   const [loading, setLoading] = useState(true);
   const [olderLoading, setOlderLoading] = useState(false);

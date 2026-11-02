@@ -250,7 +250,7 @@ async def revoke_all():
 
 
 def api_allowed(path, method):
-    if path.startswith(("/api/remote", "/api/model-connections", "/api/model-runtime")):
+    if path.startswith(("/api/remote", "/api/model-connections", "/api/model-runtime", "/api/autonomy/inbox", "/api/feishu")):
         return False
     if method not in SAFE_METHODS:
         if path.startswith("/api/muse") or path.startswith("/api/platform/originals"):
@@ -349,7 +349,7 @@ def create_gateway(remote_store=None, *, frontend=None, upstream_transport=None,
         # These explicit user-control endpoints share the local API approval
         # boundary. Only an authenticated, same-origin gateway request is promoted.
         if request.method == "POST" and (request.url.path in {"/api/group-tasks", "/api/group-approvals"} or re.fullmatch(
-                r"/api/(?:group-tasks/[0-9a-f-]{36}/cancel|group-approvals/[0-9a-f-]{36}/decision|groups/[0-9a-f-]{36}/messages(?:/[0-9a-f-]{36}/continue)?)", request.url.path)):
+                r"/api/(?:autonomy/tasks/[0-9a-f-]{36}/(?:read|pause)|group-tasks/[0-9a-f-]{36}/cancel|group-approvals/[0-9a-f-]{36}/decision|groups/[0-9a-f-]{36}/messages(?:/[0-9a-f-]{36}/continue)?)", request.url.path)):
             headers["origin"] = "http://localhost:5173"
         headers["X-ModelDesk-Remote"] = "phone"
         query = request.url.query

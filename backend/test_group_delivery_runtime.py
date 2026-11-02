@@ -77,6 +77,22 @@ class RuntimeDeliveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(reloaded.records[child["id"]]["parent_job_id"], self.job["id"])
         self.assertFalse(group_tasks.local_git(self.repo, "status", "--porcelain"))
 
+    async def test_collection_only_never_creates_missing_child_and_receipt_identity_is_stable(self):
+        from backend.operation_recovery import completed_operation
+        prompt='Keep exact original requirement and produce a patch'
+        with patch.object(self.tasks, 'create', wraps=self.tasks.create) as create:
+            missing=await runtime.run_runtime_step(self.job,self.writer,prompt,observe_only=True)
+            create.assert_not_awaited()
+        self.assertEqual(missing['status'],'error')
+        with patch.object(self.tasks,'execute',self.complete_worker):
+            result=await runtime.run_runtime_step(self.job,self.writer,prompt)
+        proof=completed_operation(self.job,{'member_id':self.writer['id'],'kind':'codex','dispatch_prompt':prompt})
+        self.assertEqual(proof['task_id'],result['task_id'])
+        with patch.object(self.tasks,'create',side_effect=AssertionError('must not submit')):
+            saved=await runtime.run_runtime_step(self.job,self.writer,prompt,observe_only=True)
+        self.assertEqual(result['operation_receipt']['id'],saved['operation_receipt']['id'])
+        self.assertEqual(saved['operation_receipt']['mode'],'collect_only')
+
     async def test_cancellation_stops_the_actual_created_child(self):
         entered = asyncio.Event()
 
@@ -149,6 +165,49 @@ class RuntimeDeliveryTests(unittest.IsolatedAsyncioTestCase):
         durable = json.loads((self.muse.store.directory / (first["task_id"] + ".json")).read_text())
         self.assertEqual(durable["parent_job_id"], self.job["id"])
         self.assertTrue(durable["sent"])
+
+    async def test_background_recovery_observes_original_muse_thread_once_without_submit(self):
+        from backend import operation_recovery
+        prompt = "Produce final images"
+        with patch.object(self.muse, "helper_call", self.muse_helper):
+            first = await runtime.run_runtime_step(self.job, self.designer, prompt, native_allowed=True)
+        child = self.muse.records[first['task_id']]
+        child.update(status='interrupted', interrupted_from='running', monitoring=False)
+        self.job.update(group_native_allowed=True, autonomy={'enabled':True}, result={'delivery':{'steps':[
+            {'member_id':self.designer['id'], 'kind':'muse', 'status':'error', 'dispatch_prompt':prompt}]}})
+        commands=[]
+        async def observing(command, payload=None):
+            commands.append(command)
+            if command == 'submit':
+                raise AssertionError('a recovered observer must not resubmit')
+            return await self.muse_helper(command, payload)
+        with patch.object(self.muse, 'helper_call', observing):
+            proof=await operation_recovery.resume_confirmed_observation(self.job)
+            self.assertEqual(proof['task_id'], first['task_id'])
+            await asyncio.gather(*list(self.muse.tasks.values()))
+            self.assertEqual(child['status'], 'complete')
+            child.update(status='interrupted', monitoring=False)
+            self.assertIsNone(await operation_recovery.resume_confirmed_observation(self.job))
+        self.assertIn('observe', commands)
+        self.assertNotIn('submit', commands)
+        self.assertEqual(child['background_observe_recoveries'], 1)
+        durable=json.loads((self.muse.store.directory/(child['id']+'.json')).read_text())
+        self.assertEqual(durable['background_observe_recoveries'], 1)
+
+    async def test_background_observation_never_resumes_approval_unknown_or_user_stopped_work(self):
+        from backend.operation_recovery import resume_confirmed_observation
+        with patch.object(self.muse, "helper_call", self.muse_helper):
+            first=await runtime.run_runtime_step(self.job,self.designer,'Original',native_allowed=True)
+        original=copy.deepcopy(self.muse.records[first['task_id']])
+        self.job.update(group_native_allowed=True, autonomy={'enabled':True}, result={'delivery':{'steps':[
+            {'member_id':self.designer['id'], 'kind':'muse', 'status':'error', 'dispatch_prompt':'Original'}]}})
+        with patch.object(self.muse,'resume_observing',AsyncMock()) as resume:
+            for change in [dict(sent=None), dict(status='stopped_monitoring'), dict(interrupted_from='waiting_user'),
+                           dict(source_unverified=True), dict(_last_native_observation={'waiting_user':True}),
+                           dict(thread_url=None)]:
+                self.muse.records[first['task_id']]={**original, 'status':'interrupted', 'monitoring':False, **change}
+                self.assertIsNone(await resume_confirmed_observation(self.job), change)
+            resume.assert_not_awaited()
 
     async def test_confirmed_muse_revision_is_linked_bounded_and_idempotent(self):
         with patch.object(self.muse, "helper_call", self.muse_helper), patch.object(self.muse, "create", wraps=self.muse.create) as create:

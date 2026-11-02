@@ -224,7 +224,22 @@ def _can_renew_muse_observation(item):
     )
 
 
-async def run_runtime_step(job, member, prompt, *, native_allowed=False, revision_of=None, output_kind=None, reference_assets=None, skill_snapshot=None):
+async def run_runtime_step(job, member, prompt, *, native_allowed=False, revision_of=None, output_kind=None, reference_assets=None, skill_snapshot=None, observe_only=False):
+    result = await _run_runtime_step(job, member, prompt, native_allowed=native_allowed, revision_of=revision_of,
+                                     output_kind=output_kind, reference_assets=reference_assets,
+                                     skill_snapshot=skill_snapshot, observe_only=observe_only)
+    from .agent_operations import operation_receipt
+    if isinstance(prompt, str):
+        try:
+            result["operation_receipt"] = operation_receipt(job, member, prompt, result, observe_only=observe_only, revision_of=revision_of)
+        except (ValueError, KeyError, TypeError):
+            # Scope validation may already have rejected this request. Do not
+            # invent a receipt identity or replace its useful error message.
+            pass
+    return result
+
+
+async def _run_runtime_step(job, member, prompt, *, native_allowed=False, revision_of=None, output_kind=None, reference_assets=None, skill_snapshot=None, observe_only=False):
     """Run one saved typed member and return actual output with provenance.
 
     ``complete`` means the child manager observed completion, never that its
@@ -240,7 +255,7 @@ async def run_runtime_step(job, member, prompt, *, native_allowed=False, revisio
             if revision_of or output_kind not in {None, "text"}:
                 raise ValueError("MCP Agent 当前回传文本成果；不自动重发或将外部链接视为已生成文件")
             from .mcp_agent import run_mcp_step
-            return await run_mcp_step(job, member, prompt, scope=scope, skill_snapshot=skill_snapshot)
+            return await run_mcp_step(job, member, prompt, scope=scope, skill_snapshot=skill_snapshot, observe_only=observe_only)
         if engine == "muse" and native_allowed is not True:
             return {"status": "blocked", "task_id": None, "engine": engine, "output": "", "sources": [],
                     "error": "Muse 原生任务只能由本机入口授权执行；请在 Mac 上继续"}
@@ -287,6 +302,8 @@ async def run_runtime_step(job, member, prompt, *, native_allowed=False, revisio
                 if engine == 'muse' and item.get('status') == 'complete' and item.get('_native_media_errors'):
                     item = await manager.refresh_media(identifier, project_id)
             else:
+                if observe_only:
+                    raise ValueError("原执行记录不存在；自动恢复只收集原结果，不创建新的 Agent 任务")
                 try:
                     # Both existing managers queue a child only after their
                     # awaited preflight, with no await after queuing. Stay in

@@ -162,7 +162,8 @@ class UpstreamImageTests(unittest.IsolatedAsyncioTestCase):
         png = io.BytesIO()
         Image.new("RGB", (16, 16), "navy").save(png, format="PNG")
         captured, assets = [], []
-        async def execute_images(job, member, step, prompt, delivery, changed):
+        async def execute_images(job, member, step, prompt, delivery, changed, *, collect_only=False):
+            self.assertFalse(collect_only, "this fixture represents an initial generation")
             self.assertIn("CURRENT_PROJECT_STYLE", prompt)
             asset = store.save_bytes(job, png.getvalue(), kind="image", provider="fixture", slot_id="cover")
             assets.append(asset)

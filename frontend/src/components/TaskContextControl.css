@@ -19,3 +19,6 @@
 .handoff-receipt summary{cursor:pointer;color:var(--text-secondary,#667085)}
 .handoff-receipt p{line-height:1.6}.handoff-receipt ul{padding-left:18px}
 .handoff-receipt code{display:inline-block;margin-left:6px;font-size:11px;color:var(--text-secondary,#667085)}
+.task-brief-summary { border-left: 3px solid var(--accent); padding: 4px 16px; margin: 20px 0; }
+.task-brief-summary h3 { font-size: 16px; margin: 6px 0; }
+.task-brief-summary small { display: block; color: var(--muted); margin-top: 6px; }

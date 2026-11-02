@@ -24,6 +24,10 @@ test('empty model list enables discovery, local endpoints need explicit choice, 
 test('saved key, discovered model, successful test, and disabled state stay distinct', () => {
   assert.equal(connectionStatus({ enabled: true, has_api_key: true, models: [] }), '待选择模型');
   assert.equal(connectionStatus({ enabled: true, models: [{ id: 'm' }] }), '尚未测试调用');
-  assert.equal(connectionStatus({ enabled: true, last_test: { ok: true } }), '调用已验证');
+  assert.equal(connectionStatus({ enabled: true, last_test: { ok: true } }), '曾调用成功 · 需重新检查');
+  assert.equal(connectionStatus({ enabled: true, last_test: { ok: true, checked_at: new Date().toISOString() } }), '最近调用通过');
+  for (const checked_at of ['2020-01-01T00:00:00Z', new Date(Date.now() + 60000).toISOString(), 'invalid']) {
+    assert.equal(connectionStatus({ enabled: true, last_test: { ok: true, checked_at } }), '曾调用成功 · 需重新检查');
+  }
   assert.equal(connectionStatus({ enabled: false, last_test: { ok: true } }), '已停用');
 });

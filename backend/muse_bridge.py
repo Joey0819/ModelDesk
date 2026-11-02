@@ -414,6 +414,7 @@ class MuseManager:
                 else:
                     task.pop("_native_resources", None)
                 if task["status"] in ACTIVE:
+                    task["interrupted_from"] = task["status"]
                     task.update(status="interrupted", uncertain=task.get("sent") is not False, remote_state="unknown" if task.get("sent") is not False else "not_sent",
                                 error="服务已重启，未自动重新发送。请先在 Muse 核对已有任务。", monitoring=False)
                     self.save(task, "recovered_without_replay")

@@ -56,6 +56,11 @@ async function connectWorkbench() {
       maxBuffer: 128 * 1024,
       windowsHide: true,
     });
+    const supervisor = path.join(root, '..', 'llm-council', 'scripts', 'modeldesk_worker.py');
+    if (!fs.existsSync(supervisor)) throw new Error('background-worker-missing');
+    await execFileAsync('/usr/bin/python3', [supervisor, 'start', '--workspace', root], {
+      cwd: root, env: serviceEnvironment(), timeout: 10000, maxBuffer: 16384, windowsHide: true,
+    });
     const checks = await Promise.all(HEALTH_URLS.map(healthy));
     if (!checks.every(Boolean)) throw new Error('workbench-not-ready');
     if (mainWindow && !mainWindow.isDestroyed()) await mainWindow.loadURL(UI_URL);

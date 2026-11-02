@@ -64,6 +64,26 @@ class McpAgentTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(ValueError, '交接不一致'):
             await self.run_step('silently changed task')
 
+    async def test_background_reconciliation_collects_saved_result_without_dispatch(self):
+        from backend.operation_recovery import completed_operation
+        prompt='Original goal, correction and upstream final draft'
+        step={'kind':'mcp', 'member_id':self.member['id'], 'dispatch_prompt':prompt}
+        self.assertIsNone(completed_operation(self.job,step))
+        with self.assertRaisesRegex(ValueError,'原始执行记录不存在'):
+            await mcp_agent.run_mcp_step(self.job,self.member,prompt,scope=self.scope,observe_only=True)
+        self.session.call_tool.assert_not_awaited()
+        first=await self.run_step(prompt)
+        proof=completed_operation(self.job,step)
+        self.assertEqual(proof['task_id'],first['task_id'])
+        self.assertEqual(proof['mode'],'collect_only')
+        recovered=await mcp_agent.run_mcp_step(self.job,self.member,prompt,scope=self.scope,observe_only=True)
+        self.assertEqual(recovered['output'],first['output'])
+        self.session.call_tool.assert_awaited_once()
+        self.assertIsNone(completed_operation(self.job,{**step,'dispatch_prompt':'different prompt'}))
+        path=mcp_agent.STORE.directory/(first['task_id']+'.json')
+        value=json.loads(path.read_text()); value['status']='uncertain'; mcp_agent.STORE.save(value)
+        self.assertIsNone(completed_operation(self.job,step))
+
     async def test_page_two_agent_preserves_text_structured_evidence_and_provenance(self):
         self.tool.outputSchema = {'type': 'object', 'properties': {'count': {'type': 'integer'}}, 'required': ['count']}
         self.session.list_tools.side_effect = [ListToolsResult(tools=[], nextCursor='second'), ListToolsResult(tools=[self.tool])] * 2

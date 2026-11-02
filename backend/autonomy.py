@@ -79,7 +79,8 @@ def continuation_blocker(job):
     if workflow.get("resume_count", MAX_RESUMES) >= MAX_RESUMES or workflow.get("elapsed_seconds", run_budget(delivery)) >= run_budget(delivery):
         return "本轮继续次数或执行时间预算已用完，请检查现有成果"
     unfinished = [step for step in steps if step.get("status") != "complete"]
-    if any(step.get("kind") != "model" for step in unfinished):
+    from .operation_recovery import completed_operation
+    if any(step.get("kind") != "model" and not completed_operation(job, step) for step in unfinished):
         return "尚有原生 Agent、绘图或 MCP 步骤未确认完成；需要检查执行结果，后台不会重复派发"
     if unfinished and job.get("tools"):
         return "未完成的模型步骤启用了工具，可能已产生外部操作；请检查后手动继续"
@@ -115,7 +116,7 @@ class AutonomySupervisor:
         old_state = meta.get("state")
         meta.update(state=state, reason=reason, next_action_at=next_action_at, updated_at=now())
         if state in {"complete", "needs_attention", "cancelled"} and old_state != state:
-            meta.update(notification_id=str(uuid.uuid4()), read=False)
+            meta.update(notification_id=str(uuid.uuid4()), read=False, outcome_at=now())
         elif state in {"running", "retry_wait", "paused"}:
             meta.update(notification_id=None, read=True)
         self.jobs.emit(job, "autonomy", autonomy=meta.copy())
@@ -171,6 +172,19 @@ class AutonomySupervisor:
             return
         if meta.get("enabled") is not True:
             return
+        # Restore frozen MCP/skill context before checking saved external
+        # receipts; this performs no model, native or tool operation.
+        try:
+            if delivery_of(job).get("workflow", {}).get("context_digest"):
+                load_inputs(self.jobs, job)
+        except HTTPException as error:
+            self.set_state(job, "needs_attention", str(error.detail))
+            return
+        from .operation_recovery import resume_confirmed_observation
+        observation = await resume_confirmed_observation(job)
+        if observation:
+            self.set_state(job, "running", "正在找回 Muse 原会话的结果；只继续观察，不重新发送创作任务")
+            return
         blocker = continuation_blocker(job)
         if blocker:
             self.set_state(job, "needs_attention", blocker)
@@ -221,11 +235,13 @@ class AutonomySupervisor:
             rows.append({"id": job["id"], "project_id": job.get("project_id"), "room_id": job.get("group_room_id"),
                          "title": (delivery_of(job).get("title") or job.get("prompt") or "后台任务")[:160],
                          "created_at": job.get("created_at"), **{key: meta.get(key) for key in [
-                             "state", "reason", "attempts", "max_attempts", "next_action_at", "notification_id", "read", "updated_at"]}})
+                             "state", "reason", "attempts", "max_attempts", "next_action_at", "notification_id", "read", "updated_at", "outcome_at", "read_at"]}})
         rows.sort(key=lambda row: (row.get("updated_at") or "", row["id"]), reverse=True)
         counts = {state: sum(row["state"] == state for row in rows) for state in STATES}
         counts.update(total=len(rows), unread=sum(row.get("notification_id") is not None and not row.get("read") for row in rows))
-        return {"tasks": rows, "counts": counts}
+        from scripts.modeldesk_worker import read_status
+        worker = read_status()
+        return {"tasks": rows, "counts": counts, "worker": {key: worker.get(key) for key in ["online", "state", "checked_at", "heartbeat_age_seconds", "scope", "services"]}}
 
     async def mutate(self, identifier, project_id, action):
         from .harness.store import checked_id
@@ -237,7 +253,7 @@ class AutonomySupervisor:
                 raise HTTPException(404, "当前项目没有此后台任务")
             meta = job["autonomy"]
             if action == "read":
-                meta.update(read=True, updated_at=now())
+                meta.update(read=True, read_at=now())
                 self.jobs.save(job)
             elif action == "pause":
                 meta["enabled"] = False

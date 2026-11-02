@@ -132,7 +132,7 @@ def public_record(record):
             "skill_application": record.get("skill_application")}
 
 
-async def run_mcp_step(job, member, prompt, *, scope, skill_snapshot=None):
+async def run_mcp_step(job, member, prompt, *, scope, skill_snapshot=None, observe_only=False):
     from .group_delivery_runtime import _step_lock, _scope
     from .native_skills import freeze_native_skills
     from .skill_library import skill_prompt
@@ -175,6 +175,8 @@ async def run_mcp_step(job, member, prompt, *, scope, skill_snapshot=None):
                         or hashlib.sha256(record['output'].encode()).hexdigest() != record.get('output_sha256')))):
                 raise ValueError("MCP Agent 已有成果校验失败；保留原记录，不会重复派发")
             return public_record(record)
+        if observe_only:
+            raise ValueError("MCP 原始执行记录不存在；自动恢复不会创建新的工具调用")
         record = {**expected, "schema_version": 1, "created_at": now(), "status": "preflight", "dispatch_count": 0,
                   "skill_application": {"mode": "role_instructions", "skills": [
                       {key: item.get(key) for key in ["id", "name", "revision", "sha256"]} for item in skills.values()],

@@ -5,6 +5,7 @@ export default function TaskContextControl({ value, onChange, disabled, jobs = [
   const latest = jobs.at(-1);
   const previous = latest?.context_history;
   const memory = latest?.task_context;
+  const brief = latest?.result?.delivery?.task_brief || latest?.task_brief;
   const fresh = value === 'fresh';
   const documents = memory?.reference_documents || [];
   const documentCount = documents.reduce((total, item) => total + (item.asset_ids?.length ?? item.names?.length ?? 0), 0);
@@ -21,6 +22,7 @@ export default function TaskContextControl({ value, onChange, disabled, jobs = [
       <div className="task-memory-body">
         <p className="task-memory-scope">{fresh ? '已选择开始新任务：以下是上次执行的记录，不会作为本轮任务记忆带入。已选项目资料仍有效。' : `上次执行实际准备的记忆（第 ${memory.revision} 轮），不包含该次执行后才生成的成果。下一轮发送时会重新整理最新成果，并追加本轮要求；后续修改覆盖冲突的旧要求。`}</p>
         <div className="task-memory-inventory" aria-label="记忆内容清单"><span>{memory.requests?.length || 0} 条用户要求</span><span>{documentCount} 份历史文本资料</span><span>{mediaCount} 份可复用素材</span></div>
+        {brief && <section className="task-brief-summary" aria-label="版本化任务要点"><h3>任务要点 · 第 {brief.revision} 版</h3><p>原始目标与后续修改逐条保留。最新修改覆盖冲突项，未修改的要求继续有效；每个成员的交接绑定本版本。</p>{brief.pending_items?.length > 0 && <><strong>此前未完成</strong><ul>{brief.pending_items.map((item, index) => <li key={index}>{item}</li>)}</ul></>}{brief.requirements?.length > 0 && <><strong>本轮整理的验收项</strong><small>由统筹者整理，原始用户要求优先。可在群聊中补充或修改，下一轮会形成新版本。</small><ul>{brief.requirements.map((item) => <li key={item.id}>{item.description}</li>)}</ul></>}<small>版本指纹 {brief.sha256?.slice(0, 12)} · {brief.sources?.length || 0} 条原文来源</small></section>}
         <ol>{(memory.requests || []).map((item, index) => <li key={item.job_ids?.[0] || index}><strong>{index === 0 ? '原始目标' : '后续修改'}</strong><p style={{ whiteSpace: 'pre-wrap' }}>{item.prompt}</p></li>)}</ol>
         {memory.artifact && <p>当时沿用的底稿：{memory.artifact.title || '未命名成果'} · {memory.artifact.status === 'complete' ? '此前已交付' : '尚未完整完成'}。下一轮仍需重新验收。</p>}
         {memory.baseline_artifact && <p>同时保留修改前的完整稿：{memory.baseline_artifact.title || '未命名成果'}。</p>}

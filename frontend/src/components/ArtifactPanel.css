@@ -241,3 +241,4 @@
 .artifact-prepared-documents a:hover { border-color: var(--artifact-accent); }
 .artifact-prepared-documents strong { font-size: 11px; font-weight: 600; }
 .artifact-prepared-documents small { color: var(--artifact-muted); font-size: 10px; }
+.artifact-panel-header .artifact-close-button { width: auto; min-width: 32px; padding: 0 8px; white-space: nowrap; flex-shrink: 0; gap: 6px; }

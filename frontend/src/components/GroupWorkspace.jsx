@@ -182,13 +182,18 @@ export function GroupLiveActivityBar({ activeJob, museTasks = [], agentTasks = [
   </div>;
 }
 
+export function TaskPrompt({ text = '' }) {
+  if (text.length <= 360) return <Markdown>{text}</Markdown>;
+  return <details className="group-original-prompt"><summary><strong>任务要求</strong><span>{text.replace(/\s+/g, ' ').slice(0, 160)}…</span><small>展开完整要求 · {text.length} 字符</small></summary><Markdown>{text}</Markdown></details>;
+}
+
 export function GroupTurn({ job, room, onOpenArtifacts, onSendToMuse, onHandOffToAgent, onQuoteReply }) {
   const messages = groupMessages(job, room);
   const recipients = groupRecipients(job, room);
   const automatic = groupDeliveryMode(job) === 'auto';
   const MessageContainer = automatic ? 'details' : 'div';
   return <article className="group-room-turn" aria-label={`群聊记录 ${dateLabel(job.created_at)}`}>
-    <div className="group-user-message"><header><strong>你</strong><time>{dateLabel(job.created_at)}</time><CopyTextButton text={job.prompt} label="复制这条提问" /></header><div className="group-turn-recipients">{recipients.map((member) => <span key={member.id}>@{member.name}</span>)}{job.rounds > 1 && <span>共 {job.rounds} 轮深研</span>}</div><Markdown>{job.prompt}</Markdown><JobAttachments job={job} />{job.group_muse_source && <details className="group-muse-provenance"><summary>引用了 Muse 实际回复</summary><p>{job.group_muse_source.prompt}</p>{safeMuseThreadUrl(job.group_muse_source.thread_url) && <a href={safeMuseThreadUrl(job.group_muse_source.thread_url)} target="_blank" rel="noopener noreferrer">打开原始 Muse 会话 ↗</a>}<Markdown>{job.group_muse_source.response}</Markdown>{job.group_muse_source.truncated && <p>引用超过保存预算，完整回复保留在原始 Muse 任务中。</p>}<p>{job.group_muse_source.verification}</p><CopyTextButton text={job.group_muse_source.response} label="复制引用的 Muse 回复" /></details>}</div>
+    <div className="group-user-message"><header><strong>你</strong><time>{dateLabel(job.created_at)}</time><CopyTextButton text={job.prompt} label="复制这条提问" /></header><div className="group-turn-recipients">{recipients.map((member) => <span key={member.id}>@{member.name}</span>)}{job.rounds > 1 && <span>共 {job.rounds} 轮深研</span>}</div><TaskPrompt text={job.prompt} /><JobAttachments job={job} />{job.group_muse_source && <details className="group-muse-provenance"><summary>引用了 Muse 实际回复</summary><p>{job.group_muse_source.prompt}</p>{safeMuseThreadUrl(job.group_muse_source.thread_url) && <a href={safeMuseThreadUrl(job.group_muse_source.thread_url)} target="_blank" rel="noopener noreferrer">打开原始 Muse 会话 ↗</a>}<Markdown>{job.group_muse_source.response}</Markdown>{job.group_muse_source.truncated && <p>引用超过保存预算，完整回复保留在原始 Muse 任务中。</p>}<p>{job.group_muse_source.verification}</p><CopyTextButton text={job.group_muse_source.response} label="复制引用的 Muse 回复" /></details>}</div>
     {automatic && <GroupDeliveryProgress job={job} onOpenArtifacts={onOpenArtifacts} />}
     <MessageContainer className={automatic ? "group-delivery-discussion" : "group-discussion-messages"}>
     {automatic && <summary>查看讨论与规划记录（{messages.length} 条）</summary>}

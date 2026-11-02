@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { autonomyApi } from '../autonomy-api';
 import { AUTONOMY_STATES, autonomyActive, autonomyCounts, autonomyUnread, scopedAutonomyTasks } from '../autonomy-state';
 import { Icon } from './WorkbenchResults';
+import { WorkerStatus } from './ReadinessPanel';
 import './AutonomyTaskCenter.css';
 
 const timeLabel = (value) => {
@@ -25,7 +26,7 @@ export function AutonomyTaskList({ tasks = [], loading = false, error = '', acti
     {tasks.map((task) => <article key={task.id} className={`autonomy-task autonomy-task-${task.state}`}>
       <header><strong>{task.title || '未命名任务'}</strong><span className="autonomy-state">{AUTONOMY_STATES[task.state]}</span>{autonomyUnread(task) && <span className="autonomy-unread">未读</span>}</header>
       {task.reason && <p>{task.reason}</p>}
-      <div className="autonomy-task-meta"><time dateTime={task.updated_at}>{timeLabel(task.updated_at)}</time>{Number.isFinite(task.attempts) && Number.isFinite(task.max_attempts) && <span>安全续跑 {task.attempts}/{task.max_attempts}</span>}{task.state === 'retry_wait' && task.next_action_at && <span>下次检查：{timeLabel(task.next_action_at)}</span>}</div>
+      <div className="autonomy-task-meta"><time dateTime={task.outcome_at || task.updated_at}>{timeLabel(task.outcome_at || task.updated_at)}</time>{Number.isFinite(task.attempts) && Number.isFinite(task.max_attempts) && <span>安全续跑 {task.attempts}/{task.max_attempts}</span>}{task.state === 'retry_wait' && task.next_action_at && <span>下次检查：{timeLabel(task.next_action_at)}</span>}</div>
       {task.state === 'paused' && <p className="autonomy-task-note">已停止后续自动续跑；已启动的执行不会因此取消。</p>}
       <div className="autonomy-task-actions"><button type="button" className="primary-button" disabled={busyId === task.id} onClick={() => onOpenTask(task)}>{busyId === task.id ? '正在处理…' : task.state === 'complete' ? '查看成果' : '查看任务'}</button>{autonomyUnread(task) && <button type="button" className="subtle-button" disabled={busyId === task.id} onClick={() => onRead(task)}>标为已读</button>}{autonomyActive(task) && <button type="button" className="subtle-button" disabled={busyId === task.id} onClick={() => onPause(task)} title="仅停止后续自动续跑；停止当前执行请打开任务">暂停托管</button>}</div>
     </article>)}
@@ -34,6 +35,7 @@ export function AutonomyTaskList({ tasks = [], loading = false, error = '', acti
 
 export default function AutonomyTaskCenter({ projectId, projectName, onOpenTask, onOpenFeishu }) {
   const [tasks, setTasks] = useState([]);
+  const [worker, setWorker] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [actionError, setActionError] = useState('');
@@ -47,7 +49,7 @@ export default function AutonomyTaskCenter({ projectId, projectName, onOpenTask,
     inFlight.current = true;
     try {
       const result = await autonomyApi.list(projectId);
-      if (alive.current) { setTasks(scopedAutonomyTasks(result, projectId)); setError(''); }
+      if (alive.current) { setTasks(scopedAutonomyTasks(result, projectId)); setWorker(result.worker); setError(''); }
     } catch (failure) { if (alive.current) setError(failure.message); }
     finally { inFlight.current = false; if (alive.current) setLoading(false); }
   }, [projectId]);
@@ -75,7 +77,8 @@ export default function AutonomyTaskCenter({ projectId, projectName, onOpenTask,
     <button type="button" className="autonomy-center-trigger" onClick={() => { dialog.current?.showModal(); refresh(); }} aria-haspopup="dialog" title={error ? '后台任务暂未同步，点击重新连接' : `运行中 ${counts.active} · 需要处理 ${counts.attention} · 未读 ${counts.unread}`}><Icon name="tasks" size={15} /><span>后台任务</span>{counts.unread > 0 && <b aria-label={`${counts.unread} 条未读任务通知`}>{counts.unread}</b>}{counts.active > 0 && <span className="autonomy-trigger-running">{counts.active} 运行中</span>}{error && <span aria-label="后台任务连接失败">!</span>}</button>
     <dialog className="autonomy-center-dialog" ref={dialog} aria-label="后台任务中心">
       <header><div><strong>后台任务</strong><p>{projectName || '未关联项目'} · {counts.active} 运行中 · {counts.attention} 待处理</p></div><button type="button" className="icon-button" aria-label="关闭后台任务" onClick={() => dialog.current?.close()}><Icon name="close" size={18} /></button></header>
-      <p className="autonomy-center-explanation">状态与未读通知保存在本机服务，刷新页面后可继续查看。关闭页面不会取消任务；Mac 休眠、关机或服务停止时无法继续执行。系统通知需要 ModelDesk 桌面应用保持运行。</p>
+      <WorkerStatus worker={error ? null : worker} />
+      <p className="autonomy-center-explanation">状态与通知保存在本机，刷新后可以继续查看。Mac 休眠、关机或服务停止时无法继续执行。系统通知需要桌面应用运行；配置飞书后可接收远程交付。</p>
       {onOpenFeishu && <button type="button" className="subtle-button autonomy-feishu-link" onClick={() => { dialog.current?.close(); onOpenFeishu(); }}>配置飞书：从手机发指令并接收成果</button>}
       <AutonomyTaskList tasks={tasks} loading={loading} error={error} actionError={actionError} busyId={busyId} onRefresh={refresh} onOpenTask={(task) => act(task, 'open')} onRead={(task) => act(task, 'read')} onPause={(task) => act(task, 'pause')} />
     </dialog>

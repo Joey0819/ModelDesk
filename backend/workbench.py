@@ -35,7 +35,6 @@ from .model_connections import model_catalog as connection_models, request_optio
 PROJECT = Path(__file__).resolve().parents[1]
 TOOLS = PROJECT.parent / "llm-tools"
 GATEWAY = "http://127.0.0.1:8317/v1"
-VERIFIED_MODELS = {"gpt-6.1-sol", "gpt-6-luna", "gemini-3-flash"}
 TERMINAL = {"complete", "error", "cancelled", "interrupted"}
 router = APIRouter(prefix="/api/workbench", tags=["workbench"])
 
@@ -190,12 +189,8 @@ class JobManager:
         self.conversation_locks = {}
 
     def save(self, job):
-        self.directory.mkdir(parents=True, exist_ok=True, mode=0o700)
-        target = self.directory / (job["id"] + ".json")
-        temporary = target.with_suffix(".tmp")
-        temporary.write_text(json.dumps(job, ensure_ascii=False, indent=2))
-        temporary.chmod(0o600)
-        temporary.replace(target)
+        from .execution_store import save_checkpoint
+        save_checkpoint(self.directory, job["id"], job)
 
     def recover(self):
         """A restarted service cannot claim abandoned jobs are still running."""
@@ -371,6 +366,8 @@ class JobManager:
             if task_context:
                 await asyncio.to_thread(include_task_attachments, task_context, self.jobs, job, self.directory / "attachment-inputs")
                 job["task_context"] = context_summary(task_context)
+                from .task_brief import build_brief
+                job["task_brief"] = build_brief(task_context)
                 self.emit(job, "stage", stage="task_context", data=job["task_context"])
                 # The bounded discussion window must not evict the original
                 # request or the last document after several failed edits.
@@ -1071,10 +1068,13 @@ async def status():
                 auth[record["type"]].append({"expires_at": record.get("expired") or record.get("expiry") or record.get("expires_at")})
         except (OSError, ValueError, TypeError):
             continue
+    from .readiness import model_evidence
+    evidence = model_evidence(manager.jobs)
+    verified_models = {model for model, item in evidence.items() if item["recent"]}
     providers = []
     for identifier, label in [("codex", "ChatGPT"), ("antigravity", "Gemini")]:
         available = [model for model in catalog if provider_for(model) == identifier]
-        provider = {"id": identifier, "label": label, "authenticated": bool(auth[identifier]), "available_models": available, "verified_models": [model for model in available if model in VERIFIED_MODELS]}
+        provider = {"id": identifier, "label": label, "authenticated": bool(auth[identifier]), "available_models": available, "verified_models": [model for model in available if model in verified_models], "authentication_evidence": "saved_credential_only"}
         if auth[identifier] and auth[identifier][0].get("expires_at"):
             provider["expires_at"] = auth[identifier][0]["expires_at"]
         providers.append(provider)
@@ -1096,7 +1096,7 @@ async def status():
         elif not gateway["online"] and not api_models:
             tools[identifier]["reason"] = "本地模型网关未启动"
     api_by_id = {model["id"]: model for model in api_models}
-    return {"gateway": gateway, "providers": providers, "models": [api_by_id.get(model) or {"id": model, "provider": provider_for(model), "verified": model in VERIFIED_MODELS} for model in catalog], "tools": tools, **({"connections_error": connections_error} if connections_error else {})}
+    return {"gateway": gateway, "providers": providers, "models": [api_by_id.get(model) or {"id": model, "provider": provider_for(model), "verified": model in verified_models, "last_success": evidence.get(model), "verification_scope": "recent_text_call" if model in verified_models else "not_recently_verified"} for model in catalog], "tools": tools, **({"connections_error": connections_error} if connections_error else {})}
 
 
 @router.get("/jobs")

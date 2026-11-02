@@ -4,6 +4,7 @@ import json
 import tempfile
 import unittest
 import uuid
+from contextlib import asynccontextmanager
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -109,6 +110,68 @@ class AutonomyTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(entry["format"], "html")
         no_model.assert_not_awaited()
         no_native.assert_not_awaited()
+
+    async def test_restart_collects_completed_mcp_then_finishes_without_duplicate_dispatch(self):
+        from types import SimpleNamespace
+        from mcp.types import CallToolResult, TextContent, Tool
+        from backend import mcp_agent, group_delivery_runtime
+        from backend.harness.models import TeamMember
+        from backend.harness.store import RunStore
+        from backend.platform_store import PlatformStore
+        resources = PlatformStore(Path(self.temp.name) / 'resources.json')
+        config = resources.put('mcp', dict(name='Recovery fixture', url='http://127.0.0.1:8371/mcp',
+                                          transport='streamable_http', allowed_tools=['execute_task']))
+        member = TeamMember(id='analyst', name='Analyst', kind='mcp', mcp_server_id=config['id'],
+                            mcp_tool='execute_task', role='Return actual measurement').model_dump(mode='json')
+        self.job['group_team_snapshot']['members'].insert(1, member)
+        self.job['group_recipient_member_ids'].insert(1, 'analyst')
+        self.job['group_document_formats'] = ['html']
+        native_store = RunStore(Path(self.temp.name) / 'mcp')
+        tool = Tool(name='execute_task', inputSchema={'type':'object','properties':{'prompt':{'type':'string'}},'required':['prompt']})
+        session = SimpleNamespace(list_tools=AsyncMock(return_value=SimpleNamespace(tools=[tool])),
+                                  call_tool=AsyncMock(return_value=CallToolResult(content=[TextContent(type='text',text='Actual measurement: 42')])) )
+        @asynccontextmanager
+        async def connect(_):
+            yield session
+        async def provider(job, model, system, prompt, **kwargs):
+            if '你是项目统筹者' in system:
+                value=plan()
+                value['steps'].insert(1, {'id':'measure','member_id':'analyst','instruction':'Measure original draft',
+                                         'expected_output':'Actual measured count','depends_on':[value['steps'][0]['id']],'output_kind':'text'})
+                value['steps'][-1]['depends_on']=['measure']
+                return json.dumps(value), False
+            return await self.provider(job,model,system,prompt,**kwargs)
+        original = group_delivery_runtime.run_runtime_step
+        async def crash_after_receipt(*args, **kwargs):
+            result=await original(*args, **kwargs)
+            self.assertEqual(result['status'], 'complete')
+            raise RuntimeError('Fault fixture: parent lost after MCP saved its result')
+        with patch.object(mcp_agent,'resources',resources), patch('backend.harness.context.resources',resources), patch.object(mcp_agent,'STORE',native_store), \
+             patch.object(mcp_agent,'agent_session',connect):
+            with patch.object(group_delivery_runtime,'run_runtime_step',crash_after_receipt):
+                delivery=await self.initial(provider)
+            self.assertNotEqual(delivery['status'],'complete')
+            session.call_tool.assert_awaited_once()
+            self.manager=workbench.JobManager(self.manager.directory)
+            self.manager.recover()
+            self.job=self.manager.jobs[self.job['id']]
+            self.supervisor=autonomy.AutonomySupervisor(self.manager,retry_delay=0)
+            # Restoring the saved MCP receipt needs neither network discovery nor
+            # another tool invocation. Pure downstream models may still run.
+            with patch.object(mcp_agent,'agent_session',side_effect=AssertionError('must collect locally')), \
+                 patch.object(group_delivery,'model_output',side_effect=provider):
+                await self.supervisor.tick()
+                self.assertEqual(self.job['autonomy']['state'],'retry_wait',self.job['autonomy'])
+                await self.supervisor.tick()
+                await self.settle()
+            self.assertEqual(self.job['autonomy']['state'],'complete',self.job['autonomy'])
+            step=next(item for item in self.job['result']['delivery']['steps'] if item['kind']=='mcp')
+            self.assertEqual(step['operation_receipt']['mode'],'collect_only')
+            self.assertEqual(step['output'],'Actual measurement: 42')
+            session.call_tool.assert_awaited_once()
+            entry=self.job['result']['delivery']['documents'][0]
+            _,raw=self.documents.read(self.job,entry['id'])
+            self.assertIn('真实正文',raw.decode())
 
     async def test_unsafe_remaining_steps_and_tools_are_not_replayed(self):
         await self.failure()

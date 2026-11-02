@@ -2,7 +2,6 @@
 import copy
 import json
 import math
-import os
 from datetime import datetime
 from pathlib import Path
 from uuid import UUID
@@ -16,20 +15,8 @@ class RunStore:
         self.directory = Path(directory)
 
     def save(self, run):
-        self.directory.mkdir(parents=True, exist_ok=True, mode=0o700)
-        target = self.directory / (str(UUID(run["id"])) + ".json")
-        temporary = target.with_suffix(".tmp")
-        with temporary.open("w", encoding="utf-8") as output:
-            os.chmod(temporary, 0o600)
-            json.dump(run, output, ensure_ascii=False, allow_nan=False)
-            output.flush()
-            os.fsync(output.fileno())
-        temporary.replace(target)
-        descriptor = os.open(self.directory, os.O_RDONLY)
-        try:
-            os.fsync(descriptor)
-        finally:
-            os.close(descriptor)
+        from ..execution_store import save_checkpoint
+        save_checkpoint(self.directory, run["id"], run)
 
     def load(self):
         if not self.directory.exists():

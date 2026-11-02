@@ -24,9 +24,15 @@ export function connectionIssue(draft) {
   if (new Set(draft.models.map((model) => model.id.trim())).size !== draft.models.length) return '同一连接中不能重复添加模型 ID。';
   return '';
 }
+export function connectionRecentlyVerified(connection) {
+  const age = Date.now() - Date.parse(connection.last_test?.checked_at);
+  return Boolean(connection.enabled && connection.last_test?.ok && Number.isFinite(age) && age >= 0 && age <= 86400000);
+}
 export function connectionStatus(connection) {
   if (!connection.enabled) return '已停用';
-  if (connection.last_test?.ok) return '调用已验证';
+  if (connection.last_test?.ok) {
+    return connectionRecentlyVerified(connection) ? '最近调用通过' : '曾调用成功 · 需重新检查';
+  }
   if (connection.last_test?.ok === false) return '上次调用失败';
   if (!connection.models?.length) return '待选择模型';
   return '尚未测试调用';

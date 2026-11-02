@@ -405,3 +405,10 @@
   .group-compact-header .header-title > div, .group-compact-header .header-title > .mode-header-icon { display: none; }
   .group-compact-header .header-title .mobile-menu { display: inline-flex; }
 }
+
+/* The full original stays available; the timeline keeps room for actual progress. */
+.group-original-prompt > summary { cursor: pointer; display: grid; gap: 7px; line-height: 1.65; }
+.group-original-prompt > summary > span { font-size: 13px; }
+.group-original-prompt > summary > small { opacity: .8; font-size: 11px; }
+.group-original-prompt[open] > summary > span { display: none; }
+.group-original-prompt[open] > .markdown { margin-top: 12px; }

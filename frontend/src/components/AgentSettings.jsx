@@ -1,9 +1,10 @@
 import SkillsSettings from './SkillsSettings';
 import FeishuConnection from './FeishuConnection';
+import ReadinessPanel from './ReadinessPanel';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { REMOTE_CLIENT } from '../api-base';
 import { modelConnectionApi } from '../model-connection-api';
-import { CONNECTION_PRESETS, connectionBody, connectionDraft, connectionIssue, connectionStatus } from '../model-connection-state';
+import { CONNECTION_PRESETS, connectionBody, connectionDraft, connectionIssue, connectionStatus, connectionRecentlyVerified } from '../model-connection-state';
 import { museApi } from '../muse-api';
 import { museReadiness } from '../muse-state';
 import { useProjects } from '../project-context';
@@ -35,9 +36,9 @@ export function ConnectionForm({ draft, busy, onChange, onSave, onCancel }) {
 
 export function ConnectionRow({ connection, busy, onEdit, onDiscover, onTest, onRemove }) {
   return <article className="connection-row">
-    <div className="connection-identity"><span className={`connection-symbol ${connection.provider === 'xai' ? 'xai' : ''}`}>{connection.provider === 'xai' ? '𝕏' : <Icon name="code" size={19} />}</span><div><h3>{connection.name}</h3><p>{connection.base_url}</p></div><span className={`connection-state ${connection.last_test?.ok && connection.enabled ? 'verified' : ''}`}>{connectionStatus(connection)}</span></div>
+    <div className="connection-identity"><span className={`connection-symbol ${connection.provider === 'xai' ? 'xai' : ''}`}>{connection.provider === 'xai' ? '𝕏' : <Icon name="code" size={19} />}</span><div><h3>{connection.name}</h3><p>{connection.base_url}</p></div><span className={`connection-state ${connectionRecentlyVerified(connection) ? 'verified' : ''}`}>{connectionStatus(connection)}</span></div>
     <div className="connection-model-tags">{connection.models?.map((model) => <span key={model.id} title={model.id}>{model.label || model.id}</span>)}</div>
-    {connection.last_test && <p className="connection-test-record">{connection.last_test.message}</p>}
+    {connection.last_test && <p className="connection-test-record">{connection.last_test.message}{connection.last_test.checked_at && <time dateTime={connection.last_test.checked_at}> · {new Date(connection.last_test.checked_at).toLocaleString()}</time>}</p>}
     <div className="connection-row-actions"><button type="button" className="subtle-button" disabled={busy} onClick={onEdit}>编辑连接</button><button type="button" className="subtle-button" disabled={busy || !connection.enabled} onClick={onDiscover}>读取模型列表</button><button type="button" className="subtle-button" disabled={busy || !connection.enabled || !connection.models?.length} onClick={onTest}>测试模型调用</button><button type="button" className="subtle-button connection-remove" disabled={busy} onClick={onRemove}>移除</button></div>
   </article>;
 }
@@ -78,6 +79,7 @@ export default function AgentSettings({ status, models, initialSection = 'agents
   return <main className="agent-settings-workspace"><header className="workspace-header"><div className="header-title"><button className="mobile-menu icon-button" aria-label="打开导航" onClick={onOpenNavigation}><Icon name="menu" /></button><span className="mode-header-icon"><Icon name="group" size={22} /></span><div><h1>Agent 与连接</h1><span>设置模型、角色和协作成员</span></div></div><button type="button" className="subtle-button" onClick={onOpenGroups}>返回项目群</button></header><nav className="agent-settings-tabs" aria-label="Agent 设置分类">{[['agents', '项目 Agent'], ['connections', '模型连接 / API Key'], ['muse', 'Muse 应用'], ['feishu', '飞书远程'], ['skills', 'Skills 能力库']].map(([id, label]) => <button type="button" key={id} aria-current={section === id ? 'page' : undefined} className={section === id ? 'selected' : ''} onClick={() => setSection(id)}>{label}</button>)}</nav><div className="agent-settings-scroll"><div className="agent-settings-content">
     {section === 'agents' && <><div className="agent-section-heading"><div><h2>选择统筹模型，组建 Agent 团队</h2><p>{activeProject?.name || '当前项目'}的协作组保存成员类型、模型和职责；可加入 Codex、Claude Code 或 Muse。</p></div><button type="button" className="primary-button" disabled={pending} onClick={() => setEditSignal((value) => value + 1)}><Icon name="plus" size={15} />添加 Agent</button></div><MissionTeamPicker key={activeProjectId || 'unassigned'} projectId={activeProjectId} team={team} models={models} catalog={status?.models || []} onChange={chooseTeam} onPending={setPending} editSignal={editSignal} onOpenAgentSettings={() => setSection('connections')} /><div className="agent-next-step"><div><strong>选择统筹 LLM → 添加模型与执行 Agent → 在项目群协作</strong><p>找不到想用的模型？先添加连接。已有群聊可从群顶部“管理成员”更新名单，历史任务保持原来的成员记录。</p></div><button type="button" className="subtle-button" onClick={() => setSection('connections')}>接入 Grok / 其他模型</button></div><div className="agent-inline-actions"><button type="button" className="primary-button" disabled={pending} onClick={() => team?.id ? onStartGroup(team) : onOpenGroups()}>{team?.id ? "用此协作组新建群聊" : "前往项目群"}</button><button type="button" className="subtle-button" onClick={onOpenLibrary}>打开智能体模板库</button><button type="button" className="subtle-button" onClick={() => setSection('muse')}>设置 Muse</button><button type="button" className="subtle-button" onClick={() => setSection('feishu')}>飞书收发任务</button></div></>}
     {section === 'connections' && <><Connections onRefresh={onRefresh} /><section className="existing-connections"><h3>已有登录连接</h3><p>继续使用本机现有登录；添加 API 连接不会替换它们。</p>{status?.providers?.filter((provider) => ['codex', 'antigravity', 'claude'].includes(provider.id)).map((provider) => <div key={provider.id}><strong>{provider.label}</strong><span>{provider.authenticated ? '已发现登录凭据' : '尚未接入'}</span><small>{provider.verified_models?.length ? `${provider.verified_models.length} 个模型有调用记录` : provider.reason || '调用状态以实际请求为准'}</small></div>)}</section></>}
+    {section === 'agents' && <ReadinessPanel />}
     {section === 'feishu' && <FeishuConnection onOpenGroups={onOpenGroups} />}
     {section === 'skills' && <SkillsSettings />}
     {section === 'muse' && <MuseConnection onOpenGroups={onOpenGroups} />}

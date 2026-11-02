@@ -227,9 +227,12 @@ store = ConnectionStore()
 
 
 def model_catalog():
+    from .readiness import recent_test
     return [{"id": model["alias"], "label": model.get("label") or model["id"],
              "provider": "connection:" + connection["id"], "connection_id": connection["id"],
-             "connection_name": connection["name"], "verified": bool((connection.get("last_test") or {}).get("ok")) and connection.get("last_test_model") == model["id"]}
+             "connection_name": connection["name"], "verified": recent_test(connection.get("last_test")) and connection.get("last_test_model") == model["id"],
+             "last_test_at": (connection.get("last_test") or {}).get("checked_at"),
+             "verification_scope": "recent_text_call" if recent_test(connection.get("last_test")) and connection.get("last_test_model") == model["id"] else "not_recently_verified"}
             for connection in store.list() if connection["enabled"] for model in connection["models"]]
 
 

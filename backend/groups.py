@@ -363,6 +363,8 @@ async def submit_message(identifier: str, request: MessageRequest, project_id: s
     missing = list(dict.fromkeys(model for model in requested_models if model not in catalog))
     if missing:
         raise HTTPException(422, "这些接收成员的模型尚未连接：" + "、".join(missing))
+    from .readiness import preflight_connections
+    await preflight_connections(requested_models)
     body = request.model_dump(mode="json", exclude={"recipient_member_ids", "muse_task_id", "delivery_mode", "background_mode", "output_format", "image_count", "media_provider", "context_mode", "document_formats", "document_layout"})
     try:
         job_request = workbench.JobRequest(**body, mode="group", project_id=room["project_id"], conversation_id=room["id"],

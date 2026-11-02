@@ -28,6 +28,10 @@ from .feishu import router as feishu_router, controller as feishu_controller
 from .council import run_full_council, generate_conversation_title, stage1_collect_responses, stage2_collect_rankings, stage3_synthesize_final, calculate_aggregate_rankings
 
 from .skill_library import router as skills_router
+from .execution_store import WorkerOwnership
+from .readiness import router as readiness_router
+
+worker_ownership = WorkerOwnership(workbench_manager.directory)
 
 app = FastAPI(title="ModelDesk API")
 app.include_router(skills_router)
@@ -45,7 +49,10 @@ app.include_router(model_connections_router)
 app.include_router(model_runtime_router)
 app.include_router(delivery_media_router)
 app.include_router(autonomy_router)
+app.include_router(readiness_router)
 app.include_router(feishu_router)
+app.add_event_handler("startup", worker_ownership.acquire)
+app.add_event_handler("startup", group_tasks_manager.recover)
 app.add_event_handler("startup", workbench_manager.recover)
 app.add_event_handler("startup", harness_manager.recover)
 app.add_event_handler("startup", muse_manager.recover)
@@ -59,6 +66,7 @@ app.add_event_handler("shutdown", group_tasks_manager.shutdown)
 app.add_event_handler("shutdown", muse_manager.shutdown)
 app.add_event_handler("shutdown", harness_manager.shutdown)
 app.add_event_handler("shutdown", workbench_manager.shutdown)
+app.add_event_handler("shutdown", worker_ownership.release)
 
 # Enable CORS for local development
 app.add_middleware(

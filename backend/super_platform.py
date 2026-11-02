@@ -464,15 +464,20 @@ async def overview():
     except (ValueError, OSError):
         verified = {}
     runtimes = [{"id": "gateway", "name": "已有账户模型网关", "installed": True, "available": connection["gateway"]["online"], "validated": connection["gateway"]["online"]},
-                {"id": "camel", "name": "CAMEL", "version": "0.2.90", "installed": (root / ".venv-camel/bin/python").exists(), "validated": True},
-                {"id": "crewai", "name": "CrewAI", "version": "1.15.27", "installed": (root / ".venv-crewai/bin/python").exists(), "validated": True}]
+                {"id": "camel", "name": "CAMEL", "version": "0.2.90", "installed": (root / ".venv-camel/bin/python").exists(), "validated": False, "validation_scope": "installation_only"},
+                {"id": "crewai", "name": "CrewAI", "version": "1.15.27", "installed": (root / ".venv-crewai/bin/python").exists(), "validated": False, "validation_scope": "installation_only"}]
     features = [{"id": identifier, "name": name, "available": True, "validated": bool(verified.get(identifier)), "reason": reason} for identifier, name, reason in [
         ("knowledge", "知识检索与来源", "中文分词与 BM25 词项检索；不需要供应商 embedding key。"),
         ("memory", "持久记忆", "本机持久保存、记忆空间隔离与任务来源。"), ("mcp", "MCP", "官方 Python SDK；HTTP/SSE 与逐工具授权。"),
         ("flows", "任务流程", "原生 CAMEL Workforce 与 CrewAI Flow，运行状态保存在任务记录。"),
         ("sdk", "原生 SDK 工作室", "明确确认后在本机执行原生 SDK；额外服务与硬件按实际配置。"),
         ("migration", "数据迁移", "资源与历史增量导入，原始文件及当前数据保留。")]]
-    return {"version": "2.0.0", "runtimes": runtimes, "counts": {kind: len(store.list(kind)) for kind in KINDS}, "features": features,
+    # Desktop package metadata is the release version authority.
+    try:
+        version = json.loads((Path(__file__).resolve().parents[1] / "desktop/package.json").read_text())["version"]
+    except (OSError, ValueError, KeyError):
+        version = "unknown"
+    return {"version": version, "runtimes": runtimes, "counts": {kind: len(store.list(kind)) for kind in KINDS}, "features": features,
             "active_jobs": [item for item in manager.jobs.values() if item["status"] not in {"complete", "error", "cancelled", "interrupted"}],
             "retrieval": {"engine": "rank_bm25.BM25Plus", "tokenizer": "jieba", "semantic_embeddings": False}, "connection": connection}
 

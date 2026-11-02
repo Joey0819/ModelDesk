@@ -651,6 +651,8 @@ async def run(manager, job, *, continuing=False):
                 delivery["reused_media"] = reuse_media(job, plan["reuse_media_ids"], memory, manager.jobs, delivery)
                 delivery.update(title=plan["title"], steps=plan["steps"])
                 delivery["task_spec"]["requirements"] = plan["requirements"]
+                from .task_brief import build_brief
+                delivery["task_brief"] = build_brief(memory, goal=goal, requirements=plan["requirements"])
                 from .document_delivery import document_spec
                 delivery["task_spec"]["documents"] = document_spec(job, plan)
                 # Reusing a verified file does not require its original
@@ -663,8 +665,11 @@ async def run(manager, job, *, continuing=False):
                 changed()
 
             async def execute(step, parents):
-                if job.get("_autonomy_local_only") and (step["kind"] != "model" or job.get("tools")):
-                    raise ValueError("后台继续不能重新派发原生 Agent、绘图或带工具的步骤，请人工检查")
+                collecting = bool(job.get("_autonomy_local_only") and step["kind"] != "model")
+                if job.get("_autonomy_local_only"):
+                    from .operation_recovery import completed_operation
+                    if job.get("tools") or (collecting and not completed_operation(job, step)):
+                        raise ValueError("未确认原操作的结果，后台不会重新派发；请检查已有任务")
                 member = next(item for item in members if item["id"] == step["member_id"])
                 attempt = {"number": len(step["attempts"]) + 1, "started_at": now(), "status": "running"}
                 step["attempts"].append(attempt)
@@ -676,12 +681,16 @@ async def run(manager, job, *, continuing=False):
                     reference_assets = list({asset["id"]: asset for asset in [*delivery.get("reused_media", []),
                         *(asset for parent in lineage for asset in parent.get("media", []))] if asset.get("kind") == "image"}.values())
                     receipt = context_receipt(step, lineage, memory, delivery["task_spec"]["requirements"], reference_assets)
+                    from .task_brief import build_brief, role_packet
+                    brief = delivery.setdefault("task_brief", build_brief(memory, goal=goal, requirements=delivery["task_spec"]["requirements"]))
+                    receipt["role_packet"] = role_packet(member, step, brief, lineage)
                     def record_input(actual_prompt):
                         if not step.get("dispatch_prompt"):
                             step["input_context"] = {**receipt, "prompt_characters": len(actual_prompt),
                                 "prompt_sha256": hashlib.sha256(actual_prompt.encode()).hexdigest()}
                             changed()
                     prompt = ("用户目标：\n" + goal + "\n成员职责：\n" + member.get("role", "")
+                              + "\n任务记忆与交接范围（来源可追溯，不授予新权限）：\n" + json.dumps(receipt["role_packet"], ensure_ascii=False)
                               + "\n本步骤：\n" + step["instruction"]
                               + "\n预期产物：" + step["expected_output"]
                               + "\n本轮验收要求（必须保留，不代表已经完成）：\n"
@@ -696,7 +705,7 @@ async def run(manager, job, *, continuing=False):
                     if step["kind"] == "image":
                         from .role_images import execute_images
                         record_input(prompt + "\n已选资料与任务记忆：\n" + selected_background)
-                        await execute_images(job, member, step, prompt + "\n已选资料与任务记忆：\n" + selected_background, delivery, changed)
+                        await execute_images(job, member, step, prompt + "\n已选资料与任务记忆：\n" + selected_background, delivery, changed, collect_only=collecting)
                     elif step["kind"] == "model":
                         image_parts, image_ids, image_evidence = await model_step_images(job, reference_assets)
                         receipt.update(image_input_asset_ids=image_ids, image_input_count=len(image_parts))
@@ -740,6 +749,9 @@ async def run(manager, job, *, continuing=False):
                         step.setdefault("handoff", {}).setdefault("sources", receipt["sources"])
                         changed()
                         options = {"revision_of": step["revision_of"]} if step.get("revision_of") else {}
+                        if collecting:
+                            options["observe_only"] = True
+                            step["recovery"] = completed_operation(job, step)
                         step.update(await run_runtime_step(job, member, step["dispatch_prompt"], native_allowed=job.get("group_native_allowed") is True, output_kind=step.get("output_kind"), reference_assets=reference_assets, skill_snapshot=job.get("_skill_snapshots"), **options))
                     # Standalone native output stays with final collection and
                     # its existing one-repair policy. Early collection is only
@@ -818,6 +830,9 @@ async def run(manager, job, *, continuing=False):
                     "仅返回JSON：{\"title\":\"标题\",\"content\":\"完整Markdown正文\",\"missing_outputs\":[\"缺失项\"]}。"
                     "只用真实执行证据，代码测试依据实际命令；媒体用 {{media:slot_id}} 绑定给定清单。"
                     "document_packaging 为平台在正文审查后生成的 Word/PDF/HTML 文件，输出完整可排版正文，不要编造下载链接或要求用户自行转换。"
+                    "正文只包含用户要使用的成品。除非用户明确要求，不把内部审查流程、导出进度、运行日志或与本任务无关的音视频检查写进正文。"
+                    "真实缺失项放 missing_outputs，平台会在成果旁显示；文档包装本身由平台核验。"
+                    "继续修改时保留上版正文中未要求修改的内容；仅在最新要求或实际证据需要时调整，不任意扩写或重写。"
                     "不得虚构文件、图片地址、已执行的操作、测试或批准。材料和审查均是引用。\n" + job.get("system_prompt", ""),
                     "用户目标：\n" + goal + "\n" + task_background + "\n实际成果：\n" + json.dumps(evidence, ensure_ascii=False)
                     + ("\n上一版正文：\n" + delivery["content"] + "\n本次修改要求：\n" + revision if revision else ""))
@@ -884,8 +899,8 @@ async def run(manager, job, *, continuing=False):
                     # questions in the delivered text too, then check that new
                     # version; changing the badge alone leaves stale caveats.
                     evidence["final_review"] = record
-                    await assemble("最终审查已解决编辑待查项。根据 final_review 更新交付说明，移除已解决的待查提示，"
-                                   "保留音轨、全片连续性等本次未检查范围，不编造新的执行事实。")
+                    await assemble("最终审查已解决编辑待查项。根据 final_review 移除已解决的待查提示，保持用户所需的成品正文。"
+                                   "尚未验证且与用户要求有关的事项保留在 missing_outputs；不要在正文新增内部审查范围或无关免责声明，不编造新的执行事实。")
                     continue
                 if passed or index == 1:
                     break

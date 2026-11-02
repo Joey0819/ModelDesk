@@ -366,7 +366,7 @@ class TaskManager:
         self.slots = asyncio.Semaphore(2)
         self.load()
 
-    def load(self):
+    def load(self, *, recover_interrupted=False):
         for path in self.directory.glob("*.json"):
             try:
                 if path.is_symlink():
@@ -375,7 +375,7 @@ class TaskManager:
                 body = TaskRequest.model_validate({k: item[k] for k in TaskRequest.model_fields}).model_dump(mode="json")
                 if item["id"] != checked_id(path.stem) or item.get("schema_version") != 1 or body["project_id"] != item["project_id"]:
                     continue
-                if item["status"] in ACTIVE:
+                if recover_interrupted and item["status"] in ACTIVE:
                     item.update(status="interrupted", error="服务已重启；任务未自动重发。", finished_at=now())
                     self.save(item, "interrupted", "服务重启，不自动重放任务")
                 self.records[item["id"]] = item
@@ -383,8 +383,10 @@ class TaskManager:
                 continue
 
     def recover(self):
-        # Records are loaded once when the manager is constructed.
-        return None
+        # Called only after the API acquires its single-worker ownership lock.
+        # Module imports in a second process must never interrupt live children.
+        self.records.clear()
+        self.load(recover_interrupted=True)
 
     def save(self, item, event=None, text=""):
         item["updated_at"] = now()

@@ -37,7 +37,7 @@ async def image_slots(job, member, step, prompt, delivery, changed):
     return parsed.images
 
 
-async def execute_images(job, member, step, prompt, delivery, changed):
+async def execute_images(job, member, step, prompt, delivery, changed, *, collect_only=False):
     count = step.get('image_count', 1)
     if not 1 <= count <= 12:
         raise ValueError('单个绘图步骤支持 1–12 张图片，请拆分任务')
@@ -61,6 +61,8 @@ async def execute_images(job, member, step, prompt, delivery, changed):
                 raise ValueError('已保存的绘图产物发生变化')
             asset = checked
         else:
+            if collect_only:
+                raise ValueError('原图片文件缺失；自动恢复只收集原文件，不再次调用生图')
             task.update(status='running')
             task.pop('error', None)
             attempt = {'number': len(task.setdefault('attempts', [])) + 1, 'status': 'running'}

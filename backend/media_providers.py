@@ -109,6 +109,9 @@ async def capabilities(*, catalog=None, connections=None) -> list[dict]:
                 catalog = response.json().get("data", [])
         except (httpx.HTTPError, ValueError, TypeError, AttributeError):
             catalog = []
+    # A broken directory from one source must not hide valid saved API models.
+    if not isinstance(catalog, list):
+        catalog = []
     for item in catalog[:1000]:
         if not isinstance(item, dict) or not isinstance(item.get("id"), str):
             continue

@@ -125,6 +125,13 @@ class ImageProviderTests(unittest.IsolatedAsyncioTestCase):
             values = await media.capabilities()
         self.assertEqual([item["id"] for item in values], [connection["models"][0]["alias"]])
 
+    async def test_connection_candidates_survive_malformed_gateway_directory(self):
+        connection = self.connection("gpt-image-fixture")
+        for rows in [None, {}, "invalid"]:
+            with self.subTest(rows=rows), self.wire(lambda request: httpx.Response(200, json={"data": rows})):
+                values = await media.capabilities()
+            self.assertEqual([item["id"] for item in values], [connection["models"][0]["alias"]])
+
     async def test_corrupt_optional_receipt_does_not_block_working_image_candidates(self):
         def handler(request):
             return httpx.Response(200, json={"data": [{"id": "gpt-image-fixture"}]})

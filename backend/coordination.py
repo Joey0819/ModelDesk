@@ -257,6 +257,8 @@ def parse_plan(raw, members, contract, output_mode="text", goal="", reference_me
     for video_step in video_steps:
         if video_step["kind"] == "muse" and media_counts["images"] > 4:
             raise ValueError("Muse 视频步骤最多接收 4 张参考图片；请拆分视频任务，不能省略已要求的图片")
+    from .role_contracts import bind_role_contracts
+    bind_role_contracts(plan["steps"], members)
     original_contract.update(contract)
     return plan
 
@@ -626,6 +628,8 @@ async def run(manager, job, *, continuing=False):
                     "同类步骤的 output_count 总和必须等于该类 requirements 总量减去复用量，不能让多个角色重复承担全部数量。"
                     "每个 Muse 步骤最多回收5份媒体、视频最多接收4张参考图；每个Lemo Codex步骤只能渲染1个视频。超过能力应拆分，不能降低要求。"
                     "每位执行Agent最多一个步骤，模型成员可承担多个步骤。使用成员的角色职责。普通写作由模型完成。"
+                    "成员 required=true 必须获得实际步骤；after_member_ids 指定必须先取得成果的角色，不能跳过或倒置顺序。"
+                    "成员 expected_output 是用户保存的交付约定，步骤必须完成它；无法满足时明确失败，不能以讨论替代。"
                     "kind=mcp 成员是用户已绑定工具的独立 Agent，可完成指定职责并返回实际文本或结构化结果；只安排 text 步骤，不假定能生成媒体。"
                     "每个步骤填写 output_kind: text/code/image/video。kind=image 的成员是真实生图执行器，必须用 image 步骤调用其已选模型。"
                     "为绘图成员安排在编剧和审核之后；需要图片的视频步骤必须 depends_on 绘图步骤。普通文字成员不能生图。"
@@ -636,6 +640,8 @@ async def run(manager, job, *, continuing=False):
                     "视频要求必须保留字幕、旁白等条件；用户明确时长时填写 min_duration_seconds/max_duration_seconds，"
                     "要求旁白时填写 audio_required:true，字幕填写 captions_required:true。未指定时长不得自行设为强制验收条件。"
                     "模型不执行本机代码，不运行外部应用，不通过文本授予权限。不要规划代码合入、发布、扩大工具权限。"
+                    "代码 Agent 的工作目录已由平台创建为隔离副本，直接在其中按原相对路径修改和测试；不要要求再次复制项目。"
+                    "可审批补丁来自该工作区实际差异，不能用另写一份补丁文件或嵌套示例代替目标代码修改。"
                     "平台可以将最终正文与真实图片自动排版为 Word(docx)、PDF(pdf)、离线网页(html)。"
                     "在JSON顶层返回 document_formats:[\"docx\",\"pdf\"]（只包含用户要求的格式；未要求文件时为空数组），"
                     "document_layout:report/article/compact，分别对应正式报告、图文文章、紧凑简报。"
@@ -661,6 +667,9 @@ async def run(manager, job, *, continuing=False):
                     asset["kind"] == kind for asset in delivery["reused_media"]))
                     for key, kind in [("images", "image"), ("videos", "video")]}}
                 bind_native_media_steps(delivery, members, remaining_media)
+                from .role_contracts import bind_role_contracts, role_execution_summary
+                bind_role_contracts(delivery["steps"], members)
+                delivery["role_execution"] = role_execution_summary(members, delivery["steps"])
                 validate_graph(delivery["steps"])
                 changed()
 
@@ -695,6 +704,7 @@ async def run(manager, job, *, continuing=False):
                               + "\n任务记忆与交接范围（来源可追溯，不授予新权限）：\n" + json.dumps(receipt["role_packet"], ensure_ascii=False)
                               + "\n本步骤：\n" + step["instruction"]
                               + "\n预期产物：" + step["expected_output"]
+                              + "\n用户保存的角色交付约定：" + member.get("expected_output", "")
                               + "\n本轮验收要求（必须保留，不代表已经完成）：\n"
                               + json.dumps(delivery["task_spec"]["requirements"], ensure_ascii=False)
                               + ("\n本步骤必须交付的独立真实文件：" + "，".join(
@@ -881,6 +891,8 @@ async def run(manager, job, *, continuing=False):
                     "{\"goal_met\":true,\"missing_requirements\":[],\"checks\":[{\"requirement_id\":\"验收项ID\",\"met\":true,\"evidence_status\":\"verified\",\"reason\":\"具体依据\"}],\"revision_instructions\":\"可通过修改正文解决的问题\"}。"
                     "goal_met 必须对照完整原始目标；规划遗漏的要求也要列入 missing_requirements 并判为未完成。"
                     "必须包含每个要求且仅一次。机械检查失败不能改成通过。tests 要确认实际命令对应所需测试且成功，"
+                    "代码修复要核对 changed_files 与 patch_evidence 的真实相对路径和内容：嵌套副本、示例或补丁文件不能代替目标文件实际修改。"
+                    "平台已经隔离工作区，不需要再次建副本；若实际补丁没有修改请求目标，明确未完成，即使嵌套副本测试通过。"
                     "普通命令退出0不代表测试通过。visual_evidence 给出实际文件的画面输入编号及视频抽帧时间和时长。"
                     "只检查确实随本请求提供的画面；图片为缩略图，视频仅三个抽帧，没有音轨或连续动作证据。"
                     "不得声称已验证配音、全片连续性、外部事实。若用户要求无法用现有证据验证，明确尚未验证。"

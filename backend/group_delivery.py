@@ -106,6 +106,8 @@ def execution_evidence(steps, output_limit=5000):
         entry = {key: step.get(key) for key in ("id", "supersedes_step_id", "member_id", "member_name", "kind", "status", "task_id", "error",
                  "output_sha256", "patch_sha256", "exit_code", "thread_url", "commands_observed", "commands_omitted")}
         raw = str(step.get("output") or "")
+        if step.get("role_contract"):
+            entry["role_contract"] = step["role_contract"]
         files = step.get("changed_files") or []
         entry.update(instruction=str(step.get("instruction") or "")[:1000], output=raw if output_limit is None else raw[:output_limit],
                      output_truncated=bool(step.get("truncated")) or output_limit is not None and len(raw) > output_limit,

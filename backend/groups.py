@@ -346,6 +346,12 @@ async def submit_message(identifier: str, request: MessageRequest, project_id: s
         raise HTTPException(422, "接收成员不属于当前项目群")
     # Stable roster order defines the relay order, regardless of chip click order.
     selected = [member["id"] for member in members if member["id"] in selected]
+    if request.delivery_mode == "auto":
+        from .role_contracts import validate_selected_roles
+        try:
+            validate_selected_roles(members, selected)
+        except ValueError as error:
+            raise HTTPException(422, str(error)) from error
     broadcast = not request.recipient_member_ids
     if not broadcast and any(member_kind(member) not in {"model", "image", "mcp"} for member in members if member["id"] in selected):
         raise HTTPException(422, "已选择可执行 Agent；请使用派发任务，由其实际运行时执行")

@@ -40,9 +40,11 @@ def build_brief(context, *, goal=None, requirements=None):
 
 
 def role_packet(member, step, brief, lineage):
+    from .role_contracts import role_contract
     value = {"schema_version": 1, "task_id": brief.get("task_id"), "brief_revision": brief["revision"],
              "brief_sha256": brief["sha256"], "member_id": member["id"], "role": member.get("role", ""),
              "step_id": step["id"], "user_source_ids": [source["id"] for source in brief["sources"]],
+             "role_contract": role_contract(member),
              "requirement_ids": [item["id"] for item in brief["requirements"]],
              "dependency_outputs": [{"step_id": item["id"], "sha256": hashlib.sha256(str(item.get("output") or "").encode()).hexdigest()}
                                     for item in lineage],

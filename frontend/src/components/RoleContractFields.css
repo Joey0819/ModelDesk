@@ -1,0 +1,24 @@
+.team-role-map { margin: 18px 0; padding: 14px; border: 1px solid var(--line); border-radius: 8px; background: var(--shell-paper); }
+.team-role-map > strong { font-size: 13px; color: var(--ink); }
+.team-role-map p { margin: 6px 0 0; color: var(--muted); font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
+.team-role-map ol { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 200px), 1fr)); padding: 0; margin: 12px 0 0; list-style: none; gap: 10px; }
+.team-role-map li { min-width: 0; padding: 10px; border-left: 2px solid var(--accent); background: var(--paper, var(--shell-paper)); }
+.team-role-map li > div { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; }
+.team-role-map li strong { font-size: 12px; overflow-wrap: anywhere; }
+.team-role-map li span, .team-role-map li small { font-size: 11px; color: var(--muted); }
+.team-role-map li small { color: var(--accent); }
+.role-contract-fields { margin: 10px 0 0 34px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 6px; }
+.role-contract-fields summary { cursor: pointer; font-size: 12px; color: var(--ink); }
+.role-contract-fields p, .role-contract-fields > small { display: block; font-size: 12px; line-height: 1.7; color: var(--muted); }
+.mission-team-editor .role-contract-check { display: flex; align-items: flex-start; gap: 8px; font-size: 12px; line-height: 1.7; margin: 10px 0; }
+.mission-team-editor .role-contract-check input { width: 16px; height: 16px; padding: 0; margin-top: 2px; flex: 0 0 16px; accent-color: var(--accent); }
+.mission-team-editor .role-contract-output textarea { width: 100%; margin: 0; }
+.role-contract-fields fieldset { border: 0; padding: 0; margin: 12px 0; }
+.role-contract-fields legend { font-size: 12px; color: var(--muted); }
+.member-skills-disclosure { margin: 10px 0 0 34px; }
+.member-skills-disclosure summary { font-size: 12px; color: var(--muted); cursor: pointer; }
+.member-skills-disclosure .member-skills { margin-left: 0; }
+@media (max-width: 600px) {
+  .role-contract-fields, .member-skills-disclosure { margin-left: 0; }
+  .team-role-map ol { grid-template-columns: 1fr; }
+}

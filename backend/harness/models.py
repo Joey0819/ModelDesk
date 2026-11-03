@@ -17,6 +17,9 @@ class TeamMember(BaseModel):
     kind: Literal["model", "image", "codex", "claude", "muse", "mcp"] = "model"
     model: str | None = Field(default=None, max_length=200)
     role: str = Field(default="", max_length=1600)
+    required: bool = False
+    after_member_ids: list[str] = Field(default_factory=list, max_length=3)
+    expected_output: str = Field(default="", max_length=500)
     skill_ids: list[str] = Field(default_factory=list, max_length=4)
     mcp_server_id: UUID | None = None
     mcp_tool: str | None = Field(default=None, min_length=1, max_length=100, pattern=r"^[A-Za-z0-9_.:/-]+$")
@@ -25,6 +28,9 @@ class TeamMember(BaseModel):
     @model_serializer(mode="wrap")
     def serialize_member(self, handler):
         value = handler(self)
+        for field in ("required", "after_member_ids", "expected_output"):
+            if not value[field]:
+                value.pop(field)
         if self.kind != "mcp":
             for field in ("mcp_server_id", "mcp_tool", "mcp_prompt_field"):
                 value.pop(field, None)
@@ -54,8 +60,11 @@ class TeamMember(BaseModel):
             raise ValueError("CLI 模型标识不能含空格或以选项符号开头")
         if not self.model:
             self.model = None
-        if secret_text(self.name + "\n" + (self.model or "") + "\n" + self.role):
+        if secret_text(self.name + "\n" + (self.model or "") + "\n" + self.role + "\n" + self.expected_output):
             raise ValueError("团队配置不能包含凭据；请使用现有模型连接")
+        if len(set(self.after_member_ids)) != len(self.after_member_ids):
+            raise ValueError("前置角色不能重复")
+        self.expected_output = self.expected_output.strip()
         if len(set(self.skill_ids)) != len(self.skill_ids) or any(not __import__('re').fullmatch(r'[a-z0-9][a-z0-9_-]{0,79}', value) for value in self.skill_ids):
             raise ValueError("Skill 标识无效或重复")
         from ..member_capabilities import member_kind
@@ -72,6 +81,9 @@ def validate_members(members, *, distinct_models=True):
         raise ValueError("此协作流程仅支持模型成员；包含可执行 Agent 的团队请使用项目群")
     if distinct_models and len({member.model for member in members}) != len(members):
         raise ValueError("协作流程需要不同模型；同一模型的多个角色请在项目群聊中使用")
+    from ..role_contracts import has_role_contract
+    if distinct_models and any(has_role_contract(member.model_dump()) for member in members):
+        raise ValueError("配置角色交接约定的团队请在项目群自动完成中执行")
 
 
 class TeamRequest(BaseModel):
@@ -105,6 +117,8 @@ class TeamRequest(BaseModel):
         # Group rooms dispatch by member ID; workflow engines still validate
         # their distinct-model invariant when a saved roster is used for a run.
         validate_members(self.members, distinct_models=False)
+        from ..role_contracts import validate_role_graph
+        validate_role_graph([member.model_dump() for member in self.members])
         from ..member_capabilities import member_kind, image_model
         model_ids = {member.model for member in self.members if member_kind(member.model_dump()) == "model"}
         if image_model(self.coordinator_model):

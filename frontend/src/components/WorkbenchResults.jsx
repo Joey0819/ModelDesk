@@ -59,6 +59,16 @@ export function Markdown({ children, components, urlTransform }) {
   return <div className="markdown"><ReactMarkdown remarkPlugins={[remarkGfm]} components={{ ...markdownComponents, ...components }} urlTransform={urlTransform} skipHtml>{asText(children)}</ReactMarkdown></div>;
 }
 
+const agentOutputComponents = {
+  a: ({ href, children }) => /^https?:\/\//i.test(href || '')
+    ? <a href={href} target="_blank" rel="noreferrer">{children}</a>
+    : <span title={`Agent 工作区文件：${href || '未提供路径'}。实际可下载文件请从成果或补丁面板打开。`}>{children}<small>（工作区文件）</small></span>,
+};
+
+export function AgentOutput({ children }) {
+  return <Markdown components={agentOutputComponents}>{children}</Markdown>;
+}
+
 export function ResultProvenance({ job }) {
   const lastStage = (name) => [...(job.events || [])].reverse().find((event) => event.type === 'stage' && event.stage === name)?.data;
   const context = lastStage('context');

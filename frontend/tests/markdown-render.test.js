@@ -8,7 +8,7 @@ import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const compiled = buildSync({ stdin: { contents: 'export {Markdown} from "./src/components/WorkbenchResults.jsx";', resolveDir: root }, bundle: true, platform: 'node', format: 'cjs', jsx: 'automatic', write: false, external: ['react', 'react/jsx-runtime'], define: { 'import.meta.env': '{}' }, loader: { '.css': 'empty' } });
+const compiled = buildSync({ stdin: { contents: 'export {Markdown, AgentOutput} from "./src/components/WorkbenchResults.jsx";', resolveDir: root }, bundle: true, platform: 'node', format: 'cjs', jsx: 'automatic', write: false, external: ['react', 'react/jsx-runtime'], define: { 'import.meta.env': '{}' }, loader: { '.css': 'empty' } });
 const filename = path.join(root, 'tests/markdown-virtual.cjs');
 const module = new Module(filename); module.paths = Module._nodeModulePaths(path.dirname(filename)); module._compile(compiled.outputFiles[0].text, filename);
 const render = (children) => renderToStaticMarkup(React.createElement(module.exports.Markdown, { children }));
@@ -28,4 +28,12 @@ test('formatted task lists cannot enable injected HTML or executable URLs', () =
   assert.match(html, /type="checkbox"/);
   assert.match(html, /disabled/);
   assert.doesNotMatch(html, /<script|href="javascript:/);
+});
+
+test('raw agent workspace references never navigate to nonexistent application routes', () => {
+  const html = renderToStaticMarkup(React.createElement(module.exports.AgentOutput, { children: '[报告](delivery/report.html) [补丁](../changes.patch) [路径](/tmp/output.md) [文档](https://example.com/docs)' }));
+  assert.equal((html.match(/<a /g) || []).length, 1);
+  assert.match(html, /href="https:\/\/example.com\/docs"/);
+  assert.match(html, /Agent 工作区文件：delivery\/report.html/);
+  assert.equal((html.match(/（工作区文件）/g) || []).length, 3);
 });

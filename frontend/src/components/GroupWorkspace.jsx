@@ -48,7 +48,7 @@ import { contextErrors } from '../platform-settings';
 import { attachmentIssues } from '../attachment-files';
 import { useProjects } from '../project-context';
 import useGroupRoom from '../hooks/useGroupRoom';
-import { Icon, Markdown, ResultProvenance } from './WorkbenchResults';
+import { Icon, Markdown, AgentOutput, ResultProvenance } from './WorkbenchResults';
 import { CopyTextButton } from './ConversationActions';
 import MissionTeamPicker from './MissionTeamPicker';
 import AttachmentComposer from './AttachmentComposer';
@@ -116,7 +116,7 @@ export function GroupAgentTaskTurn({ task, onOpenTaskMode, onUseAgentOutput, onO
   const name = task.member?.name || task.member_id || 'Agent';
   return <article className="group-room-turn group-agent-turn" aria-label={`Agent 任务记录 ${dateLabel(task.created_at)}`}>
     <GroupTaskPrompt task={task} name={name} engine={taskEngineLabel(task)} copyLabel="复制交给 Agent 的任务" />
-    <section className="group-member-message" style={{ '--member-color': '#2b7284' }}><span className="group-member-avatar" aria-hidden="true">⚙</span><div><header><strong>{name}</strong><small>{taskEngineLabel(task)}</small><small>{TASK_LABELS[task.status] || task.status}</small></header>{taskActive(task) && <p className="result-note"><span className="small-spinner" /> 正在隔离工作区执行…</p>}{task.skill_delivery?.assets?.length > 0 && <p className="result-note">平台已在源码完成后渲染实际视频（{task.skill_delivery.duration_seconds} 秒）。下方是 Agent 写源码时的记录，最终视频请查看本轮成果。</p>}{task.output ? <Markdown>{task.output}</Markdown> : !taskActive(task) && <p className="result-note">暂无文本输出，可查看补丁与运行记录。</p>}{task.error && <p className="output-error">{task.error}</p>}<div className="group-message-actions">{task.output && <CopyTextButton text={task.output} label={`复制 ${name} 的执行结果`} />}{task.output && onUseAgentOutput && <button className="subtle-button" type="button" onClick={() => onUseAgentOutput(task)}>引用结果继续讨论</button>}{task.kind === 'creative' ? onOpenCreative && <button className="subtle-button" type="button" onClick={onOpenCreative}>查看本轮动画成果</button> : <button className="subtle-button" type="button" onClick={() => onOpenTaskMode(task.kind === 'review' ? 'review' : 'code')}>查看补丁与审批</button>}</div></div></section>
+    <section className="group-member-message" style={{ '--member-color': '#2b7284' }}><span className="group-member-avatar" aria-hidden="true">⚙</span><div><header><strong>{name}</strong><small>{taskEngineLabel(task)}</small><small>{TASK_LABELS[task.status] || task.status}</small></header>{taskActive(task) && <p className="result-note"><span className="small-spinner" /> 正在隔离工作区执行…</p>}{task.skill_delivery?.assets?.length > 0 && <p className="result-note">平台已在源码完成后渲染实际视频（{task.skill_delivery.duration_seconds} 秒）。下方是 Agent 写源码时的记录，最终视频请查看本轮成果。</p>}{task.output ? <AgentOutput>{task.output}</AgentOutput> : !taskActive(task) && <p className="result-note">暂无文本输出，可查看补丁与运行记录。</p>}{task.error && <p className="output-error">{task.error}</p>}<div className="group-message-actions">{task.output && <CopyTextButton text={task.output} label={`复制 ${name} 的执行结果`} />}{task.output && onUseAgentOutput && <button className="subtle-button" type="button" onClick={() => onUseAgentOutput(task)}>引用结果继续讨论</button>}{task.kind === 'creative' ? onOpenCreative && <button className="subtle-button" type="button" onClick={onOpenCreative}>查看本轮动画成果</button> : <button className="subtle-button" type="button" onClick={() => onOpenTaskMode(task.kind === 'review' ? 'review' : 'code')}>查看补丁与审批</button>}</div></div></section>
   </article>;
 }
 
@@ -512,7 +512,7 @@ function GroupRoom({ roomId, projectId, initialJob, status, models, context, onC
     ...(!runtimeMember && status && selectedMembers.some((member) => !status.models?.some((model) => model.id === member.model && !model.unavailable)) ? ['指定成员的模型当前未接入，请选择可用成员或检查“Agent 与连接”。'] : []),
     ...(!runtimeMember && !recipientIds.length && coordinatorModel && status && !status.models?.some((model) => model.id === coordinatorModel && !model.unavailable) ? ['统筹 LLM 当前未连接，请检查“Agent 与连接”。'] : []),
     ...(!runtimeMember && !status ? ['正在读取模型连接状态。'] : []),
-    ...(!runtimeMember && !selectedMembers.length && !(deliveryMode === 'auto' && members.some((member) => ['image', 'mcp'].includes(groupMemberKind(member)) && (!recipientIds.length || recipientIds.includes(member.id)))) && !(coordinatorModel && !recipientIds.length) ? ['本群还没有 LLM 成员，请添加模型成员，或明确选择一位运行时 Agent。'] : []),
+    ...(room && !loading && !runtimeMember && !selectedMembers.length && !(deliveryMode === 'auto' && members.some((member) => ['image', 'mcp'].includes(groupMemberKind(member)) && (!recipientIds.length || recipientIds.includes(member.id)))) && !(coordinatorModel && !recipientIds.length) ? ['本群还没有 LLM 成员，请添加模型成员，或明确选择一位运行时 Agent。'] : []),
   ];
   const canSend = Boolean(room && prompt.trim() && (runtimeMember ? runtimeReady : !errors.length) && !loading && !busy && !runtimeDispatching && !activeJob && !attachmentPending && !transfers);
 

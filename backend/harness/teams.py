@@ -78,6 +78,9 @@ class TeamStore:
             from ..member_capabilities import member_kind
             if any(member_kind(member) != "model" for member in snapshot["members"]):
                 raise HTTPException(422, "此协作流程仅支持模型成员；包含可执行 Agent 的团队请使用项目群")
+            from ..role_contracts import has_role_contract
+            if any(has_role_contract(member) for member in snapshot["members"]):
+                raise HTTPException(422, "配置角色交接约定的团队请在项目群自动完成中执行")
             body["models"] = [member["model"] for member in snapshot["members"]]
             if len(body["models"]) != len(set(body["models"])):
                 raise HTTPException(422, "此协作组有多位成员使用同一模型，请在项目群聊中使用；协作流程目前需要不同模型")

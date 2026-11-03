@@ -5,7 +5,7 @@ import { museApi } from '../muse-api';
 import { computeArtifactDiff, deriveArtifacts, deriveRoomArtifacts, filterArtifactsByCategory } from '../artifacts';
 import { API_BASE } from '../api-base';
 import { managedDeliveryMedia, mediaBundleUrl } from '../delivery-media';
-import { Icon, Markdown } from './WorkbenchResults';
+import { Icon, Markdown, AgentOutput } from './WorkbenchResults';
 import { CopyTextButton } from './ConversationActions';
 import { DeliveryMediaProgress, MediaDelivery } from './MediaDelivery';
 import DocumentExportControl from './DocumentExportControl';
@@ -60,7 +60,7 @@ function ArtifactPreview({ artifact, viewMode, diffTarget, job }) {
     )}
     {(source || ['code', 'text'].includes(artifact.format))
       ? <pre className="artifact-source-preview"><code>{artifact.content}</code></pre>
-      : rawId === 'group:delivery' ? <MediaDelivery job={effectiveJob} content={artifact.content} /> : <Markdown>{artifact.content}</Markdown>}
+      : rawId === 'group:delivery' ? <MediaDelivery job={effectiveJob} content={artifact.content} /> : rawId === 'group-agent:output' ? <AgentOutput>{artifact.content}</AgentOutput> : <Markdown>{artifact.content}</Markdown>}
   </>;
 }
 

@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { groupTaskApi } from '../group-task-api';
 import { groupMemberKind, groupMemberKindLabel } from '../group-state';
 import { APPROVAL_LABELS, TASK_LABELS, approvalDecision, eligibleReviews, memberEngineSupports, readTaskDraft, taskEngineLabel, taskActive, taskDraftKey, taskRequest } from '../group-task-state';
-import { Icon, Markdown } from './WorkbenchResults';
+import { Icon, Markdown, AgentOutput } from './WorkbenchResults';
 import { CopyTextButton } from './ConversationActions';
 import './GroupAgentTasks.css';
 
@@ -41,7 +41,7 @@ export function TaskCard({ task, tasks, approvals, busy, onReview, onCancel, onR
     <time>{date(task.created_at)}</time><Markdown>{task.prompt}</Markdown>
     {task.base_sha && <p className="group-task-provenance">基于 <code title={task.base_sha}>{short(task.base_sha)}</code>{task.diff_sha256 && <> · 补丁 <code title={task.diff_sha256}>{short(task.diff_sha256)}</code></>}{task.changed_files?.length > 0 && <> · {task.changed_files.length} 个文件</>}</p>}
     {task.project_context && <details className="group-task-reference"><summary>实际引用的项目与群聊上下文</summary><p className="result-note">执行开始时保存的项目说明与最近群聊摘要；内容受预算限制。</p><pre>{task.project_context}</pre></details>}
-    {task.output && <details className="group-task-output" open={task.kind === 'review' || undefined}><summary>{task.kind === 'review' ? '审阅意见' : 'Agent 执行结果'}</summary><Markdown>{task.output}</Markdown><CopyTextButton text={task.output} label="复制 Agent 结果" /></details>}
+    {task.output && <details className="group-task-output" open={task.kind === 'review' || undefined}><summary>{task.kind === 'review' ? '审阅意见' : 'Agent 执行结果'}</summary><AgentOutput>{task.output}</AgentOutput><CopyTextButton text={task.output} label="复制 Agent 结果" /></details>}
     {task.error && <p className="output-error" role="alert">{task.error}</p>}
     {!!task.events?.length && <details className="group-task-events"><summary>运行记录 · {task.events.length} 条</summary><ol>{task.events.map((event, index) => <li key={`${event.at}-${index}`}><time>{date(event.at)}</time><span>{event.text || event.message || event.type}</span></li>)}</ol></details>}
     {task.changed_files?.length > 0 && <details className="group-task-diff" onToggle={(event) => { if (event.currentTarget.open && !detail && !inspecting) inspect(); }}><summary>检查文件与实际改动</summary><ul>{task.changed_files.map((file) => <li key={file.path || file}><code>{file.path || file}</code><span>{file.status || ''}</span></li>)}</ul>{inspecting && <p role="status">读取补丁中…</p>}{detailError && <p className="output-error">{detailError}<button type="button" className="subtle-button" onClick={inspect}>重试</button></p>}{detail?.diff && <pre>{detail.diff}</pre>}</details>}

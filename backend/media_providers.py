@@ -92,7 +92,7 @@ def _protocol(family: str, *, base_url: str = "") -> str:
     return "images_generations"
 
 
-async def capabilities() -> list[dict]:
+async def capabilities(*, catalog=None, connections=None) -> list[dict]:
     """Return non-secret candidates from the live catalog and enabled APIs.
 
     available means the catalog/connection is reachable or configured. verified
@@ -100,27 +100,29 @@ async def capabilities() -> list[dict]:
     latter is deliberately independent of ordinary model-connection text tests.
     """
     candidates = []
-    try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(5, connect=2), trust_env=False,
-                                     follow_redirects=False) as client:
-            response = await client.get(GATEWAY + "/models")
-            response.raise_for_status()
-            catalog = response.json().get("data", [])
-        for item in catalog[:1000]:
-            if not isinstance(item, dict) or not isinstance(item.get("id"), str):
-                continue
-            model = item["id"]
-            family = _family(model)
-            if family:
-                candidates.append({"id": model, "provider": family, "model": model,
-                                   "kind": "image", "protocol": _protocol(family),
-                                   "available": True, "label": model, "source": "existing_login"})
-    except (httpx.HTTPError, ValueError, TypeError, AttributeError):
-        pass
-    try:
-        connections = model_connections.store.list()
-    except (OSError, RuntimeError, ValueError):
-        connections = []
+    if catalog is None:
+        try:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(5, connect=2), trust_env=False,
+                                         follow_redirects=False) as client:
+                response = await client.get(GATEWAY + "/models")
+                response.raise_for_status()
+                catalog = response.json().get("data", [])
+        except (httpx.HTTPError, ValueError, TypeError, AttributeError):
+            catalog = []
+    for item in catalog[:1000]:
+        if not isinstance(item, dict) or not isinstance(item.get("id"), str):
+            continue
+        model = item["id"]
+        family = _family(model)
+        if family:
+            candidates.append({"id": model, "provider": family, "model": model,
+                               "kind": "image", "protocol": _protocol(family),
+                               "available": True, "label": model, "source": "existing_login"})
+    if connections is None:
+        try:
+            connections = model_connections.store.list()
+        except (OSError, RuntimeError, ValueError):
+            connections = []
     for connection in connections:
         if not connection.get("enabled"):
             continue

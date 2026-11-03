@@ -1,3 +1,6 @@
+import ModelCatalogProvider from './components/ModelCatalogProvider';
+import ModelPicker from './components/ModelPicker';
+import { initialModels, retainCatalogOnFailure } from './model-catalog-state';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { platformApi, workbenchApi } from './api';
 import { MODES } from './workbench-modes';
@@ -38,7 +41,6 @@ import './WorkbenchShell.css';
 
 const STATUS_LABELS = { queued: '等待开始', running: '运行中', complete: '已完成', completed: '已完成', failed: '失败', error: '失败', cancelled: '已停止', interrupted: '已中断' };
 const active = (job) => ['queued', 'running'].includes(job?.status);
-const modelLabel = (model = '') => model.replace(/^connection:[^:]+:/, '').replace(/^openai\//, '');
 
 function dateLabel(date) {
   if (!date) return '';
@@ -152,26 +154,26 @@ function ModelDeskWorkspace() {
     localStorage.setItem(DRAFT_KEY, JSON.stringify(conversationDraftsRef.current));
   }, [job, jobId, prompt, activeProjectId]);
 
+  const statusSequence = useRef(0);
   const refresh = useCallback(async () => {
+    const sequence = ++statusSequence.current;
     const [statusResult, jobsResult, projectJobsResult] = await Promise.allSettled([workbenchApi.status(), workbenchApi.listJobs(), activeProjectId ? workbenchApi.listJobs(activeProjectId) : Promise.resolve([])]);
-    if (statusResult.status === 'fulfilled') {
-      setStatus(statusResult.value);
+    if (statusResult.status === 'fulfilled' && sequence === statusSequence.current) {
+      setStatus((previous) => retainCatalogOnFailure(previous, statusResult.value));
       if (!preferencesSet.current) {
         preferencesSet.current = true;
         const available = statusResult.value.models || [];
         let saved = []; try { saved = sessionFor(sessionsRef.current, modeRef.current, projectScopeRef.current)?.preferences?.models?.length ? sessionFor(sessionsRef.current, modeRef.current, projectScopeRef.current).preferences.models : JSON.parse(localStorage.getItem('modeldesk.models') || '[]'); } catch { /* Ignore stale preferences. */ }
-        const valid = [...new Set((Array.isArray(saved) ? saved : []).filter((id) => available.some((m) => m.id === id)))].slice(0, 4);
-        const defaults = ['gpt-6.1-sol', 'gemini-3-flash'].filter((id) => available.some((m) => m.id === id));
-        const verified = available.filter((m) => m.verified).map((m) => m.id);
-        setModels(valid.length ? valid : defaults.length === 2 ? defaults : [...new Set([...defaults, ...verified, ...available.map((m) => m.id)])].slice(0, 2));
+        setModels(initialModels(Array.isArray(saved) ? saved : [], available));
       }
-    } else setStatus({ gateway: { online: false, error: statusResult.reason.message }, providers: [], models: [], tools: {} });
+    } else if (statusResult.status === 'rejected' && sequence === statusSequence.current) setStatus((previous) => retainCatalogOnFailure(previous, { gateway: { online: false, error: statusResult.reason.message }, providers: previous?.providers || [], models: [], tools: {}, connections_error: '暂时无法读取连接，保留上次模型列表。' }));
     if (jobsResult.status === 'fulfilled') {
       const globalJobs = Array.isArray(jobsResult.value) ? jobsResult.value : jobsResult.value.jobs || [];
       const projectJobs = projectJobsResult.status === 'fulfilled' ? (Array.isArray(projectJobsResult.value) ? projectJobsResult.value : projectJobsResult.value.jobs || []) : [];
       setJobs([...new Map([...globalJobs, ...projectJobs].map((item) => [item.id, item])).values()]);
     }
     else setError(jobsResult.reason.message);
+    return statusResult.status === 'fulfilled' ? statusResult.value : null;
   }, [activeProjectId]);
 
   useEffect(() => { refresh(); const timer = setInterval(refresh, 15000); return () => clearInterval(timer); }, [refresh]);
@@ -284,7 +286,7 @@ function ModelDeskWorkspace() {
     return () => { if (typeof unsubscribe === 'function') unsubscribe(); };
   }, []);
   const newTask = (nextMode) => { const target = typeof nextMode === 'string' && Object.hasOwn(MODES, nextMode) ? nextMode : mode; artifactRequest.current += 1; rememberSession(target, { job_id: null, draft: '' }); setJobId(null); setJob(null); setArtifactJob(null); setPrompt(''); setContext((previous) => ({ ...previous, attachment_ids: [] })); setError(''); setStreamError(false); localStorage.removeItem('modeldesk.lastJob'); inputRef.current?.focus(); };
-  const toggleModel = (id) => { const next = models.includes(id) ? models.filter((m) => m !== id) : models.length < 4 ? [...models, id] : models; setModels(next); localStorage.setItem('modeldesk.models', JSON.stringify(next)); };
+  const chooseModels = (next) => { setModels(next); localStorage.setItem('modeldesk.models', JSON.stringify(next)); };
   const tool = status?.tools?.[mode];
   const toolAvailable = typeof tool === 'boolean' ? tool : tool?.available !== false;
   const minimum = ['chat', 'crewai', 'camel_workforce', 'crewai_flow'].includes(mode) ? 1 : 2;
@@ -326,7 +328,6 @@ function ModelDeskWorkspace() {
   const activeJobs = jobs.filter(active);
   const config = MODES[mode];
   const lastLog = [...(job?.events || [])].reverse().find((e) => e.type === 'log')?.text;
-  const selectedCatalog = status?.models || [];
   const openAgentSettings = (section = 'agents') => { artifactRequest.current += 1; setArtifactJob(null); setAgentSettingsSection(section); setMissionView(false); setGroupsView(false); setPlatformView(false); setProjectView(false); setAgentsView(true); setSidebarOpen(false); setMobileArtifactsOpen(false); localStorage.setItem('modeldesk.view', 'agents'); };
   const openGroups = () => { artifactRequest.current += 1; setArtifactJob(null); setGroupTarget(null); setGroupsView(true); setAgentsView(false); setMissionView(false); setPlatformView(false); setProjectView(false); setSidebarOpen(false); setMobileArtifactsOpen(false); localStorage.setItem('modeldesk.view', 'groups'); };
   const openGroupWithTeam = (team) => { openGroups(); setGroupTarget({ projectId: activeProjectId, initialTeam: team }); };
@@ -386,7 +387,7 @@ function ModelDeskWorkspace() {
     window.addEventListener('pointermove', move); window.addEventListener('pointerup', done, { once: true });
   };
 
-  return <div className={`modeldesk ${sidebarCollapsed ? 'sidebar-collapsed' : ''}`} data-theme={theme}>
+  return <ModelCatalogProvider theme={theme} status={status} onRefresh={refresh}><div className={`modeldesk ${sidebarCollapsed ? 'sidebar-collapsed' : ''}`} data-theme={theme}>
     <CommandPalette
       open={commandPaletteOpen}
       onClose={() => setCommandPaletteOpen(false)}
@@ -446,7 +447,7 @@ function ModelDeskWorkspace() {
       {accountPanel && <section className="account-panel" aria-label="账户与连接状态"><div className="account-panel-title"><div><strong>账户与连接</strong><span>凭据存在与模型调用验证分别显示</span></div><button className="icon-button" aria-label="刷新连接状态" disabled={refreshing} onClick={manualRefresh}><Icon name="refresh" size={18} /></button><button className="icon-button" aria-label="关闭账户面板" onClick={() => setAccountPanel(false)}><Icon name="close" size={18} /></button></div><div className="provider-list">{status?.providers?.length ? status.providers.map((provider) => <div className="provider-row" key={provider.id}><span className={`status-dot ${provider.authenticated ? 'online' : 'offline'}`} /><strong>{provider.label}</strong><span>{provider.authenticated ? '已发现登录凭据' : '未接入'}</span><span className="provider-verification">{provider.verified_models?.length ? `${provider.verified_models.length} 个模型已验证` : '尚无已验证调用'}</span>{provider.reason && <p>{provider.reason}</p>}</div>) : <p className="result-note">{status?.gateway?.error || '正在读取本地登录状态…'}</p>}</div><button type="button" className="subtle-button" onClick={() => openAgentSettings("connections")}><Icon name="plus" size={15} />添加 Grok / 自定义 API</button><p className="account-footnote">Claude 订阅登录未接入第三方网关。当前工作台共享 ChatGPT 与 Google / Antigravity 的已有认证。</p></section>}
       <div className="context-toolbar"><label className="conversation-memory"><input type="checkbox" checked={rememberConversation} disabled={running || starting} onChange={(event) => { setRememberConversation(event.target.checked); localStorage.setItem('modeldesk.conversationMemory', event.target.checked ? 'on' : 'off'); }} /><Icon name="memory" size={16} /><span>{rememberConversation ? '会话记忆已开启' : '本轮不引用历史'}</span></label><span className="conversation-turns">{job ? `${priorTurns.length + 1} 轮记录` : '新会话'}</span><button className="context-source-trigger" onClick={() => setSettingsOpen(!settingsOpen)}><Icon name="folder" size={15} />资料与工具{context.knowledge_ids.length + context.memory_ids.length + (context.snapshot_id ? 1 : 0) > 0 && <b>{context.knowledge_ids.length + context.memory_ids.length + (context.snapshot_id ? 1 : 0)}</b>}</button><button className="current-models" title={models.join(' + ')} onClick={() => { setSettingsOpen(true); setModelMenu(true); }} disabled={running || starting}>{models.length ? `${models.length} 个模型` : '选择模型'}<Icon name="chevron" size={14} /></button></div>
       {settingsOpen && <section className="workbench-settings" aria-label="协作设置"><div className="settings-heading"><strong>本会话设置</strong><span>默认配置即可开始，高级功能按需启用。</span><button className="icon-button" aria-label="收起协作设置" onClick={() => setSettingsOpen(false)}><Icon name="close" size={16} /></button></div>
-      <section className="configuration-bar" aria-label="模型与任务设置"><div className="model-control"><span className="control-label">参与模型</span><button className={`model-selector ${modelMenu ? 'open' : ''}`} onClick={() => setModelMenu(!modelMenu)} disabled={running || starting}><span>{models.length ? models.map(modelLabel).join(' + ') : '选择模型'}</span><Icon name="chevron" size={15} /></button>{modelMenu && <div className="model-popover"><div className="model-popover-heading"><strong>选择参与模型</strong><span>{mode === 'camel' ? '选择两个模型，分别承担角色' : `可选择 ${minimum}–4 个模型`}</span></div><div className="model-options">{selectedCatalog.map((model) => <label key={model.id} className={models.includes(model.id) ? 'checked' : ''}><input type="checkbox" checked={models.includes(model.id)} disabled={!models.includes(model.id) && models.length >= 4} onChange={() => toggleModel(model.id)} /><span>{model.label || modelLabel(model.id)}</span><small className={model.verified ? 'verified-label' : ''}>{model.verified ? '已验证' : '未验证'}</small></label>)}</div><div className="model-popover-footer">未验证模型的可用性以实际调用为准<button onClick={() => setModelMenu(false)}>完成</button></div></div>}</div>{mode === 'council' && <label className="inline-setting"><span>主席</span><select value={chairman} onChange={(e) => setChairman(e.target.value)} disabled={running}>{selectedCatalog.map((model) => <option value={model.id} key={model.id}>{model.label || modelLabel(model.id)}</option>)}</select></label>}{['camel', 'camel_workforce', 'group'].includes(mode) && <label className="inline-setting"><span>讨论轮数</span><select value={rounds} onChange={(e) => setRounds(Number(e.target.value))} disabled={running}>{[1, 2, 3, 4, 5, 6].map((n) => <option key={n} value={n}>{n} 轮</option>)}</select></label>}{roleMode && <span className="role-assignment">{configuration.agents.map((agent) => agent.role || '未命名角色').join(' / ')}，可编辑分工</span>}</section>
+      <section className="configuration-bar" aria-label="模型与任务设置"><div className="model-control"><span className="control-label">参与模型</span><ModelPicker label="选择参与模型" value={models} onChange={chooseModels} multiple disabled={running || starting} open={modelMenu} onOpenChange={setModelMenu} /></div>{mode === 'council' && <div className="inline-setting"><span>主席</span><ModelPicker label="Council 主席模型" value={chairman} onChange={setChairman} disabled={running} /></div>}{['camel', 'camel_workforce', 'group'].includes(mode) && <label className="inline-setting"><span>讨论轮数</span><select value={rounds} onChange={(e) => setRounds(Number(e.target.value))} disabled={running}>{[1, 2, 3, 4, 5, 6].map((n) => <option key={n} value={n}>{n} 轮</option>)}</select></label>}{roleMode && <span className="role-assignment">{configuration.agents.map((agent) => agent.role || '未命名角色').join(' / ')}，可编辑分工</span>}</section>
       <ContextAttachments mode={mode} value={context} onChange={setContext} jobs={jobs} disabled={running || starting} onOpenProjects={openProjects} />
       <ToolSettings mode={mode} models={models} systemPrompt={systemPrompt} onSystemPrompt={setSystemPrompt} relayPrompt={relayPrompt} onRelayPrompt={setRelayPrompt} roles={roles} onRoles={setRoles} contextTurns={contextTurns} onContextTurns={setContextTurns} disabled={running || starting} />
         <WorkflowEditor openSignal={workflowEditSignal} mode={mode} models={models} workflow={configuration} onChange={changeWorkflow} disabled={running || starting} />
@@ -460,5 +461,5 @@ function ModelDeskWorkspace() {
       </div>
       <div className="composer-wrap"><form className="composer" onSubmit={send} onDragOver={(event) => { if (event.dataTransfer.types.includes("Files")) event.preventDefault(); }} onDrop={(event) => attachmentRef.current?.handleDrop(event)}><AttachmentComposer ref={attachmentRef} attachmentIds={context.attachment_ids} onChange={(ids) => setContext((previous) => ({ ...previous, attachment_ids: ids }))} includeShared={context.include_project_assets} onIncludeShared={(enabled) => setContext((previous) => ({ ...previous, include_project_assets: enabled }))} onPendingChange={setAttachmentPending} disabled={running || starting} /><textarea onPaste={(event) => attachmentRef.current?.handlePaste(event)} ref={inputRef} aria-label={mode === 'chat' ? '输入问题' : '输入任务要求'} value={prompt} onChange={(e) => setPrompt(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); send(e); } }} rows={3} placeholder={job && rememberConversation ? '继续当前会话，例如：根据上面的结果，再完善一下…' : '描述你希望团队完成的任务…'} disabled={running || starting} /><div className="composer-footer"><span>{job && rememberConversation ? '接续当前会话 · Enter 发送，Shift + Enter 换行' : 'Enter 发送，Shift + Enter 换行'}{!selectionValid && <strong>{configurationErrors[0] || (mode === 'camel' ? '请选择恰好两个模型' : `请至少选择 ${minimum} 个模型`)}</strong>}</span>{running ? <button className="stop-button" type="button" disabled={canceling} onClick={cancel}><Icon name="stop" size={16} />{canceling ? '正在停止' : '停止运行'}</button> : <button className="primary-button" type="submit" disabled={!canSubmit}><Icon name="send" size={16} />{starting ? '正在启动' : config.action}</button>}</div></form><div className="composer-note"><span>会话和草稿自动保存在本机</span><button type="button" onClick={newTask} disabled={running || starting}>新建独立会话</button><button type="button" disabled={!prompt} onClick={savePrompt}>存为提示</button><button type="button" disabled={!prompt} onClick={() => setPrompt('')}>清空输入</button></div></div>
     </main>}</>{artifactsOpen && (artifactJob || (!agentsView && !groupsView && !missionView && !platformView && !projectView && job)) && <div className="artifact-dock"><div className="artifact-resizer" role="separator" aria-label="调整成果面板宽度" aria-orientation="vertical" aria-valuemin={320} aria-valuemax={Math.max(320, Math.min(680, window.innerWidth - 744))} aria-valuenow={artifactWidth} tabIndex={0} onPointerDown={resizeArtifacts} onKeyDown={(event) => { if (['ArrowLeft', 'ArrowRight'].includes(event.key)) { event.preventDefault(); const next = Math.max(320, Math.min(Math.max(320, Math.min(680, window.innerWidth - 744)), artifactWidth + (event.key === 'ArrowLeft' ? 24 : -24))); setArtifactWidth(next); localStorage.setItem('modeldesk.artifactWidth', String(next)); } }} /><ArtifactPanel job={artifactJob || job} onClose={toggleArtifacts} /></div>}</div></div>
-  </div>;
+  </div></ModelCatalogProvider>;
 }

@@ -167,6 +167,111 @@ class ConnectionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.store.list()[0]["models"], [])
         self.assertIsNone(self.store.list()[0]["last_test"])
 
+    async def test_refresh_catalog_is_read_only_and_isolates_failed_sources(self):
+        good = self.add(name="Good")
+        self.add(name="Offline", provider="openai_compatible", base_url="https://offline.example/v1")
+        self.add(name="Disabled", enabled=False)
+        self.add(name="Test only", testing=True)
+        before = (self.store.directory / "connections.json").read_bytes()
+        calls = []
+        def handler(request):
+            calls.append((request.method, request.url.host))
+            if request.url.host == "offline.example":
+                return httpx.Response(503, json={"error": KEY})
+            return httpx.Response(200, json={"models": [{"id": "new-model-2027"}]})
+        with self.upstream(handler):
+            response = await self.client.post("/api/model-connections/refresh-catalog")
+        self.assertEqual(response.status_code, 200)
+        sources = response.json()["sources"]
+        self.assertEqual(next(item for item in sources if item["connection"]["id"] == good["id"])["models"][0]["id"], "new-model-2027")
+        self.assertEqual(sum(bool(item.get("error")) for item in sources), 1)
+        self.assertEqual(sum(bool(item.get("skipped")) for item in sources), 2)
+        self.assertEqual(len(calls), 2)
+        self.assertTrue(all(method == "GET" for method, _ in calls))
+        self.assertEqual(before, (self.store.directory / "connections.json").read_bytes())
+        self.assertNotIn(KEY, response.text)
+
+    async def test_add_discovered_model_preserves_keys_labels_and_other_models_with_cas(self):
+        item = self.add()
+        body = {"model": {"id": "future-model", "label": "Future"}, "expected_updated_at": item["updated_at"]}
+        response = await self.client.post(f"/api/model-connections/{item['id']}/models", json=body)
+        self.assertEqual(response.status_code, 200)
+        saved = response.json()
+        self.assertEqual([m["id"] for m in saved["models"]], ["grok-test", "future-model"])
+        self.assertEqual(saved["models"][0]["label"], "Grok 测试")
+        self.assertNotIn(KEY, response.text)
+        alias = saved["models"][-1]["alias"]
+        self.assertEqual(connections.request_options({"model": alias})["json"]["model"], "future-model")
+        self.assertEqual(self.store.get_private(item["id"])["api_key"], KEY)
+        # A stale discovery cannot overwrite a concurrent setting or re-enable
+        # a removed connection. Repeated selection never appends duplicates.
+        stale = await self.client.post(f"/api/model-connections/{item['id']}/models", json=body)
+        self.assertEqual(stale.status_code, 409)
+        body["expected_updated_at"] = saved["updated_at"]
+        again = await self.client.post(f"/api/model-connections/{item['id']}/models", json=body)
+        self.assertEqual(len(again.json()["models"]), 2)
+        disabled = self.store.save(connections.ConnectionInput(**self.body(enabled=False)), item["id"])
+        body["expected_updated_at"] = disabled["updated_at"]
+        self.assertEqual((await self.client.post(f"/api/model-connections/{item['id']}/models", json=body)).status_code, 422)
+
+    async def test_catalog_refresh_rejects_results_from_a_changed_connection(self):
+        item = self.add()
+        def handler(request):
+            self.store.save(connections.ConnectionInput(**self.body(name="Renamed while refreshing")), item["id"])
+            return httpx.Response(200, json={"models": [{"id": "old-result"}]})
+        with self.upstream(handler):
+            result = (await self.client.post("/api/model-connections/refresh-catalog")).json()
+        self.assertEqual(result["sources"][0]["models"], [])
+        self.assertIn("变更", result["sources"][0]["error"])
+
+    async def test_new_catalog_routes_keep_local_admin_boundary(self):
+        item = self.add()
+        for route in ["/api/model-connections/refresh-catalog", f"/api/model-connections/{item['id']}/models"]:
+            response = await self.client.post(route, headers={"origin": "https://evil.example"}, json={})
+            self.assertEqual(response.status_code, 403)
+            self.assertFalse(remote_access.api_allowed(route, "POST"))
+        invalid = await self.client.post(f"/api/model-connections/{item['id']}/models", content=KEY)
+        self.assertEqual(invalid.status_code, 422)
+        self.assertNotIn(KEY, invalid.text)
+
+    async def test_subscription_status_uses_real_owner_and_admits_new_ids(self):
+        entries = [{"id": "claude-from-google", "owned_by": "antigravity"},
+                   {"id": "gpt-oss-120b-medium", "owned_by": "antigravity"},
+                   {"id": "future-model-2027", "owned_by": "openai"},
+                   {"id": "gpt-image-2.5", "owned_by": "openai"}]
+        with patch.object(workbench, "subscription_catalog", new=AsyncMock(return_value=entries)):
+            status = await workbench.status()
+        by_id = {item["id"]: item for item in status["models"]}
+        self.assertEqual(by_id["gpt-oss-120b-medium"]["provider"], "antigravity")
+        self.assertEqual(by_id["claude-from-google"]["provider"], "antigravity")
+        self.assertEqual(by_id["future-model-2027"]["provider"], "codex")
+        self.assertEqual(by_id["gpt-image-2.5"]["capability"], "image")
+        self.assertFalse(by_id["future-model-2027"]["verified"])
+        self.assertIn("checked_at", status)
+
+    async def test_image_catalog_shares_media_receipts_without_extra_network_or_text_promotion(self):
+        receipt = {"gpt-image-2.5": {"sha256": "actual-image-sha", "protocol": "images_generations", "checked_at": "2026-11-02T00:00:00Z"}}
+        with patch.object(workbench, "subscription_catalog", new=AsyncMock(return_value=["gpt-image-2.5", "dall-e-3"])), \
+             patch('backend.media_providers._evidence', return_value=receipt), \
+             patch.object(httpx, "AsyncClient", side_effect=AssertionError("no duplicate discovery")):
+            result = await workbench.status()
+        models = {item["id"]: item for item in result["models"]}
+        self.assertEqual(models["gpt-image-2.5"]["verification_scope"], "stored_image")
+        self.assertTrue(models["gpt-image-2.5"]["verified"])
+        self.assertEqual(models["dall-e-3"]["capability"], "image")
+        self.assertFalse(models["dall-e-3"]["verified"])
+
+    async def test_discovery_rejects_malformed_catalog_and_reports_limits(self):
+        item = self.add()
+        with self.upstream(lambda request: httpx.Response(200, json={"models": {"error": KEY}})):
+            response = await self.client.post(f"/api/model-connections/{item['id']}/discover")
+        self.assertEqual(response.status_code, 502)
+        self.assertNotIn(KEY, response.text)
+        with self.upstream(lambda request: httpx.Response(200, json={"models": [{"id": f"future-{i}"} for i in range(1001)]})):
+            response = await self.client.post(f"/api/model-connections/{item['id']}/discover")
+        self.assertEqual(len(response.json()["models"]), 1000)
+        self.assertTrue(response.json()["truncated"])
+
     async def test_actual_probe_sanitizes_upstream_errors_and_does_not_follow_redirects(self):
         item = self.add(models=[{"id": "grok-test"}, {"id": "untested"}])
         requests, options = [], []

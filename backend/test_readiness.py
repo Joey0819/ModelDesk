@@ -40,6 +40,18 @@ class ReadinessTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([(call.method,call.url.path) for call in calls],[('GET','/v1/models')])
         self.assertNotIn('PRIVATE_TEST',str(result))
 
+    async def test_testing_connections_do_not_raise_false_production_health_alarms(self):
+        production = {"id": "production"}
+        testing = {"id": "testing", "testing": True}
+        with patch('backend.group_tasks.engine_status', AsyncMock(return_value={"engines": []})), \
+             patch('backend.muse_bridge.manager.status', AsyncMock(return_value={})), \
+             patch('backend.workbench.subscription_catalog', AsyncMock(return_value=['model-a'])), \
+             patch('backend.model_connections.store.list', return_value=[production, testing]), \
+             patch('scripts.modeldesk_worker.read_status', return_value={"online": False}), \
+             patch.object(readiness, 'connection_health', AsyncMock(return_value={"id": "production", "state": "reachable"})) as probe:
+            await readiness.inspect()
+        probe.assert_awaited_once_with(production)
+
     async def test_admission_checks_only_selected_endpoints_and_allows_unknown_catalogs(self):
         record = {"id": "selected", "name": "Selected"}
         with patch('backend.model_connections.store.resolve', return_value=(record, 'm')), \

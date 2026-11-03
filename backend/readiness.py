@@ -132,7 +132,7 @@ async def inspect():
                  "capabilities": ["text", "image", "video"], "requires_awake_desktop": True,
                  "remote_cancel_supported": False})
     try:
-        rows.extend(await asyncio.gather(*(connection_health(item) for item in store.list())))
+        rows.extend(await asyncio.gather(*(connection_health(item) for item in store.list() if not item.get("testing"))))
     except Exception:
         rows.append({"id": "connections", "label": "API 连接", "state": "unknown", "reason": "无法读取连接配置"})
     return {"checked_at": datetime.now(timezone.utc).isoformat(), "checks_generate_content": False,

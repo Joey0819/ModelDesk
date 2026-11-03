@@ -63,6 +63,7 @@ class ConnectionInput(BaseModel):
     api_key: str | None = Field(default=None, max_length=4096, repr=False)
     enabled: bool = True
     allow_local: bool = False
+    testing: bool = False
 
     @field_validator("name")
     @classmethod
@@ -201,6 +202,23 @@ class ConnectionStore:
                 raise HTTPException(404, "模型连接不存在")
             self._write(records)
 
+    def add_model(self, identifier, model, expected_updated_at):
+        """Add one user-selected ID atomically; never overwrite other edits/keys."""
+        with self.lock:
+            records = self._read()
+            record = records.get(identifier)
+            if not record or record.get("updated_at") != expected_updated_at:
+                raise HTTPException(409, "连接设置已变更，请刷新模型列表后重新选择")
+            if not record["enabled"]:
+                raise HTTPException(422, "此连接已停用，请先在模型连接中启用")
+            if model.id not in {item["id"] for item in record["models"]}:
+                if len(record["models"]) >= 40:
+                    raise HTTPException(422, "每个连接最多保存 40 个模型，请先在模型连接中整理")
+                record["models"].append(model.model_dump())
+                record["updated_at"] = now()
+                self._write(records)
+            return self.public(record)
+
     def record_test(self, identifier, result, expected, model):
         with self.lock:
             records = self._read()
@@ -228,9 +246,11 @@ store = ConnectionStore()
 
 def model_catalog():
     from .readiness import recent_test
+    from .model_catalog import model_capability
     return [{"id": model["alias"], "label": model.get("label") or model["id"],
              "provider": "connection:" + connection["id"], "connection_id": connection["id"],
              "connection_name": connection["name"], "verified": recent_test(connection.get("last_test")) and connection.get("last_test_model") == model["id"],
+             "source": "connection", "provider_label": connection["name"], "testing": connection.get("testing", False), "capability": model_capability(model["id"]),
              "last_test_at": (connection.get("last_test") or {}).get("checked_at"),
              "verification_scope": "recent_text_call" if recent_test(connection.get("last_test")) and connection.get("last_test_model") == model["id"] else "not_recently_verified"}
             for connection in store.list() if connection["enabled"] for model in connection["models"]]
@@ -289,6 +309,46 @@ async def create_connection(request: Request):
     return store.save(await input_body(request))
 
 
+@router.post("/refresh-catalog")
+async def refresh_catalog():
+    """Explicit discovery, not a generation probe or an implicit config change."""
+    connections = store.list()
+    semaphore = asyncio.Semaphore(4)
+
+    async def discover(connection):
+        public = {key: connection[key] for key in ("id", "name", "enabled", "updated_at")}
+        public["testing"] = connection.get("testing", False)
+        if not connection["enabled"] or public["testing"]:
+            return {"connection": public, "models": [], "skipped": True}
+        async with semaphore:
+            try:
+                result = await discover_models(uuid.UUID(connection["id"]))
+                # A concurrent endpoint/key change must not attach old discoveries
+                # to the newly configured connection.
+                if store.get_private(connection["id"]).get("updated_at") != connection["updated_at"]:
+                    raise HTTPException(409, "连接设置已变更，请重新刷新")
+                return {"connection": public, **result}
+            except HTTPException as error:
+                return {"connection": public, "models": [], "error": error.detail}
+
+    return {"checked_at": now(), "sources": await asyncio.gather(*(discover(item) for item in connections))}
+
+
+@router.post("/{identifier}/models")
+async def add_connection_model(identifier: uuid.UUID, request: Request):
+    try:
+        raw = await request.body()
+        if len(raw) > 4096:
+            raise ValueError()
+        data = json.loads(raw)
+        if not isinstance(data, dict) or set(data) != {"model", "expected_updated_at"} or not isinstance(data["expected_updated_at"], str):
+            raise ValueError()
+        model = ModelSpec.model_validate(data["model"])
+    except (ValueError, TypeError, ValidationError):
+        raise HTTPException(422, "请刷新后选择一个有效的模型 ID") from None
+    return store.add_model(str(identifier), model, data["expected_updated_at"])
+
+
 @router.put("/{identifier}")
 async def update_connection(identifier: uuid.UUID, request: Request):
     return store.save(await input_body(request), str(identifier))
@@ -334,6 +394,8 @@ async def test_connection(identifier: uuid.UUID, request: Request):
 @router.post("/{identifier}/discover")
 async def discover_models(identifier: uuid.UUID):
     record = store.get_private(str(identifier))
+    if not record["enabled"]:
+        raise HTTPException(422, "此连接已停用")
     headers = {"Authorization": "Bearer " + record["api_key"]} if record.get("api_key") else {}
     endpoint = "/language-models" if record["provider"] == "xai" else "/models"
     try:
@@ -342,7 +404,10 @@ async def discover_models(identifier: uuid.UUID):
             response.raise_for_status()
             data = response.json()
         found = []
-        for item in data.get("models", data.get("data", []))[:1000]:
+        rows = data.get("models", data.get("data")) if isinstance(data, dict) else None
+        if not isinstance(rows, list):
+            raise ValueError("Invalid model directory")
+        for item in rows[:10000]:
             if not isinstance(item, dict):
                 continue
             try:
@@ -350,7 +415,8 @@ async def discover_models(identifier: uuid.UUID):
             except ValidationError:
                 continue
             found.append(specification.model_dump())
-        return {"models": list({item["id"]: item for item in found}.values())[:200]}
+        models = list({item["id"]: item for item in found}.values())
+        return {"models": models[:1000], **({"truncated": True} if len(models) > 1000 or len(rows) > 10000 else {})}
     except Exception as error:
         raise HTTPException(502, safe_failure(error)) from None
 

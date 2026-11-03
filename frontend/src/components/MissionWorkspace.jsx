@@ -1,3 +1,4 @@
+import ModelPicker from './ModelPicker';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { workbenchApi } from '../api';
 import { harnessApi } from '../harness-api';
@@ -107,7 +108,7 @@ function StagedMissionWorkspace({ status, models, onModelsChange, context, onCon
   };
   const chooseStep = (step) => { setSelection({ runId: run.id, stepId: step.id }); setChildJob(null); onClearArtifacts(); };
   const copyRun = () => { const copied = copyMissionDraft(run); selectRun(null); setDraft(copied.draft); setTemplateId(copied.templateId); setCustomSteps(copied.steps); setRequestOptions(copied.requestOptions); setTeam(copied.team); setDraftModels(copied.models); onModelsChange(copied.models); onContextChange(copied.context); };
-  const toggleModel = (id) => { const selected = missionModels.includes(id) ? missionModels.filter((model) => model !== id) : missionModels.length < 4 ? [...missionModels, id] : missionModels; setDraftModels(selected); onModelsChange(selected); };
+
 
   return <main className="workspace mission-workspace">
     <header className="workspace-header"><div className="header-title"><button className="mobile-menu icon-button" aria-label="打开导航" onClick={onOpenNavigation}><Icon name="menu" /></button><span className="mode-header-icon"><Icon name="tasks" size={22} /></span><div><h1>{run?.title || '协作任务'}</h1><span>{activeProject?.name || '独立任务'} · 目标、过程与交付保存在一起</span></div></div><div className="mission-header-actions"><button className="subtle-button" onClick={() => selectRun(null)}><Icon name="plus" size={15} />新建任务</button>{run && <button className="subtle-button" onClick={onToggleArtifacts}><Icon name="panel" size={16} />成果</button>}</div></header>
@@ -137,7 +138,7 @@ function StagedMissionWorkspace({ status, models, onModelsChange, context, onCon
       </form>}
     </div>
     {!run && !mission.runId && <footer className="mission-compose-footer"><div>
-        <div className="mission-launch"><div className="mission-models"><button type="button" className="subtle-button" aria-expanded={modelMenu} disabled={Boolean(team)} onClick={() => setModelMenu(!modelMenu)}><Icon name="group" size={15} />{missionModels.length} 个模型<Icon name="chevron" size={13} /></button><span>{team ? `${team.name} · 分工已就绪` : missionModels.join(' + ') || '先选择参与模型'}</span>{modelMenu && <div className="mission-model-menu">{(status?.models || []).map((model) => <label key={model.id}><input type="checkbox" checked={missionModels.includes(model.id)} disabled={!missionModels.includes(model.id) && missionModels.length >= 4} onChange={() => toggleModel(model.id)} /><span>{model.id}</span>{model.verified && <small>已验证</small>}</label>)}</div>}</div><button className="primary-button" disabled={Boolean(errors.length || mission.busy || pendingAttachments || teamPending || transfers)} type="submit" form="mission-draft-form"><Icon name="send" size={16} />{mission.busy ? '正在启动' : '开始协作任务'}</button></div>
+        <div className="mission-launch"><div className="mission-models"><ModelPicker label="协作任务参与模型" value={missionModels} multiple disabled={Boolean(team)} open={modelMenu} onOpenChange={setModelMenu} onChange={(next) => { setDraftModels(next); onModelsChange(next); }} /><span>{team ? `${team.name} · 分工已就绪` : '可搜索或刷新已连接服务的模型'}</span></div><button className="primary-button" disabled={Boolean(errors.length || mission.busy || pendingAttachments || teamPending || transfers)} type="submit" form="mission-draft-form"><Icon name="send" size={16} />{mission.busy ? '正在启动' : '开始协作任务'}</button></div>
         {(errors.filter((error) => draft.trim() || !error.includes('先写下')).length > 0 || pendingAttachments || transfers > 0) && <p className="mission-form-note">{pendingAttachments || transfers > 0 ? '请完成资料上传或选择后再开始。' : errors.find((error) => draft.trim() || !error.includes('先写下'))}</p>}
         <p className="mission-save-note"><Icon name="memory" size={13} />草稿按项目自动保存 · 运行中可切换页面</p>
     </div></footer>}

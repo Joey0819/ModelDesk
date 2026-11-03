@@ -61,11 +61,15 @@ def public_error(exc):
     return text or type(exc).__name__
 
 
-async def subscription_catalog():
+async def subscription_catalog(with_metadata=False):
     async with httpx.AsyncClient(timeout=1.5, trust_env=False) as client:
         response = await client.get(GATEWAY + "/models")
         response.raise_for_status()
-        return sorted({item["id"] for item in response.json().get("data", []) if isinstance(item.get("id"), str)})
+        data = response.json()
+        if not isinstance(data, dict) or not isinstance(data.get("data"), list):
+            raise ValueError("网关没有返回有效的模型目录")
+        entries = {item["id"]: item for item in data["data"] if isinstance(item, dict) and isinstance(item.get("id"), str) and item["id"].strip()}
+        return [entries[key] for key in sorted(entries)] if with_metadata else sorted(entries)
 
 
 async def model_catalog():
@@ -1048,10 +1052,13 @@ def markdown_export(job):
 
 @router.get("/status")
 async def status():
+    from .model_catalog import subscription_entry
     try:
-        catalog = await subscription_catalog()
+        entries = [subscription_entry(item) for item in await subscription_catalog(with_metadata=True)]
+        catalog = [item["id"] for item in entries]
         gateway = {"online": True}
     except Exception as exc:
+        entries = []
         catalog = []
         gateway = {"online": False, "error": public_error(exc)}
     connections_error = None
@@ -1075,7 +1082,7 @@ async def status():
     verified_models = {model for model, item in evidence.items() if item["recent"]}
     providers = []
     for identifier, label in [("codex", "ChatGPT"), ("antigravity", "Gemini")]:
-        available = [model for model in catalog if provider_for(model) == identifier]
+        available = [item["id"] for item in entries if item["provider"] == identifier]
         provider = {"id": identifier, "label": label, "authenticated": bool(auth[identifier]), "available_models": available, "verified_models": [model for model in available if model in verified_models], "authentication_evidence": "saved_credential_only"}
         if auth[identifier] and auth[identifier][0].get("expires_at"):
             provider["expires_at"] = auth[identifier][0]["expires_at"]
@@ -1098,7 +1105,17 @@ async def status():
         elif not gateway["online"] and not api_models:
             tools[identifier]["reason"] = "本地模型网关未启动"
     api_by_id = {model["id"]: model for model in api_models}
-    return {"gateway": gateway, "providers": providers, "models": [api_by_id.get(model) or {"id": model, "provider": provider_for(model), "verified": model in verified_models, "last_success": evidence.get(model), "verification_scope": "recent_text_call" if model in verified_models else "not_recently_verified"} for model in catalog], "tools": tools, **({"connections_error": connections_error} if connections_error else {})}
+    gateway_by_id = {item["id"]: item for item in entries}
+    models = [api_by_id.get(model) or {**gateway_by_id[model], "verified": model in verified_models, "last_success": evidence.get(model), "verification_scope": "recent_text_call" if model in verified_models else "not_recently_verified"} for model in catalog]
+    from .media_providers import capabilities
+    # Reuse the exact fetched catalogs; reading stored image receipts does not
+    # make another provider request or promote a text test to image evidence.
+    image_evidence = {item["id"]: item for item in await capabilities(catalog=entries, connections=saved_connections)}
+    for model in models:
+        if model.get("capability") == "image":
+            receipt = image_evidence.get(model["id"], {})
+            model.update(verified=bool(receipt.get("verified")), verification_scope="stored_image" if receipt.get("verified") else "not_verified_image", last_test_at=receipt.get("checked_at"))
+    return {"checked_at": now(), "gateway": gateway, "providers": providers, "models": models, "tools": tools, **({"connections_error": connections_error} if connections_error else {})}
 
 
 @router.get("/jobs")

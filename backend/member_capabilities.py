@@ -4,7 +4,7 @@ import re
 
 def image_model(model):
     leaf = (model or '').split(':')[-1].split('/')[-1].lower()
-    return bool(re.match(r'gpt-image(?:-|$)|grok.*image|gemini.*image', leaf))
+    return bool(re.match(r'gpt-image(?:-|$)|dall-e(?:-|$)|grok.*image|gemini.*image', leaf))
 
 
 def member_kind(member):

@@ -3,7 +3,7 @@ export function temporaryMembers(models) {
 }
 
 export const MEMBER_KINDS = { model: 'LLM 模型', image: '绘图模型', codex: 'Codex Agent', claude: 'Claude Code Agent', muse: 'Muse 应用 Agent', mcp: 'MCP 外部 Agent' };
-export const isImageModel = (id = '') => /^(gpt-image(?:-|$)|grok.*image|gemini.*image)/i.test(id.split(':').at(-1).split('/').at(-1));
+export const isImageModel = (id = '') => /^(gpt-image(?:-|$)|dall-e(?:-|$)|grok.*image|gemini.*image)/i.test(id.split(':').at(-1).split('/').at(-1));
 export const memberKind = (member) => (!member?.kind || member.kind === 'model') && isImageModel(member?.model) ? 'image' : member?.kind || 'model';
 export const memberKindLabel = (member) => MEMBER_KINDS[memberKind(member)] || '未知类型';
 
@@ -28,7 +28,7 @@ export const TEAM_RECIPES = [
 ];
 
 export function recipeTeam(id, catalog = []) {
-  const textCatalog = catalog.filter((item) => !isImageModel(item.id));
+  const textCatalog = catalog.filter((item) => !item.testing && !item.unavailable && !isImageModel(item.id) && item.capability !== 'other');
   const models = [...textCatalog.filter((item) => item.verified), ...textCatalog.filter((item) => !item.verified)];
   const first = models[0]?.id || '';
   const second = models.find((item) => item.id !== first)?.id || first;
@@ -52,7 +52,7 @@ export function appendTeamMember(team, catalog = [], kind = 'model') {
   const draft = structuredClone(team);
   if (draft.members.length >= 4) return draft;
   if (!Object.hasOwn(MEMBER_KINDS, kind)) return draft;
-  catalog = catalog.filter((item) => !isImageModel(item.id) || kind === 'image');
+  catalog = catalog.filter((item) => !item.testing && !item.unavailable && item.capability !== 'other' && (isImageModel(item.id) === (kind === 'image')));
   const model = catalog.find((item) => item.verified && !draft.members.some((member) => member.model === item.id)) || catalog.find((item) => item.verified) || catalog[0];
   let index = 1;
   while (draft.members.some((member) => member.id === `member_${index}`)) index += 1;
@@ -83,9 +83,9 @@ export function teamIssues(team, catalog = [], { allowRepeatedModels = false, al
   if (new Set([...llms.map((member) => member.model), ...(team.coordinator_model ? [team.coordinator_model] : [])]).size > 4) errors.push('LLM 成员与统筹合计最多使用四个不同模型。');
   if (isImageModel(team.coordinator_model || "")) errors.push("统筹模型需要文字推理能力，请将生图模型配置为绘图成员。");
   if (!allowExecutableMembers && members.some((member) => member.skill_ids?.length)) errors.push("Skills 请在项目群中使用；流程模板暂不支持。");
-  const unavailable = members.filter((member) => ["model", "image"].includes(memberKind(member))).filter((member) => !catalog.some((model) => model.id === member.model));
+  const unavailable = members.filter((member) => ["model", "image"].includes(memberKind(member))).filter((member) => !catalog.some((model) => model.id === member.model && !model.unavailable));
   if (unavailable.length) errors.push(`当前未接入：${unavailable.map((member) => member.model || '未选择模型').join('、')}。请更换模型或接入对应账户。`);
-  if (team.coordinator_model && !catalog.some((model) => model.id === team.coordinator_model)) errors.push(`当前未接入：统筹模型 ${team.coordinator_model}。请连接后再开始群聊。`);
+  if (team.coordinator_model && !catalog.some((model) => model.id === team.coordinator_model && !model.unavailable)) errors.push(`当前未接入：统筹模型 ${team.coordinator_model}。请连接后再开始群聊。`);
   return errors;
 }
 

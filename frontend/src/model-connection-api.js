@@ -16,5 +16,7 @@ export const modelConnectionApi = {
   update: (id, body) => request(`/${encodeURIComponent(id)}`, 'PUT', body),
   remove: (id) => request(`/${encodeURIComponent(id)}`, 'DELETE'),
   discover: (id) => request(`/${encodeURIComponent(id)}/discover`, 'POST'),
+  refreshCatalog: () => request('/refresh-catalog', 'POST'),
+  addModel: (id, body) => request(`/${encodeURIComponent(id)}/models`, 'POST', body),
   test: (id, model) => request(`/${encodeURIComponent(id)}/test`, 'POST', { model }),
 };

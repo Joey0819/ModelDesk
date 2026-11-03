@@ -4,10 +4,10 @@ export const CONNECTION_PRESETS = {
 };
 export function connectionDraft(connection, provider = 'xai') {
   const preset = CONNECTION_PRESETS[connection?.provider || provider] || CONNECTION_PRESETS.openai_compatible;
-  return { id: connection?.id || null, provider: connection?.provider || provider, name: connection?.name ?? preset.name, base_url: connection?.base_url ?? preset.base_url, enabled: connection?.enabled ?? true, allow_local: Boolean(connection?.allow_local), models: (connection?.models || []).map(({ id, label }) => ({ id, label: label || id })), api_key: '', has_api_key: Boolean(connection?.has_api_key), original_base_url: connection?.base_url || '' };
+  return { id: connection?.id || null, provider: connection?.provider || provider, name: connection?.name ?? preset.name, base_url: connection?.base_url ?? preset.base_url, enabled: connection?.enabled ?? true, allow_local: Boolean(connection?.allow_local), testing: Boolean(connection?.testing), models: (connection?.models || []).map(({ id, label }) => ({ id, label: label || id })), api_key: '', has_api_key: Boolean(connection?.has_api_key), original_base_url: connection?.base_url || '' };
 }
 export function connectionBody(draft) {
-  const body = { provider: draft.provider, name: draft.name.trim(), base_url: draft.base_url.trim().replace(/\/$/, ''), enabled: Boolean(draft.enabled), allow_local: Boolean(draft.allow_local), models: draft.models.map(({ id, label }) => ({ id: id.trim(), label: label.trim() || id.trim() })) };
+  const body = { provider: draft.provider, name: draft.name.trim(), base_url: draft.base_url.trim().replace(/\/$/, ''), enabled: Boolean(draft.enabled), allow_local: Boolean(draft.allow_local), testing: Boolean(draft.testing), models: draft.models.map(({ id, label }) => ({ id: id.trim(), label: label.trim() || id.trim() })) };
   if (draft.api_key.trim()) body.api_key = draft.api_key.trim();
   return body;
 }

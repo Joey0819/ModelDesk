@@ -509,8 +509,8 @@ function GroupRoom({ roomId, projectId, initialJob, status, models, context, onC
     ...contextErrors(context), ...attachmentIssues(assets, context.attachment_ids, context.include_project_assets),
     ...((context.project_id || null) !== (projectId || null) ? ['正在切换群聊资料。'] : []),
     ...(!runtimeMember && recipientIds.some((id) => !members.some((member) => member.id === id)) ? ['部分收件成员不在这个群聊，请重新选择。'] : []),
-    ...(!runtimeMember && status && selectedMembers.some((member) => !status.models?.some((model) => model.id === member.model)) ? ['指定成员的模型当前未接入，请选择可用成员或检查“Agent 与连接”。'] : []),
-    ...(!runtimeMember && !recipientIds.length && coordinatorModel && status && !status.models?.some((model) => model.id === coordinatorModel) ? ['统筹 LLM 当前未连接，请检查“Agent 与连接”。'] : []),
+    ...(!runtimeMember && status && selectedMembers.some((member) => !status.models?.some((model) => model.id === member.model && !model.unavailable)) ? ['指定成员的模型当前未接入，请选择可用成员或检查“Agent 与连接”。'] : []),
+    ...(!runtimeMember && !recipientIds.length && coordinatorModel && status && !status.models?.some((model) => model.id === coordinatorModel && !model.unavailable) ? ['统筹 LLM 当前未连接，请检查“Agent 与连接”。'] : []),
     ...(!runtimeMember && !status ? ['正在读取模型连接状态。'] : []),
     ...(!runtimeMember && !selectedMembers.length && !(deliveryMode === 'auto' && members.some((member) => ['image', 'mcp'].includes(groupMemberKind(member)) && (!recipientIds.length || recipientIds.includes(member.id)))) && !(coordinatorModel && !recipientIds.length) ? ['本群还没有 LLM 成员，请添加模型成员，或明确选择一位运行时 Agent。'] : []),
   ];

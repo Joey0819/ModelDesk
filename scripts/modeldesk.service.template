@@ -1,0 +1,15 @@
+[Unit]
+Description=ModelDesk Backend API
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/noldus/modeldesk
+ExecStart=/home/noldus/modeldesk/.venv/bin/uvicorn backend.main:app --host 127.0.0.1 --port 8001
+Restart=on-failure
+RestartSec=5
+Environment=PATH=/home/noldus/modeldesk/.venv/bin:/usr/local/bin:/usr/bin:/bin
+
+[Install]
+WantedBy=default.target

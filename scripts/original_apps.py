@@ -84,18 +84,28 @@ def install():
     subprocess.run([str(PYTHON), "-m", "pip", "install", "-r", str(VENDOR / "requirements.txt"), "-r", str(PROJECT / "scripts/original-requirements.txt")], check=True)
 
 
+def _python_executable():
+    """Resolve the best available Python 3 interpreter."""
+    import shutil
+    return sys.executable or shutil.which("python3") or "/usr/bin/python3"
+
+
 def start(identifier):
     if identifier == "chathub":
         entry = chathub_entry()
         if not entry:
             raise RuntimeError("未发现 ChatHub 扩展，请在 Chrome 加载现有扩展")
-        subprocess.run(["/usr/bin/open", "-a", "Google Chrome", entry], check=True, timeout=10)
+        opener = shutil.which("xdg-open") or shutil.which("open") or "/usr/bin/open"
+        subprocess.run([opener, entry] if "xdg-open" in opener else [opener, "-a", "Google Chrome", entry], check=True, timeout=10)
     elif identifier == "multibot":
         if not (VENDOR / "app.py").is_file() or not PYTHON.exists():
             raise RuntimeError("请先安装 MultiBot 原版独立环境")
         if healthy() and not owned_multibot():
             raise RuntimeError("8501 端口已被其他服务占用")
-        subprocess.run(["/usr/bin/python3", str(TOOLS / "scripts/services.py"), "start", "--service", "multibot-original"], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=45)
+        services_script = TOOLS / "scripts/services.py"
+        if not services_script.is_file():
+            raise RuntimeError(f"未找到上游服务控制器: {services_script}")
+        subprocess.run([_python_executable(), str(services_script), "start", "--service", "multibot-original"], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=45)
         if not healthy() or not owned_multibot():
             raise RuntimeError("原版服务未通过健康与进程归属检查")
     else:

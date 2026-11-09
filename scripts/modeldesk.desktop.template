@@ -1,0 +1,10 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=ModelDesk
+Comment=Multi-model workbench for collaborative AI tasks
+Exec=xdg-open http://127.0.0.1:5173
+Icon=modeldesk
+Terminal=false
+Categories=Development;Productivity;
+StartupNotify=true

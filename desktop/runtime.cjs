@@ -1,7 +1,7 @@
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 
-const DEFAULT_WORKSPACE = '/Users/chengneng/Project/Skills/llm-tools';
+const DEFAULT_WORKSPACE = process.env.MODEL_DESK_WORKSPACE || path.resolve(path.join(__dirname, '..', 'skills-workspace'));
 const UI_URL = 'http://localhost:5173/';
 const HEALTH_URLS = [
   'http://127.0.0.1:8317/v1/models',
@@ -16,9 +16,12 @@ function workspaceRoot(environment = process.env) {
 }
 
 function serviceEnvironment(environment = process.env) {
+  const platformPaths = process.platform === 'darwin'
+    ? ['/usr/local/bin', '/opt/homebrew/bin', '/usr/bin', '/bin']
+    : ['/usr/local/bin', '/usr/bin', '/bin'];
   return {
     ...environment,
-    PATH: ['/usr/local/bin', '/opt/homebrew/bin', '/usr/bin', '/bin', environment.PATH || ''].join(':'),
+    PATH: [...platformPaths, environment.PATH || ''].join(':'),
   };
 }
 

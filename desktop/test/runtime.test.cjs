@@ -153,7 +153,8 @@ test('launch resolves absolute workspace and deterministic GUI executable paths'
   assert.equal(workspaceRoot({ MODEL_DESK_WORKSPACE: '/Users/example/llm-tools' }), '/Users/example/llm-tools');
   assert.throws(() => workspaceRoot({ MODEL_DESK_WORKSPACE: '../relative' }), /absolute/);
   const environment = serviceEnvironment({ PATH: '/usr/bin', MODEL_DESK_WORKSPACE: '/Users/example/llm-tools' });
-  assert.equal(environment.PATH.startsWith('/usr/local/bin:/opt/homebrew/bin:'), true);
+  const expectedPrefix = process.platform === 'darwin' ? '/usr/local/bin:/opt/homebrew/bin:' : '/usr/local/bin:/usr/bin:';
+  assert.equal(environment.PATH.startsWith(expectedPrefix), true);
   assert.equal(environment.MODEL_DESK_WORKSPACE, '/Users/example/llm-tools');
 });
 

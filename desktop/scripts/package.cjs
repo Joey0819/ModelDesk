@@ -6,8 +6,11 @@ const { promisify } = require('node:util');
 const execFileAsync = promisify(execFile);
 
 async function main() {
-  if (process.platform !== 'darwin' || process.arch !== 'arm64') throw new Error('This package target requires an Apple Silicon Mac.');
   const root = path.join(__dirname, '..');
+  if (process.argv.includes('--linux')) {
+    return await packageLinux(root);
+  }
+  if (process.platform !== 'darwin' || process.arch !== 'arm64') throw new Error('This package target requires an Apple Silicon Mac or --linux flag on x64 Linux.');
   const packageJSON = JSON.parse(await fs.readFile(path.join(root, 'package.json'), 'utf8'));
   const staging = path.join(root, 'dist', 'app-source');
   await fs.rm(staging, { recursive: true, force: true });
@@ -87,6 +90,40 @@ async function main() {
   }
   await fs.rm(previousBundle, { recursive: true, force: true });
   console.log(`Packaged ModelDesk ${packageJSON.version}: ${destination}`);
+}
+
+async function packageLinux(root) {
+  if (process.platform !== 'linux' || process.arch !== 'x64') throw new Error('Linux x64 packaging requires a Linux x64 host.');
+  const packageJSON = JSON.parse(await fs.readFile(path.join(root, 'package.json'), 'utf8'));
+  const staging = path.join(root, 'dist', 'app-source');
+  await fs.rm(staging, { recursive: true, force: true });
+  await fs.mkdir(staging, { recursive: true });
+  for (const name of ['main.cjs', 'runtime.cjs', 'status.html', 'preload.cjs', 'input-files.cjs', 'muse-permissions.cjs', 'autonomy-notifications.cjs', 'autonomy-navigation.cjs']) {
+    await fs.copyFile(path.join(root, name), path.join(staging, name));
+  }
+  await fs.writeFile(path.join(staging, 'package.json'), JSON.stringify({
+    name: packageJSON.name,
+    productName: packageJSON.productName,
+    version: packageJSON.version,
+    description: packageJSON.description,
+    private: true,
+    main: packageJSON.main,
+  }, null, 2));
+  const { packager } = await import('@electron/packager');
+  const bundles = await packager({
+    dir: staging,
+    name: 'ModelDesk',
+    executableName: 'modeldesk',
+    platform: 'linux',
+    arch: 'x64',
+    electronVersion: packageJSON.devDependencies.electron,
+    appVersion: packageJSON.version,
+    out: path.join(root, 'dist', 'package'),
+    overwrite: true,
+    asar: true,
+    prune: false,
+  });
+  console.log(`Packaged ModelDesk ${packageJSON.version} for Linux x64: ${bundles[0]}`);
 }
 
 main().catch(error => { console.error(error.message); process.exitCode = 1; });

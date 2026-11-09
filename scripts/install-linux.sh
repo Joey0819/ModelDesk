@@ -113,25 +113,15 @@ NGINX_WEB_ROOT="/usr/local/noldus/modeldesk-frontend"
 
 generate_nginx() {
   cat <<NGINX
-# ModelDesk 本机工作台：前端静态页 + API 反代（后端 127.0.0.1:8001）
+# ModelDesk 本机工作台：前端静态页（绑定 loopback，不暴露到 LAN）
+# 前端直连 127.0.0.1:8001 API，此处不做反代以避免绕过 phone gateway 安全策略
 server {
-    listen 5173;
+    listen 127.0.0.1:5173;
     server_name _;
     charset utf-8;
-    client_max_body_size 5000M;
+    client_max_body_size 128M;
     root ${NGINX_WEB_ROOT};
     index index.html;
-
-    location /api/ {
-        proxy_pass http://127.0.0.1:8001;
-        proxy_http_version 1.1;
-        proxy_set_header Host \$http_host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_buffering off;
-        proxy_read_timeout 3600s;
-        proxy_send_timeout 3600s;
-    }
 
     location = /index.html {
         add_header Cache-Control "no-store";
@@ -172,38 +162,32 @@ publish_frontend() {
 
 if command -v nginx >/dev/null 2>&1; then
   publish_frontend
-  NGINX_TMP=$(mktemp)
-  generate_nginx > "$NGINX_TMP"
+  NGINX_NEW="${NGINX_CONF}.new.$$"
+  trap 'rm -f "$NGINX_NEW"' EXIT
+  generate_nginx > "$NGINX_NEW"
 
-  if [ -f "$NGINX_CONF" ]; then
-    if diff -q "$NGINX_CONF" "$NGINX_TMP" >/dev/null 2>&1; then
-      log "nginx 配置无变化，跳过。"
-      rm -f "$NGINX_TMP"
+  if [ -f "$NGINX_CONF" ] && diff -q "$NGINX_CONF" "$NGINX_NEW" >/dev/null 2>&1; then
+    log "nginx 配置无变化，跳过。"
+    rm -f "$NGINX_NEW"
+  elif sudo -n true 2>/dev/null; then
+    # 先写到临时位置并做 true 语法检查，通过后才原子替换，失败则保留旧配置
+    sudo cp "$NGINX_NEW" "${NGINX_CONF}.new"
+    if sudo nginx -t 2>&1; then
+      [ -f "$NGINX_CONF" ] && sudo cp "$NGINX_CONF" "${NGINX_CONF}.bak.$(date +%Y%m%d%H%M%S)"
+      sudo mv "${NGINX_CONF}.new" "$NGINX_CONF"
+      sudo systemctl reload nginx
+      log "nginx 配置已通过语法检查并原子替换。"
     else
-      if sudo -n true 2>/dev/null; then
-        warn "nginx 配置已变更，备份旧文件并替换。"
-        sudo cp "$NGINX_CONF" "${NGINX_CONF}.bak.$(date +%Y%m%d%H%M%S)"
-        sudo cp "$NGINX_TMP" "$NGINX_CONF"
-        sudo nginx -t && sudo systemctl reload nginx
-        log "nginx 配置已更新并重载。"
-      else
-        warn "无法自动写入 nginx 配置（需要 sudo），请手动执行："
-        echo "  sudo cp '$NGINX_TMP' '$NGINX_CONF'"
-        echo "  sudo nginx -t && sudo systemctl reload nginx"
-      fi
-      rm -f "$NGINX_TMP"
+      err "nginx 配置语法检查失败，保留旧配置不变。"
+      sudo rm -f "${NGINX_CONF}.new"
+      exit 1
     fi
+    rm -f "$NGINX_NEW"
   else
-    if sudo -n true 2>/dev/null; then
-      sudo cp "$NGINX_TMP" "$NGINX_CONF"
-      sudo nginx -t && sudo systemctl reload nginx
-      log "已生成 nginx 配置: $NGINX_CONF"
-    else
-      warn "无法自动写入 nginx 配置（需要 sudo），请手动执行："
-      echo "  sudo cp '$NGINX_TMP' '$NGINX_CONF'"
-      echo "  sudo nginx -t && sudo systemctl reload nginx"
-    fi
-    rm -f "$NGINX_TMP"
+    warn "无法自动写入 nginx 配置（需要 sudo），请手动执行："
+    echo "  sudo cp '$NGINX_NEW' '$NGINX_CONF'"
+    echo "  sudo nginx -t && sudo systemctl reload nginx"
+    rm -f "$NGINX_NEW"
   fi
 else
   warn "未检测到 nginx，跳过反向代理配置。如需外部访问，请手动安装 nginx 并配置。"

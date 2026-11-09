@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta, timezone
+import platform
 import unittest
 from unittest.mock import AsyncMock, patch
 
@@ -15,6 +16,7 @@ class ReadinessTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(readiness.recent_test({"ok": True, "checked_at": stamp}))
 
     async def test_installed_and_authorized_muse_still_requires_a_usable_window(self):
+        is_linux = platform.system() == 'Linux'
         with patch('backend.group_tasks.engine_status', AsyncMock(return_value={"engines": [{"id":"codex", "label":"Codex", "available":True, "authenticated":False}]})), \
              patch('backend.muse_bridge.manager.status', AsyncMock(return_value={"installed":True, "permission":True, "native_ready":False})), \
              patch('backend.workbench.subscription_catalog', AsyncMock(return_value=['model-a'])), \
@@ -22,7 +24,8 @@ class ReadinessTests(unittest.IsolatedAsyncioTestCase):
              patch('scripts.modeldesk_worker.read_status', return_value={"online":False}):
             result=await readiness.inspect()
         states={row['id']:row['state'] for row in result['agents']}
-        self.assertEqual(states, {'subscription':'reachable', 'codex':'unauthorized', 'muse':'needs_attention'})
+        expected_muse = 'unavailable' if is_linux else 'needs_attention'
+        self.assertEqual(states, {'subscription':'reachable', 'codex':'unauthorized', 'muse':expected_muse})
         self.assertFalse(result['checks_generate_content'])
 
     async def test_connection_probe_never_generates_or_follows_redirects(self):

@@ -167,10 +167,8 @@ class RemoteStore:
 
 
 def tailscale_binary():
-    native = "/Applications/Tailscale.app/Contents/MacOS/Tailscale"
-    # Some installations wrap this binary in a shell without exec. Calling the
-    # native CLI directly ensures timeout cancellation reaps the real process.
-    return native if Path(native).is_file() else shutil.which("tailscale")
+    from .platform_support import resolve_tailscale_path
+    return resolve_tailscale_path()
 
 
 def tailscale_status():

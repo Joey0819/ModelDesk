@@ -4,6 +4,7 @@ import copy
 import io
 import json
 import os
+import platform
 import tempfile
 import unittest
 import uuid
@@ -20,6 +21,7 @@ from backend.projects import ProjectStore
 from backend.delivery_media import DeliveryMediaStore
 
 
+@unittest.skipUnless(platform.system() == 'Darwin', reason='macOS-only: Muse 原生桥接测试需要 macOS 平台')
 class MuseTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.temp = tempfile.TemporaryDirectory()

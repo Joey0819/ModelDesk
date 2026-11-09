@@ -22,6 +22,7 @@ from fastapi.responses import Response
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from .harness.store import RunStore, checked_id
+from .platform_support import is_linux
 from .workbench import now, public_error
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -433,6 +434,8 @@ class MuseManager:
         if command not in {"probe", "submit", "observe", "check_draft", "resume_draft"}:
             raise ValueError("unsupported helper command")
         async with self.helper_lock:
+            if is_linux:
+                raise RuntimeError("Muse 原生桥接仅在 macOS 上可用，Linux 不支持此功能。")
             if not self.helper.is_file() or self.helper.is_symlink():
                 raise RuntimeError("Muse 原生桥接尚未构建，请重新构建或安装 ModelDesk。")
             process = await asyncio.create_subprocess_exec(
@@ -780,6 +783,8 @@ async def status():
 
 @router.post("/tasks", status_code=202, dependencies=[Depends(local_mutation)])
 async def create_task(body: MuseTaskRequest):
+    if is_linux:
+        raise HTTPException(422, "Muse 原生桥接仅在 macOS 上可用，Linux 平台不支持此功能。")
     return public_task(await manager.create(body))
 
 

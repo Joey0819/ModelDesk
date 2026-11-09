@@ -34,39 +34,38 @@ class PlatformFeatureUnavailable(RuntimeError):
     """Raised when a macOS-only feature is invoked on an unsupported platform."""
 
 
-def require_macos_feature(name: str):
-    """Decorator / guard that raises on non-macOS platforms.
+def ensure_macos(name: str) -> None:
+    """Plain guard: raise immediately when the current platform is not macOS.
 
-    Usage::
-
-        @require_macos_feature("Muse 原生桥接")
-        async def some_helper(): ...
-
-    Or as a plain call inside a function body::
-
-        require_macos_feature("Tailscale HTTPS 入口")
+    ``ensure_macos("Muse 原生桥接")``
     """
-    if is_macos:
-        # When used as a decorator on macOS, return the original callable unchanged.
-        def _decorator(func):
-            return func
-        return _decorator
+    if not is_macos:
+        raise PlatformFeatureUnavailable(
+            f"「{name}」仅在 macOS 上可用，当前平台（{_platform}）不支持此功能。"
+        )
 
+
+def macos_only(name: str):
+    """Decorator: keep the function on macOS, raise on other platforms.
+
+    ``@macos_only("Muse 原生桥接")``
+    """
     message = f"「{name}」仅在 macOS 上可用，当前平台（{_platform}）不支持此功能。"
 
     def _decorator(func):
-        @functools.wraps(func)
-        async def _async_wrapper(*args, **kwargs):
-            raise PlatformFeatureUnavailable(message)
+        import inspect
+
+        if is_macos:
+            return func
+        if inspect.iscoroutinefunction(func):
+            @functools.wraps(func)
+            async def _async_wrapper(*args, **kwargs):
+                raise PlatformFeatureUnavailable(message)
+            return _async_wrapper
 
         @functools.wraps(func)
         def _sync_wrapper(*args, **kwargs):
             raise PlatformFeatureUnavailable(message)
-
-        import asyncio
-        import inspect
-        if inspect.iscoroutinefunction(func):
-            return _async_wrapper
         return _sync_wrapper
 
     return _decorator

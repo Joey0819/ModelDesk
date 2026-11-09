@@ -3,7 +3,7 @@ const { execFile } = require('node:child_process');
 const { promisify } = require('node:util');
 const fs = require('node:fs');
 const path = require('node:path');
-const { UI_URL, HEALTH_URLS, workspaceRoot, serviceEnvironment, isWorkbenchURL, isOriginalFrameURL, isExportURL, exportFormat, isExternalURL, isStatusURL, isTrustedWorkbenchIPC } = require('./runtime.cjs');
+const { UI_URL, HEALTH_URLS, healthURLsFor, workspaceRoot, serviceEnvironment, isWorkbenchURL, isOriginalFrameURL, isExportURL, exportFormat, isExternalURL, isStatusURL, isTrustedWorkbenchIPC } = require('./runtime.cjs');
 const { INPUT_EXTENSIONS, collectSelectedFiles } = require('./input-files.cjs');
 const { installMusePermissionActions } = require('./muse-permissions.cjs');
 
@@ -68,7 +68,7 @@ async function connectWorkbench() {
     } else {
       console.warn('[ModelDesk] background worker not found at', supervisor, '; skipping worker start.');
     }
-    const checks = await Promise.all(HEALTH_URLS.map(healthy));
+    const checks = await Promise.all(healthURLsFor().map(healthy));
     if (!checks.every(Boolean)) throw new Error('workbench-not-ready');
     if (mainWindow && !mainWindow.isDestroyed()) await mainWindow.loadURL(UI_URL);
   } catch {
@@ -143,7 +143,8 @@ function installProjectPicker() {
     try {
       const root = workspaceRoot();
       const controller = path.resolve(root, '../llm-council/scripts/original_apps.py');
-      await execFileAsync('/usr/bin/python3', [controller, 'start', 'chathub'], {
+      const pythonBin = process.platform === 'darwin' ? '/usr/bin/python3' : (process.env.PYTHON || 'python3');
+      await execFileAsync(pythonBin, [controller, 'start', 'chathub'], {
         env: serviceEnvironment(), timeout: 15000, maxBuffer: 32 * 1024,
       });
       return true;

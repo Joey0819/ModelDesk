@@ -107,25 +107,71 @@ else
 fi
 
 # ── 5. nginx 反向代理（可选）──────────────────────────────────────────
+# 注意：ModelDesk 的后端只提供 /api，工作台页面是 Vite 构建出的静态文件。
+# 只把 / 反代到 8001 会看到一段 JSON 而不是界面，所以这里同时托管 dist 并反代 /api。
+NGINX_WEB_ROOT="/usr/local/noldus/modeldesk-frontend"
+
 generate_nginx() {
-  cat <<'NGINX'
-# ModelDesk nginx reverse proxy configuration
+  cat <<NGINX
+# ModelDesk 本机工作台：前端静态页 + API 反代（后端 127.0.0.1:8001）
 server {
-    listen 80;
-    server_name modeldesk.local;
+    listen 5173;
+    server_name _;
+    charset utf-8;
+    client_max_body_size 5000M;
+    root ${NGINX_WEB_ROOT};
+    index index.html;
+
+    location /api/ {
+        proxy_pass http://127.0.0.1:8001;
+        proxy_http_version 1.1;
+        proxy_set_header Host \$http_host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_buffering off;
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
+    }
+
+    location = /index.html {
+        add_header Cache-Control "no-store";
+        expires -1;
+    }
+
+    location /assets/ {
+        try_files \$uri =404;
+        expires 1y;
+        add_header Cache-Control "public, immutable";
+    }
 
     location / {
-        proxy_pass http://127.0.0.1:8001;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
+        try_files \$uri \$uri/ /index.html;
     }
 }
 NGINX
 }
 
+# 发布前端构建产物到 nginx 可读路径
+publish_frontend() {
+  if [ ! -d "${FRONTEND_DIR}/dist" ]; then
+    warn "未找到前端构建产物 ${FRONTEND_DIR}/dist，跳过静态发布。"
+    return 0
+  fi
+  if sudo -n true 2>/dev/null; then
+    sudo mkdir -p "$NGINX_WEB_ROOT"
+    sudo rsync -a --delete "${FRONTEND_DIR}/dist/" "${NGINX_WEB_ROOT}/"
+    sudo chmod -R a+rX "$NGINX_WEB_ROOT"
+    log "前端产物已发布到 $NGINX_WEB_ROOT"
+  else
+    warn "无法写入 ${NGINX_WEB_ROOT}（需要 sudo），请手动执行："
+    echo "  sudo mkdir -p '$NGINX_WEB_ROOT'"
+    echo "  sudo rsync -a --delete '${FRONTEND_DIR}/dist/' '$NGINX_WEB_ROOT/'"
+    echo "  sudo chmod -R a+rX '$NGINX_WEB_ROOT'"
+  fi
+}
+
 if command -v nginx >/dev/null 2>&1; then
+  publish_frontend
   NGINX_TMP=$(mktemp)
   generate_nginx > "$NGINX_TMP"
 
@@ -171,4 +217,5 @@ echo "  查看日志:  journalctl --user -u $SERVICE_NAME -f"
 echo "  停止服务:  systemctl --user stop $SERVICE_NAME"
 echo "  禁用服务:  systemctl --user disable $SERVICE_NAME"
 echo "  API 地址:  http://127.0.0.1:8001"
+echo "  工作台:    http://localhost:5173"
 echo ""

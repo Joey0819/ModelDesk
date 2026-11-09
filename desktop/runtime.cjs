@@ -1,13 +1,21 @@
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 
-const DEFAULT_WORKSPACE = process.env.MODEL_DESK_WORKSPACE || path.resolve(path.join(__dirname, '..', 'skills-workspace'));
+const DEFAULT_WORKSPACE = process.env.MODEL_DESK_WORKSPACE || path.resolve(path.join(__dirname, '..'));
 const UI_URL = 'http://localhost:5173/';
 const HEALTH_URLS = [
   'http://127.0.0.1:8317/v1/models',
   'http://127.0.0.1:8001/api/workbench/status',
   'http://127.0.0.1:5173/',
 ];
+// The local model gateway (8317) is a model source, not a UI precondition.
+// On Linux it usually is not installed; requiring it would block a perfectly
+// working workbench behind the error page.
+const LINUX_REQUIRED_HEALTH_URLS = HEALTH_URLS.filter(url => !url.includes(':8317/'));
+
+function healthURLsFor(platform = process.platform) {
+  return platform === 'darwin' ? HEALTH_URLS : LINUX_REQUIRED_HEALTH_URLS;
+}
 
 function workspaceRoot(environment = process.env) {
   const candidate = environment.MODEL_DESK_WORKSPACE || DEFAULT_WORKSPACE;
@@ -115,4 +123,4 @@ function isTrustedWorkbenchIPC(event, contents) {
   }
 }
 
-module.exports = { DEFAULT_WORKSPACE, UI_URL, HEALTH_URLS, workspaceRoot, serviceEnvironment, isWorkbenchURL, isOriginalFrameURL, isExportURL, exportFormat, isExternalURL, isStatusURL, isTrustedWorkbenchIPC };
+module.exports = { DEFAULT_WORKSPACE, UI_URL, HEALTH_URLS, healthURLsFor, workspaceRoot, serviceEnvironment, isWorkbenchURL, isOriginalFrameURL, isExportURL, exportFormat, isExternalURL, isStatusURL, isTrustedWorkbenchIPC };

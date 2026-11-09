@@ -31,6 +31,12 @@ SUBSCRIPTION_URL = "http://127.0.0.1:8317/v1/chat/completions"
 RUNTIME_BASE = "http://127.0.0.1:8001/api/model-runtime/v1"
 
 
+def local_machine_label():
+    """Name the machine the user has to walk over to, in their own terms."""
+    from .platform_support import is_macos
+    return "这台 Mac" if is_macos else "运行 ModelDesk 的这台电脑"
+
+
 def now():
     return datetime.now(timezone.utc).isoformat()
 
@@ -42,7 +48,7 @@ def require_local_admin(request: Request):
         local = False
     if (not local or request.url.hostname not in {"localhost", "127.0.0.1", "::1"}
             or request.headers.get("sec-fetch-site") == "cross-site"):
-        raise HTTPException(403, "模型连接只能在这台 Mac 的 ModelDesk 中管理")
+        raise HTTPException(403, f"模型连接只能在{local_machine_label()}的 ModelDesk 中管理")
     origin = request.headers.get("origin")
     if origin not in LOCAL_ORIGINS and (origin or request.method not in {"GET", "HEAD", "OPTIONS"}):
         raise HTTPException(403, "请从本机 ModelDesk 设置模型连接")

@@ -321,7 +321,8 @@ def local_admin(request: Request):
     from .remote_access import require_local
     require_local(request)
     if request.headers.get("x-modeldesk-remote"):
-        raise HTTPException(403, "飞书凭据和聊天授权只能在这台 Mac 管理")
+        from .platform_support import machine_label
+        raise HTTPException(403, f"飞书凭据和聊天授权只能在{machine_label()}管理")
 
 
 router = APIRouter(prefix="/api/feishu", tags=["feishu"], dependencies=[Depends(local_admin)])

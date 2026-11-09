@@ -25,7 +25,27 @@ def get_platform_info() -> dict:
         "is_windows": is_windows,
         "has_native_muse_bridge": is_macos,
         "tailscale_path": resolve_tailscale_path(),
+        "machine_label": machine_label(),
     }
+
+
+# ── Machine labels ───────────────────────────────────────────────────
+# User-facing messages must not assume the host is a Mac. These helpers are the
+# single place that decides how to name the computer running this process.
+
+def machine_label() -> str:
+    """Name the machine the user has to walk over to, in their own terms."""
+    return "这台 Mac" if is_macos else "运行 ModelDesk 的这台电脑"
+
+
+def machine_short() -> str:
+    """Short form for inline sentences where ``machine_label`` reads too long."""
+    return "这台 Mac" if is_macos else "这台电脑"
+
+
+def local_machine() -> str:
+    """Neutral way to say 'the machine hosting this service' in any platform."""
+    return "本机"
 
 
 # ── Feature guards ───────────────────────────────────────────────────

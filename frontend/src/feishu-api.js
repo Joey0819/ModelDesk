@@ -7,7 +7,7 @@ async function request(path = '', method = 'GET', body) {
       method,
       ...(body === undefined ? {} : { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }),
     });
-  } catch { throw new Error('飞书连接服务暂时无法访问，请检查 Mac 上的 ModelDesk 服务。'); }
+  } catch { throw new Error('飞书连接服务暂时无法访问，请检查运行 ModelDesk 的这台电脑上的服务。'); }
   if (!response.ok) {
     let detail;
     try { detail = (await response.json()).detail; } catch { /* Preserve the failure. */ }

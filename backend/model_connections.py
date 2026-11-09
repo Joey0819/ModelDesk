@@ -33,8 +33,8 @@ RUNTIME_BASE = "http://127.0.0.1:8001/api/model-runtime/v1"
 
 def local_machine_label():
     """Name the machine the user has to walk over to, in their own terms."""
-    from .platform_support import is_macos
-    return "这台 Mac" if is_macos else "运行 ModelDesk 的这台电脑"
+    from .platform_support import machine_label
+    return machine_label()
 
 
 def now():

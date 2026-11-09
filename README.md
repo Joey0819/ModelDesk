@@ -4,7 +4,9 @@
 
 把模型、执行 Agent、项目资料、代码审查和最终成果放在同一个工作区。你可以指定一个 LLM 担任 **统筹模型（Ruler）**，让它组织分工、调用群内 Codex、Claude Code、Muse 或已配置的 MCP Agent，以及可用的生图模型，再把真实正文、图片与视频整理成成果，并按要求生成 Word、PDF 或独立网页。
 
-**当前桌面版本：2.23.0** · macOS / Apple Silicon · 中文界面 · 本机服务与私有手机入口
+**当前桌面版本：2.23.0** · macOS / Apple Silicon · Linux x64（Beta） · 中文界面 · 本机服务与私有手机入口
+
+> **Linux 用户**：Backend API 和前端已支持 Linux。Muse 原生桥接仅在 macOS 可用。安装与部署指南见 [docs/LINUX.md](docs/LINUX.md)。
 
 Muse 角色可绑定 Skills，长技能由统筹模型转换为创作指引，并保留原版本与实际发送内容。Lemo 的代码渲染由 Codex 执行；Muse 使用自身创作能力。详见 [2.13.3 Skills 接入与验收](docs/MODELDESK_2133_SKILLS.md)。
 

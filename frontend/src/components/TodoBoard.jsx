@@ -66,9 +66,18 @@ function TaskModal({ task, onClose, onSave, onDelete, saving }) {
       setErrors(errs);
       return;
     }
-    const payload = { ...fields };
-    if (!payload.due_date) payload.due_date = null;
-    if (!payload.project_id) payload.project_id = null;
+    // The server accepts an explicit field set only; task metadata such as id,
+    // created_at and updated_at must never be echoed back on save.
+    const payload = {
+      title: fields.title.trim(),
+      description: fields.description || '',
+      status: fields.status,
+      priority: fields.priority,
+      assignee: fields.assignee || '',
+      due_date: fields.due_date || null,
+      tags: fields.tags || [],
+      project_id: fields.project_id || null,
+    };
     onSave(payload, isNew);
   };
 

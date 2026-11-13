@@ -22,8 +22,10 @@ const SOURCE_LABELS = { feishu: '飞书', workbench: '工作台', group: '协作
 
 function TodoCard({ task, onEdit, onDragStart }) {
   const hasExternalSource = !!task.external_source;
+  // Prefer the label the source system reported: a workbench job dispatched
+  // from Feishu keeps platform "workbench" but must still read 飞书.
   const sourceLabel = hasExternalSource
-    ? (SOURCE_LABELS[task.external_source.platform] || task.external_source.platform)
+    ? (task.source_label || SOURCE_LABELS[task.external_source.platform] || task.external_source.platform)
     : null;
 
   return (

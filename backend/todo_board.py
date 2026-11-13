@@ -354,6 +354,10 @@ def upsert_external_task(
             existing["title"] = title[:200]
             existing["status"] = status
             existing["description"] = description[:4000]
+            # The display label can change (e.g. a workbench job that turns out
+            # to be Feishu-dispatched), and the UI must follow the newest one.
+            if source_label:
+                existing["source_label"] = source_label
             existing["updated_at"] = now_ts
             new_data = {"schema_version": SCHEMA_VERSION, "tasks": tasks}
             _save_board(new_data)
@@ -377,6 +381,8 @@ def upsert_external_task(
                 archived_match["title"] = title[:200]
                 archived_match["status"] = status
                 archived_match["description"] = description[:4000]
+                if source_label:
+                    archived_match["source_label"] = source_label
                 archived_match["updated_at"] = now_ts
                 new_data = {"schema_version": SCHEMA_VERSION, "tasks": tasks}
                 _save_board(new_data)
@@ -398,6 +404,7 @@ def upsert_external_task(
                     "assignee": "",
                     "due_date": None,
                     "tags": [source_label] if source_label else [],
+                    "source_label": source_label,
                     "project_id": project_id,
                     "position": 0,
                     "created_at": now_ts,

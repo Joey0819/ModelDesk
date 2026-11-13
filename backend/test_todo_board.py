@@ -181,6 +181,28 @@ class TodoBoardTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(doing[1]["id"], t1["id"])
             self.assertEqual(doing[2]["id"], t2["id"])
 
+    async def test_reorder_mixed_project_scopes(self):
+        """A column legitimately mixes manual cards and project cards.
+
+        The board lists every scope in one column, so the drag payload spans
+        scopes; rejecting that made every drag in a mixed column fail with 422.
+        """
+        async with await self._client() as client:
+            manual = (await client.post("/api/todo", json={"title": "Manual"})).json()
+            scoped = (await client.post("/api/todo", json={
+                "title": "Scoped",
+                "project_id": "11111111-1111-1111-1111-111111111111",
+            })).json()
+            resp = await client.post("/api/todo/reorder", json={
+                "ids": [scoped["id"], manual["id"]],
+                "status": "todo",
+                "position_start": 0,
+            })
+            self.assertEqual(resp.status_code, 200, resp.text)
+            lst = (await client.get("/api/todo")).json()
+            todo = sorted([t for t in lst if t["status"] == "todo"], key=lambda t: t["position"])
+            self.assertEqual([t["id"] for t in todo], [scoped["id"], manual["id"]])
+
     async def test_reorder_nonexistent_id_returns_422(self):
         async with await self._client() as client:
             t1 = (await client.post("/api/todo", json={"title": "A"})).json()

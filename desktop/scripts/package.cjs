@@ -110,6 +110,21 @@ async function packageLinux(root) {
     main: packageJSON.main,
   }, null, 2));
   const { packager } = await import('@electron/packager');
+  // Same supply-chain guard as the darwin path: never hand a downloaded
+  // Electron archive to packager without matching the published checksum.
+  const checksums = JSON.parse(await fs.readFile(path.join(root, 'node_modules', 'electron', 'checksums.json'), 'utf8'));
+  const zipName = `electron-v${packageJSON.devDependencies.electron}-linux-x64.zip`;
+  const zipDirectory = path.join(root, 'dist', 'vendor');
+  let verifiedZipDirectory;
+  try {
+    const archive = await fs.readFile(path.join(zipDirectory, zipName));
+    if (crypto.createHash('sha256').update(archive).digest('hex') !== checksums[zipName]) {
+      throw new Error('The cached Electron archive does not match its official SHA256 checksum.');
+    }
+    verifiedZipDirectory = zipDirectory;
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+  }
   const bundles = await packager({
     dir: staging,
     name: 'ModelDesk',
@@ -122,6 +137,8 @@ async function packageLinux(root) {
     overwrite: true,
     asar: true,
     prune: false,
+    download: { checksums },
+    electronZipDir: verifiedZipDirectory,
   });
   console.log(`Packaged ModelDesk ${packageJSON.version} for Linux x64: ${bundles[0]}`);
 }

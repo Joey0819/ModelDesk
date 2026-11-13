@@ -98,32 +98,9 @@ class TaskCreate(BaseModel):
     tags: list[str] = []
     project_id: Optional[str] = None
     position: int = 0
-    external_source: Optional[dict] = None
-
-    @field_validator("external_source")
-    @classmethod
-    def validate_external_source(cls, v: Optional[dict]) -> Optional[dict]:
-        if v is None:
-            return None
-        if not isinstance(v, dict):
-            raise ValueError("external_source must be a dict")
-        platform = v.get("platform")
-        task_id = v.get("task_id")
-        if not platform or not isinstance(platform, str):
-            raise ValueError("external_source.platform is required and must be a string")
-        if not task_id or not isinstance(task_id, str):
-            raise ValueError("external_source.task_id is required and must be a string")
-        if platform not in VALID_EXTERNAL_PLATFORMS:
-            raise ValueError(f"external_source.platform must be one of {sorted(VALID_EXTERNAL_PLATFORMS)}")
-        if len(platform) > 50:
-            raise ValueError("external_source.platform exceeds 50 characters")
-        if len(task_id) > 200:
-            raise ValueError("external_source.task_id exceeds 200 characters")
-        # Only allow exactly these two keys
-        extra_keys = set(v.keys()) - {"platform", "task_id"}
-        if extra_keys:
-            raise ValueError(f"external_source contains unexpected keys: {extra_keys}")
-        return {"platform": platform, "task_id": task_id}
+    # external_source is intentionally absent: the sync key is written only by
+    # todo_sync. Accepting it over HTTP let any caller pre-claim (platform,
+    # task_id) and hijack, split or orphan the mirrored card.
 
     @field_validator("title")
     @classmethod
@@ -203,31 +180,8 @@ class TaskUpdate(BaseModel):
     project_id: Optional[str] = None
     position: Optional[int] = None
     archived: Optional[bool] = None
-    external_source: Optional[dict] = None
-
-    @field_validator("external_source")
-    @classmethod
-    def validate_external_source(cls, v: Optional[dict]) -> Optional[dict]:
-        if v is None:
-            return None
-        if not isinstance(v, dict):
-            raise ValueError("external_source must be a dict")
-        platform = v.get("platform")
-        task_id = v.get("task_id")
-        if not platform or not isinstance(platform, str):
-            raise ValueError("external_source.platform is required and must be a string")
-        if not task_id or not isinstance(task_id, str):
-            raise ValueError("external_source.task_id is required and must be a string")
-        if platform not in VALID_EXTERNAL_PLATFORMS:
-            raise ValueError(f"external_source.platform must be one of {sorted(VALID_EXTERNAL_PLATFORMS)}")
-        if len(platform) > 50:
-            raise ValueError("external_source.platform exceeds 50 characters")
-        if len(task_id) > 200:
-            raise ValueError("external_source.task_id exceeds 200 characters")
-        extra_keys = set(v.keys()) - {"platform", "task_id"}
-        if extra_keys:
-            raise ValueError(f"external_source contains unexpected keys: {extra_keys}")
-        return {"platform": platform, "task_id": task_id}
+    # See TaskCreate: the sync key must not be rewritable over HTTP, otherwise a
+    # PUT can detach a live card and make the next sync create a duplicate.
 
     @field_validator("title")
     @classmethod
@@ -333,6 +287,18 @@ def upsert_external_task(
     """
     platform = external_source["platform"]
     task_id = external_source["task_id"]
+    # Single write point for the sync key: HTTP models no longer accept it, so
+    # the invariant has to be enforced here or nowhere.
+    if platform not in VALID_EXTERNAL_PLATFORMS:
+        raise ValueError(f"unsupported external platform: {platform}")
+    if not isinstance(task_id, str) or not task_id:
+        raise ValueError("external_source.task_id is required")
+    # The board is exposed to more surfaces than the original job file (the UI
+    # and a paired phone), so a mirrored title gets the same credential screen
+    # the HTTP path applies. Sync cannot reject the card, so redact instead.
+    safe_title = title[:200]
+    if secret_text(title):
+        safe_title = "（来源标题含疑似凭据，已隐藏）"
     with _lock:
         data = _load_board()
         tasks = copy.deepcopy(data.get("tasks", []))
@@ -351,7 +317,7 @@ def upsert_external_task(
         now_ts = _now_iso()
         if existing is not None:
             # Update in place
-            existing["title"] = title[:200]
+            existing["title"] = safe_title
             existing["status"] = status
             existing["description"] = description[:4000]
             # The display label can change (e.g. a workbench job that turns out
@@ -378,7 +344,7 @@ def upsert_external_task(
             if archived_match is not None:
                 # Un-archive and update
                 archived_match["archived"] = False
-                archived_match["title"] = title[:200]
+                archived_match["title"] = safe_title
                 archived_match["status"] = status
                 archived_match["description"] = description[:4000]
                 if source_label:
@@ -397,7 +363,7 @@ def upsert_external_task(
                     return {}
                 task = {
                     "id": str(uuid.uuid4()),
-                    "title": title[:200],
+                    "title": safe_title,
                     "description": description[:4000],
                     "status": status,
                     "priority": "medium",
@@ -486,7 +452,6 @@ def create_task(body: TaskCreate):
             "created_at": now,
             "updated_at": now,
             "archived": False,
-            "external_source": body.external_source,
         }
         tasks.append(task)
         new_data = {"schema_version": SCHEMA_VERSION, "tasks": tasks}
@@ -548,13 +513,10 @@ def reorder_tasks(body: ReorderRequest):
         for tid in body.ids:
             if tid not in task_map:
                 raise HTTPException(status_code=422, detail=f"任务 {tid} 不存在")
-        # Verify same project scope
-        project_ids = set()
-        for tid in body.ids:
-            pid = task_map[tid].get("project_id")
-            project_ids.add(pid)
-        if len(project_ids) > 1:
-            raise HTTPException(status_code=422, detail="不能跨项目重排任务")
+        # The board is one global board: cards from different project scopes
+        # legitimately share a status column, and the UI drags the whole column
+        # at once. Rejecting the mix made every drag in a mixed column fail, so
+        # positions are assigned across scopes in the order the user saw.
         now = _now_iso()
         for idx, tid in enumerate(body.ids):
             task_map[tid]["status"] = body.status

@@ -4,7 +4,7 @@ const { pathToFileURL } = require('node:url');
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
-const { workspaceRoot, serviceEnvironment, isWorkbenchURL, isOriginalFrameURL, isExportURL, exportFormat, isExternalURL, isStatusURL, isTrustedWorkbenchIPC } = require('../runtime.cjs');
+const { workspaceRoot, defaultWorkspace, serviceEnvironment, isWorkbenchURL, isOriginalFrameURL, isExportURL, exportFormat, isExternalURL, isStatusURL, isTrustedWorkbenchIPC } = require('../runtime.cjs');
 
 test('media originals and portable bundles use canonical scoped export routes', () => {
   const id = 'df9d3857-3d01-4c24-9e64-b9343e217f9a';
@@ -156,6 +156,17 @@ test('launch resolves absolute workspace and deterministic GUI executable paths'
   const expectedPrefix = process.platform === 'darwin' ? '/usr/local/bin:/opt/homebrew/bin:' : '/usr/local/bin:/usr/bin:';
   assert.equal(environment.PATH.startsWith(expectedPrefix), true);
   assert.equal(environment.MODEL_DESK_WORKSPACE, '/Users/example/llm-tools');
+});
+
+test('a packaged bundle resolves the workspace that owns releases/', () => {
+  // Source checkout: parent of desktop/.
+  assert.equal(defaultWorkspace('/w/modeldesk/desktop'), '/w/modeldesk');
+  // Packaged .app: the parent of __dirname is app.asar, so the workspace is
+  // the directory holding releases/. Returning Resources/ silently broke the
+  // backend auto-start path.
+  assert.equal(defaultWorkspace('/w/llm-tools/releases/ModelDesk.app/Contents/Resources/app.asar/desktop'), '/w/llm-tools');
+  assert.equal(defaultWorkspace('/w/llm-tools/releases/ModelDesk.app/Contents/Resources/app/desktop'), '/w/llm-tools');
+  assert.equal(workspaceRoot({ MODEL_DESK_WORKSPACE: '/w/custom' }), '/w/custom');
 });
 
 test('the internal error page script is covered by its exact CSP hash', () => {

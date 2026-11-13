@@ -154,8 +154,13 @@ class TestSchemaV1ToV2Migration(unittest.TestCase):
         self.assertEqual(tb._cache["schema_version"], 2)
 
 
-class TestInvalidPlatformRejected(unittest.TestCase):
-    """Test that invalid platform values are rejected."""
+class TestSyncKeyIsNotClientWritable(unittest.TestCase):
+    """The (platform, task_id) sync key is owned by todo_sync, not by HTTP.
+
+    Accepting it over HTTP let any local caller pre-claim a key (hijacking the
+    card a real task would sync into) or rewrite one (detaching a live card so
+    the next sync creates a duplicate). The models must refuse it outright.
+    """
 
     def setUp(self):
         _reset_board()
@@ -163,22 +168,33 @@ class TestInvalidPlatformRejected(unittest.TestCase):
     def tearDown(self):
         _reset_board()
 
-    def test_invalid_platform_in_external_source_field(self):
-        from fastapi import HTTPException
+    def test_create_model_rejects_external_source(self):
         from pydantic import ValidationError
         with self.assertRaises(ValidationError):
             tb.TaskCreate(
                 title="Bad",
-                external_source={"platform": "invalid_system", "task_id": "x"},
+                external_source={"platform": "feishu", "task_id": "x"},
             )
 
-    def test_valid_platforms_accepted(self):
-        for platform in ["workbench", "group", "feishu"]:
-            model = tb.TaskCreate(
-                title="OK",
-                external_source={"platform": platform, "task_id": "test-id"},
+    def test_update_model_rejects_external_source(self):
+        from pydantic import ValidationError
+        with self.assertRaises(ValidationError):
+            tb.TaskUpdate(external_source={"platform": "feishu", "task_id": "x"})
+
+    def test_upsert_rejects_unknown_platform(self):
+        with self.assertRaises(ValueError):
+            tb.upsert_external_task(
+                external_source={"platform": "invalid_system", "task_id": "x"},
+                title="Bad", status="todo",
             )
-            self.assertIsNotNone(model.external_source)
+
+    def test_upsert_accepts_each_supported_platform(self):
+        for platform in ["workbench", "group", "feishu"]:
+            task = tb.upsert_external_task(
+                external_source={"platform": platform, "task_id": f"id-{platform}"},
+                title="OK", status="todo",
+            )
+            self.assertEqual(task["external_source"]["platform"], platform)
 
 
 class TestSyncFailureDoesNotAffectTaskSave(unittest.TestCase):
@@ -285,27 +301,30 @@ class TestExternalSourceInHttpEndpoints(unittest.TestCase):
     def tearDown(self):
         _reset_board()
 
-    def test_create_with_external_source(self):
-        body = tb.TaskCreate(
-            title="Synced Card",
-            external_source={"platform": "feishu", "task_id": "fs-123"},
-        )
-        result = tb.create_task(body)
-        self.assertIsNotNone(result["external_source"])
-        self.assertEqual(result["external_source"]["platform"], "feishu")
+    def test_create_never_accepts_a_sync_key(self):
+        from pydantic import ValidationError
+        with self.assertRaises(ValidationError):
+            tb.TaskCreate(
+                title="Synced Card",
+                external_source={"platform": "feishu", "task_id": "fs-123"},
+            )
+        created = tb.create_task(tb.TaskCreate(title="Plain Card"))
+        self.assertIsNone(created.get("external_source"))
 
     def test_extra_fields_still_rejected(self):
         from pydantic import ValidationError
         with self.assertRaises(ValidationError):
             tb.TaskCreate(title="Bad", bogus_field="nope")
 
-    def test_external_source_extra_keys_rejected(self):
-        from pydantic import ValidationError
-        with self.assertRaises(ValidationError):
-            tb.TaskCreate(
-                title="Bad",
-                external_source={"platform": "feishu", "task_id": "x", "extra": "nope"},
-            )
+    def test_sync_card_is_still_created_by_the_sync_path(self):
+        # The board must keep showing mirrored cards even though HTTP cannot
+        # create them: the sync entry point is the only writer.
+        task = tb.upsert_external_task(
+            external_source={"platform": "feishu", "task_id": "fs-123"},
+            title="Synced Card", status="doing",
+        )
+        self.assertEqual(task["external_source"], {"platform": "feishu", "task_id": "fs-123"})
+        self.assertEqual(task["status"], "doing")
 
 
 class TestArchiveTask(unittest.TestCase):

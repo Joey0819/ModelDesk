@@ -90,7 +90,10 @@ export default function FleetNodes() {
 
   useEffect(() => {
     alive.current = true;
-    if (!REMOTE_CLIENT) reload();
+    // The remote gateway blocks /api/fleet, so polling from a paired phone only
+    // burns mobile traffic on guaranteed 403s.
+    if (REMOTE_CLIENT) return () => { alive.current = false; };
+    reload();
     const poll = setInterval(() => { reload(); setNowMs(Date.now()); }, POLL_MS);
     const tick = setInterval(() => setNowMs(Date.now()), 1000);
     return () => { alive.current = false; clearInterval(poll); clearInterval(tick); };

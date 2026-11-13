@@ -1,7 +1,25 @@
+const fs = require('node:fs');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 
-const DEFAULT_WORKSPACE = process.env.MODEL_DESK_WORKSPACE || path.resolve(path.join(__dirname, '..'));
+// Where the workspace lives, independent of how the app was launched.
+//
+// A packaged macOS build runs from
+//   <workspace>/releases/ModelDesk.app/Contents/Resources/app.asar/desktop
+// so the parent of __dirname is the archive, not the workspace. Inside a bundle
+// the workspace is the directory that holds releases/. In a source checkout it
+// stays the parent of desktop/.
+function defaultWorkspace(start = __dirname) {
+  const resolved = path.resolve(start);
+  const bundle = resolved.match(/^(.*)\.app[\\/]Contents[\\/]Resources(?:[\\/]|$)/);
+  if (bundle) {
+    const installedRoot = path.dirname(path.dirname(`${bundle[1]}.app`));
+    if (path.isAbsolute(installedRoot)) return installedRoot;
+  }
+  return path.resolve(resolved, '..');
+}
+
+const DEFAULT_WORKSPACE = process.env.MODEL_DESK_WORKSPACE || defaultWorkspace();
 const UI_URL = 'http://localhost:5173/';
 const HEALTH_URLS = [
   'http://127.0.0.1:8317/v1/models',
@@ -123,4 +141,4 @@ function isTrustedWorkbenchIPC(event, contents) {
   }
 }
 
-module.exports = { DEFAULT_WORKSPACE, UI_URL, HEALTH_URLS, healthURLsFor, workspaceRoot, serviceEnvironment, isWorkbenchURL, isOriginalFrameURL, isExportURL, exportFormat, isExternalURL, isStatusURL, isTrustedWorkbenchIPC };
+module.exports = { DEFAULT_WORKSPACE, UI_URL, HEALTH_URLS, healthURLsFor, defaultWorkspace, workspaceRoot, serviceEnvironment, isWorkbenchURL, isOriginalFrameURL, isExportURL, exportFormat, isExternalURL, isStatusURL, isTrustedWorkbenchIPC };

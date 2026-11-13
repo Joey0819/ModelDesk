@@ -31,6 +31,7 @@ function TodoCard({ task, onEdit, onDragStart }) {
   return (
     <div
       className={`todo-card${hasExternalSource ? ' todo-card-synced' : ''}`}
+      data-task-id={task.id}
       draggable={!hasExternalSource}
       onDragStart={hasExternalSource ? undefined : (e) => onDragStart(e, task.id)}
       onClick={() => onEdit(task)}
@@ -278,7 +279,12 @@ export default function TodoBoard() {
 
     // Find drop index within column
     const columnBody = e.currentTarget.querySelector('.todo-column-body');
-    const cards = columnBody ? [...columnBody.querySelectorAll('.todo-card')] : [];
+    // The dragged card is still in the DOM, and the .dragging class is cleared
+    // just above, so it must be excluded by identity: otherwise dragging
+    // downwards lands one slot too late.
+    const cards = columnBody
+      ? [...columnBody.querySelectorAll('.todo-card')].filter((el) => el.dataset.taskId !== draggedId)
+      : [];
     let targetIndex = cards.length;
     for (let i = 0; i < cards.length; i++) {
       const rect = cards[i].getBoundingClientRect();

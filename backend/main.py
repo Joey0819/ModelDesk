@@ -32,6 +32,7 @@ from .execution_store import WorkerOwnership
 from .readiness import router as readiness_router
 from .mcp_observation import router as mcp_observation_router
 from .todo_board import router as todo_router
+from .fleet import router as fleet_router
 
 worker_ownership = WorkerOwnership(workbench_manager.directory)
 
@@ -55,6 +56,7 @@ app.include_router(readiness_router)
 app.include_router(mcp_observation_router)
 app.include_router(feishu_router)
 app.include_router(todo_router)
+app.include_router(fleet_router)
 app.add_event_handler("startup", worker_ownership.acquire)
 app.add_event_handler("startup", group_tasks_manager.recover)
 app.add_event_handler("startup", workbench_manager.recover)

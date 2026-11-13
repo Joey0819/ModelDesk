@@ -1,0 +1,59 @@
+/* Fleet nodes: summary bar, node cards, star topology, token dialog. */
+
+.fleet-summary { display: flex; flex-wrap: wrap; gap: 12px 26px; align-items: center; padding: 16px 20px; border: 1px solid var(--line); border-radius: 10px; background: var(--shell-wash, #f8f9fc); font-size: 13px; color: var(--muted); }
+.fleet-summary strong { color: var(--jade); font-weight: 600; }
+.fleet-summary span { white-space: nowrap; }
+
+.fleet-node-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 16px; margin-top: 20px; }
+.fleet-node-card { border: 1px solid var(--line); border-radius: 10px; padding: 18px; background: var(--shell-paper, #fff); display: flex; flex-direction: column; gap: 12px; }
+.fleet-node-card.status-offline { opacity: .78; }
+.fleet-node-card.status-never { border-style: dashed; }
+
+.fleet-node-identity { display: flex; align-items: center; gap: 12px; }
+.fleet-node-identity > div { flex: 1; min-width: 0; }
+.fleet-node-identity h3 { margin: 0 0 4px; font-size: 15px; font-weight: 600; }
+.fleet-node-identity p { margin: 0; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+
+.fleet-node-platform { flex-shrink: 0; width: 40px; height: 40px; border: 1px solid var(--line); border-radius: 10px; display: inline-flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 600; color: var(--accent); letter-spacing: .2px; }
+.fleet-node-platform.platform-darwin { color: var(--ink); }
+.fleet-node-platform.platform-windows { color: var(--muted); }
+
+.fleet-node-badge { flex-shrink: 0; font-size: 11px; padding: 4px 9px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); white-space: nowrap; }
+.fleet-node-badge.online { color: var(--jade); border-color: color-mix(in srgb, var(--jade) 45%, transparent); background: color-mix(in srgb, var(--jade) 10%, transparent); }
+.fleet-node-badge.offline { color: var(--muted); }
+.fleet-node-badge.never { color: var(--muted); border-style: dashed; }
+
+.fleet-node-labels { display: flex; flex-wrap: wrap; gap: 6px; }
+.fleet-node-labels span { font-size: 11px; padding: 3px 8px; border-radius: 5px; background: var(--shell-wash, #f5f7fa); border: 1px solid var(--line); color: var(--muted); }
+
+.fleet-node-meters { display: flex; flex-direction: column; gap: 8px; }
+.fleet-meter { display: flex; flex-direction: column; gap: 5px; font-size: 12px; color: var(--muted); }
+.fleet-meter progress { appearance: none; -webkit-appearance: none; width: 100%; height: 8px; border: 0; border-radius: 5px; background: var(--shell-wash, #eef1f6); overflow: hidden; }
+.fleet-meter progress::-webkit-progress-bar { background: var(--shell-wash, #eef1f6); border-radius: 5px; }
+.fleet-meter progress::-webkit-progress-value { background: var(--accent); border-radius: 5px; transition: width .4s ease; }
+.fleet-meter progress::-moz-progress-bar { background: var(--accent); border-radius: 5px; }
+.fleet-node-detail { margin: 4px 0 0; font-size: 12px; color: var(--muted); }
+
+.fleet-node-actions { display: flex; justify-content: flex-end; }
+.fleet-node-actions .subtle-button { padding: 6px 10px; font-size: 12px; }
+.fleet-node-remove { color: #b4483d; }
+
+.fleet-empty { margin-top: 4px; }
+
+.fleet-topology-box { margin-top: 26px; border: 1px solid var(--line); border-radius: 10px; padding: 20px; }
+.fleet-topology-box h3 { margin: 0 0 14px; font-size: 16px; font-weight: 600; }
+.fleet-topology { display: block; width: 100%; max-width: 620px; margin: 0 auto; }
+.fleet-topology-hub { fill: var(--accent); fill-opacity: .14; stroke: var(--accent); stroke-width: 1.5; }
+.fleet-topology-hub-text { fill: var(--ink); font-size: 13px; font-weight: 600; }
+.fleet-topology-hub-sub { fill: var(--muted); font-size: 10px; }
+.fleet-topology-link { stroke: var(--muted); stroke-width: 1.5; stroke-opacity: .55; }
+.fleet-topology-link.online { stroke: var(--jade); stroke-opacity: .9; }
+.fleet-topology-link.never { stroke-dasharray: 4 5; stroke-opacity: .5; }
+.fleet-topology-dot { fill: var(--muted); }
+.fleet-topology-dot.online { fill: var(--jade); }
+.fleet-topology-dot.never { fill: none; stroke: var(--muted); stroke-width: 1.5; stroke-dasharray: 3 3; }
+.fleet-topology-node text { fill: var(--muted); font-size: 11px; }
+
+.fleet-token-box .fleet-token-command { margin: 12px 0; padding: 12px 14px; background: var(--shell-wash, #f5f7fa); border: 1px solid var(--line); border-radius: 8px; font-size: 12px; color: var(--ink); overflow-x: auto; white-space: nowrap; }
+.fleet-token-value { margin: 10px 0 16px; }
+.fleet-token-value code { display: block; padding: 12px 14px; border: 1px dashed var(--accent); border-radius: 8px; font-size: 13px; color: var(--accent); overflow-wrap: anywhere; user-select: all; }

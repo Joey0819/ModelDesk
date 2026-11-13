@@ -185,6 +185,23 @@ class FleetTests(unittest.IsolatedAsyncioTestCase):
         # The damaged file is preserved byte-for-byte.
         self.assertEqual((self.store.nodes_file).read_text(encoding="utf-8"), original)
 
+    async def test_failed_write_does_not_pollute_in_memory_registry(self):
+        """A failed disk write must leave memory matching what is on disk.
+
+        The registry hands out copies: if a caller mutates then fails to
+        persist, the cache must not keep the mutation until restart.
+        """
+        secret = (await self.client.post("/api/fleet/enroll-tokens")).json()["token"]
+        enrolled = await self._enroll(token=secret)
+        self.assertEqual(enrolled.status_code, 200, enrolled.text)
+        with patch.object(self.store, "_write", side_effect=OSError("disk full")):
+            with self.assertRaises(OSError):
+                self.store.remove("node-alpha")
+        on_disk = json.loads(self.store.nodes_file.read_text(encoding="utf-8"))["nodes"]
+        self.assertIn("node-alpha", on_disk)
+        listing = (await self.client.get("/api/fleet")).json()
+        self.assertEqual([node["node_id"] for node in listing["nodes"]], ["node-alpha"])
+
     async def test_enroll_failure_counting_and_rate_limit(self):
         for _ in range(fleet.MAX_ENROLL_FAILURES):
             response = await self.client.post("/api/fleet/enroll", json=self._token_record(token="bogus-" + "x" * 20))

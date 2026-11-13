@@ -143,28 +143,32 @@ class FleetStore:
         return datetime.fromtimestamp(self.clock(), timezone.utc).isoformat()
 
     def _load(self):
-        if self._nodes_cache is not None:
-            return self._nodes_cache
-        if self.directory.is_symlink() or self.nodes_file.is_symlink():
-            raise RuntimeError("节点注册存储路径不安全")
-        if not self.nodes_file.exists():
-            self._nodes_cache = {}
-            return self._nodes_cache
-        try:
-            raw = self.nodes_file.read_text(encoding="utf-8")
-            data = json.loads(raw)
-            if not isinstance(data, dict) or "nodes" not in data or not isinstance(data["nodes"], dict):
-                raise ValueError("missing nodes")
-            nodes = {}
-            for node_id, record in data["nodes"].items():
-                if not re.fullmatch(NODE_ID_PATTERN, node_id) or record.get("node_id") != node_id:
-                    raise ValueError("node id mismatch")
-                nodes[node_id] = NodeRecord.model_validate(record).model_dump()
-        except (OSError, ValueError, TypeError) as error:
-            # Never silently wipe a damaged registry; keep the original file.
-            raise RuntimeError(f"节点注册数据无法读取（{self.nodes_file}）：{error}") from None
-        self._nodes_cache = nodes
-        return nodes
+        # Callers mutate the returned mapping and then persist it. Always hand
+        # back a copy: if the write fails, the in-memory cache must not keep the
+        # mutation, otherwise memory and disk disagree until restart.
+        with self.lock:
+            if self._nodes_cache is not None:
+                return copy.deepcopy(self._nodes_cache)
+            if self.directory.is_symlink() or self.nodes_file.is_symlink():
+                raise RuntimeError("节点注册存储路径不安全")
+            if not self.nodes_file.exists():
+                self._nodes_cache = {}
+                return {}
+            try:
+                raw = self.nodes_file.read_text(encoding="utf-8")
+                data = json.loads(raw)
+                if not isinstance(data, dict) or "nodes" not in data or not isinstance(data["nodes"], dict):
+                    raise ValueError("missing nodes")
+                nodes = {}
+                for node_id, record in data["nodes"].items():
+                    if not re.fullmatch(NODE_ID_PATTERN, node_id) or record.get("node_id") != node_id:
+                        raise ValueError("node id mismatch")
+                    nodes[node_id] = NodeRecord.model_validate(record).model_dump()
+            except (OSError, ValueError, TypeError) as error:
+                # Never silently wipe a damaged registry; keep the original file.
+                raise RuntimeError(f"节点注册数据无法读取（{self.nodes_file}）：{error}") from None
+            self._nodes_cache = nodes
+            return copy.deepcopy(nodes)
 
     def _write(self, nodes):
         if self.directory.is_symlink():

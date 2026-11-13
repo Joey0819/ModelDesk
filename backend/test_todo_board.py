@@ -262,6 +262,48 @@ class TodoBoardTests(unittest.IsolatedAsyncioTestCase):
             lst = (await client.get("/api/todo")).json()
             self.assertEqual(len(lst), 11)
 
+    # --- Rollback on write failure ---
+
+    async def test_rollback_on_save_failure(self):
+        """When save_json fails, memory must not retain the mutation."""
+        async with await self._client() as client:
+            # Create one valid task first
+            resp = await client.post("/api/todo", json={"title": "正常任务"})
+            self.assertEqual(resp.status_code, 200)
+
+        # Verify exactly 1 task in cache and on disk
+        todo_board._cache = None  # force reload from disk
+        async with await self._client() as client:
+            lst = (await client.get("/api/todo")).json()
+            self.assertEqual(len(lst), 1)
+
+        # Patch save_json to raise OSError on next call
+        original_save_json = todo_board.save_json
+        call_count = 0
+
+        def failing_save_json(target, value):
+            nonlocal call_count
+            call_count += 1
+            raise OSError("Simulated disk failure")
+
+        with patch.object(todo_board, "save_json", side_effect=failing_save_json):
+            async with await self._client() as client:
+                resp = await client.post("/api/todo", json={"title": "写盘失败的任务"})
+                self.assertEqual(resp.status_code, 500)
+
+        # After failed write: memory must NOT contain the new task
+        async with await self._client() as client:
+            lst = (await client.get("/api/todo")).json()
+            titles = [t["title"] for t in lst]
+            self.assertNotIn("写盘失败的任务", titles)
+            self.assertEqual(len(lst), 1)
+            self.assertEqual(lst[0]["title"], "正常任务")
+
+        # Disk must also still have only 1 task
+        raw = json.loads(self.board_file.read_text(encoding="utf-8"))
+        self.assertEqual(len(raw["tasks"]), 1)
+        self.assertEqual(raw["tasks"][0]["title"], "正常任务")
+
     # --- Persistence verification ---
 
     async def test_data_persisted_to_disk(self):

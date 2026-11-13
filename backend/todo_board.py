@@ -54,15 +54,13 @@ def _load_board() -> dict:
 
 
 def _save_board(data: dict) -> None:
-    """Atomically persist board to disk. Rollback memory on failure."""
+    """Atomically persist board to disk. Only update memory after successful write."""
     global _cache
-    backup = copy.deepcopy(_cache)
-    _cache = data
     try:
         save_json(BOARD_FILE, data)
-    except Exception:
-        _cache = backup
-        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"看板数据写入失败：{exc}") from exc
+    _cache = data
 
 
 def _active_count(tasks: list[dict]) -> int:
@@ -263,7 +261,7 @@ def list_tasks(archived: bool = Query(False)):
 def create_task(body: TaskCreate):
     with _lock:
         data = _load_board()
-        tasks = data.get("tasks", [])
+        tasks = copy.deepcopy(data.get("tasks", []))
         if _active_count(tasks) >= MAX_ACTIVE_TASKS:
             raise HTTPException(
                 status_code=422,
@@ -295,7 +293,7 @@ def create_task(body: TaskCreate):
 def update_task(task_id: str, body: TaskUpdate):
     with _lock:
         data = _load_board()
-        tasks = data.get("tasks", [])
+        tasks = copy.deepcopy(data.get("tasks", []))
         target = None
         for t in tasks:
             if t["id"] == task_id:
@@ -319,7 +317,7 @@ def delete_task(task_id: str):
     """Soft delete: set archived=True."""
     with _lock:
         data = _load_board()
-        tasks = data.get("tasks", [])
+        tasks = copy.deepcopy(data.get("tasks", []))
         target = None
         for t in tasks:
             if t["id"] == task_id:
@@ -338,7 +336,7 @@ def delete_task(task_id: str):
 def reorder_tasks(body: ReorderRequest):
     with _lock:
         data = _load_board()
-        tasks = data.get("tasks", [])
+        tasks = copy.deepcopy(data.get("tasks", []))
         # Build index
         task_map = {t["id"]: t for t in tasks}
         # Verify all IDs exist

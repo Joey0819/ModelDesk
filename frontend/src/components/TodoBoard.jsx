@@ -333,6 +333,7 @@ export default function TodoBoard() {
   return (
     <main className="workspace todo-board">
       <div className="todo-toolbar">
+        <button type="button" className="todo-new-task" onClick={() => openNewTask()}>+ 新建任务</button>
         <input type="text" placeholder="搜索任务…" value={search} onChange={(e) => setSearch(e.target.value)} />
         <select value={priorityFilter} onChange={(e) => setPriorityFilter(e.target.value)}>
           <option value="">全部优先级</option>

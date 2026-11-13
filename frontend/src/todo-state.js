@@ -11,6 +11,13 @@ export const COLUMNS = [
 const VALID_STATUSES = new Set(COLUMNS.map((c) => c.id));
 const VALID_PRIORITIES = new Set(['low', 'medium', 'high', 'urgent']);
 
+// C0 control characters (except tab/newline) plus DEL. Built from char codes so
+// the source file itself carries no literal control bytes.
+const CONTROL_CHARS = new RegExp(
+  `[${String.fromCharCode(0)}-${String.fromCharCode(8)}${String.fromCharCode(11)}${String.fromCharCode(12)}`
+  + `${String.fromCharCode(14)}-${String.fromCharCode(31)}${String.fromCharCode(127)}]`,
+);
+
 /**
  * Group tasks by status. Returns object with column ids as keys.
  */
@@ -127,7 +134,7 @@ export function validateTask(fields) {
     errors.push('标题不能为空');
   } else if (fields.title.trim().length > 200) {
     errors.push('标题不能超过 200 个字符');
-  } else if (/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(fields.title)) {
+  } else if (CONTROL_CHARS.test(fields.title)) {
     errors.push('标题包含非法控制字符');
   }
 

@@ -42,7 +42,7 @@ function NodeCard({ node, nowMs, onRemove }) {
 
 function FleetTopology({ nodes, nowMs }) {
   const positions = topologyPositions(nodes.length);
-  const width = 560, height = 360, hubX = width / 2, hubY = height / 2, ring = 132;
+  const width = 560, height = 360, hubX = width / 2, hubY = height / 2;
   return <svg className="fleet-topology" viewBox={`0 0 ${width} ${height}`} role="img" aria-label="节点星型拓扑图">
     {nodes.map((node, index) => {
       const position = positions[index];

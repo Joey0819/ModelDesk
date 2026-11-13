@@ -364,6 +364,9 @@ class TaskManager:
         self.records, self.tasks, self.processes = {}, {}, {}
         self.process_trees, self.process_monitors = {}, {}
         self.slots = asyncio.Semaphore(2)
+        # Last kanban status mirrored per task; save() also records events, and
+        # each sync rewrites the whole board file, so only mirror real changes.
+        self._todo_synced = {}
         self.load()
 
     def load(self, *, recover_interrupted=False):
@@ -398,10 +401,16 @@ class TaskManager:
             raise ValueError("任务保存路径不可用")
         self.store.save(item)
         # Sync to todo kanban (fire-and-forget, never raises)
-        try:
-            self._sync_to_todo(item)
-        except Exception:
-            pass  # Already handled inside _sync_to_todo
+        status = item.get("status")
+        synced = getattr(self, "_todo_synced", None)
+        if synced is None:
+            synced = self._todo_synced = {}
+        if synced.get(item["id"]) != status:
+            synced[item["id"]] = status
+            try:
+                self._sync_to_todo(item)
+            except Exception:
+                pass  # Already handled inside _sync_to_todo
 
     def _sync_to_todo(self, item):
         """Mirror task state to the todo kanban board."""

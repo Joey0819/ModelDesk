@@ -191,15 +191,25 @@ class JobManager:
         self.wakeups = {}
         self.processes = {}
         self.conversation_locks = {}
+        # Last kanban status mirrored per job. save() runs on every emitted
+        # event, and each sync rewrites the whole board file, so only mirror
+        # when the status the board displays actually changed.
+        self._todo_synced = {}
 
     def save(self, job):
         from .execution_store import save_checkpoint
         save_checkpoint(self.directory, job["id"], job)
         # Sync to todo kanban (fire-and-forget, never raises)
-        try:
-            self._sync_to_todo(job)
-        except Exception:
-            pass  # Already handled inside _sync_to_todo
+        status = job.get("status")
+        synced = getattr(self, "_todo_synced", None)
+        if synced is None:
+            synced = self._todo_synced = {}
+        if synced.get(job["id"]) != status:
+            synced[job["id"]] = status
+            try:
+                self._sync_to_todo(job)
+            except Exception:
+                pass  # Already handled inside _sync_to_todo
 
     def _sync_to_todo(self, job):
         """Mirror job state to the todo kanban board."""

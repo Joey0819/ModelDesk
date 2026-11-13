@@ -313,7 +313,7 @@ class TodoBoardTests(unittest.IsolatedAsyncioTestCase):
         raw = json.loads(self.board_file.read_text(encoding="utf-8"))
         self.assertEqual(len(raw["tasks"]), 1)
         self.assertEqual(raw["tasks"][0]["title"], "持久化测试")
-        self.assertEqual(raw["schema_version"], 1)
+        self.assertEqual(raw["schema_version"], 2)
 
 
 if __name__ == "__main__":

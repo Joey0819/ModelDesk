@@ -195,6 +195,38 @@ class JobManager:
     def save(self, job):
         from .execution_store import save_checkpoint
         save_checkpoint(self.directory, job["id"], job)
+        # Sync to todo kanban (fire-and-forget, never raises)
+        try:
+            self._sync_to_todo(job)
+        except Exception:
+            pass  # Already handled inside _sync_to_todo
+
+    def _sync_to_todo(self, job):
+        """Mirror job state to the todo kanban board."""
+        import logging as _logging
+        _logger = _logging.getLogger(__name__)
+        try:
+            from .todo_sync import sync_task
+            status = job.get("status", "queued")
+            title = (job.get("prompt") or "")[:200] or f"Job {job['id']}"
+            ext_src = job.get("external_source")
+            if ext_src and isinstance(ext_src, dict) and ext_src.get("platform") == "feishu":
+                source_label = "飞书"
+            else:
+                source_label = "工作台"
+            detail = f"Mode: {job.get('mode', 'unknown')}\nID: {job['id']}"
+            project_id = job.get("project_id")
+            sync_task(
+                "workbench",
+                job["id"],
+                title=title,
+                status=status,
+                detail=detail,
+                source_label=source_label,
+                project_id=project_id,
+            )
+        except Exception:
+            _logger.exception("workbench: todo sync failed for job %s", job.get("id"))
 
     def recover(self):
         """A restarted service cannot claim abandoned jobs are still running."""

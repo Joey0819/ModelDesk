@@ -18,16 +18,26 @@ function isOverdue(dueDate) {
   return due < today;
 }
 
+const SOURCE_LABELS = { feishu: '飞书', workbench: '工作台', group: '协作任务' };
+
 function TodoCard({ task, onEdit, onDragStart }) {
+  const hasExternalSource = !!task.external_source;
+  const sourceLabel = hasExternalSource
+    ? (SOURCE_LABELS[task.external_source.platform] || task.external_source.platform)
+    : null;
+
   return (
     <div
-      className="todo-card"
-      draggable
-      onDragStart={(e) => onDragStart(e, task.id)}
+      className={`todo-card${hasExternalSource ? ' todo-card-synced' : ''}`}
+      draggable={!hasExternalSource}
+      onDragStart={hasExternalSource ? undefined : (e) => onDragStart(e, task.id)}
       onClick={() => onEdit(task)}
     >
       <div className={`todo-card-priority-bar priority-${task.priority}`} />
-      <div className="todo-card-title">{task.title}</div>
+      <div className="todo-card-header-row">
+        <div className="todo-card-title">{task.title}</div>
+        {sourceLabel && <span className="todo-source-badge">{sourceLabel}</span>}
+      </div>
       {task.description && <div className="todo-card-desc">{truncate(task.description, 100)}</div>}
       <div className="todo-card-meta">
         {task.assignee && <span className="todo-card-assignee">👤 {task.assignee}</span>}
@@ -95,9 +105,17 @@ function TaskModal({ task, onClose, onSave, onDelete, saving }) {
         </div>
         <div className="todo-field">
           <label>状态</label>
-          <select value={fields.status} onChange={(e) => handleChange('status', e.target.value)}>
-            {COLUMNS.map((col) => <option key={col.id} value={col.id}>{col.label}</option>)}
-          </select>
+          {task?.external_source ? (
+            <input
+              value={COLUMNS.find((col) => col.id === fields.status)?.label || fields.status}
+              disabled
+              title="状态由任务系统管理"
+            />
+          ) : (
+            <select value={fields.status} onChange={(e) => handleChange('status', e.target.value)}>
+              {COLUMNS.map((col) => <option key={col.id} value={col.id}>{col.label}</option>)}
+            </select>
+          )}
         </div>
         <div className="todo-field">
           <label>优先级</label>

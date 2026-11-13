@@ -1,12 +1,15 @@
 """Todo Kanban board API with atomic persistence and concurrency safety."""
 import copy
 import json
+import logging
 import re
 import threading
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal, Optional
+
+logger = logging.getLogger(__name__)
 
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, field_validator, model_validator
@@ -19,8 +22,9 @@ router = APIRouter(prefix="/api/todo", tags=["todo"])
 ROOT = Path(__file__).resolve().parents[1]
 DATA_DIR = ROOT / "data" / "todo"
 BOARD_FILE = DATA_DIR / "board.json"
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 MAX_ACTIVE_TASKS = 2000
+VALID_EXTERNAL_PLATFORMS = {"workbench", "group", "feishu"}
 
 _lock = threading.RLock()
 _cache: dict | None = None
@@ -49,6 +53,8 @@ def _load_board() -> dict:
         )
     if not isinstance(data, dict) or "tasks" not in data:
         raise HTTPException(status_code=500, detail="看板数据格式无效，缺少 tasks 字段")
+    # Migrate v1 -> v2 if needed
+    data = _migrate_v1_to_v2(data)
     _cache = data
     return data
 
@@ -67,6 +73,16 @@ def _active_count(tasks: list[dict]) -> int:
     return sum(1 for t in tasks if not t.get("archived", False))
 
 
+def _migrate_v1_to_v2(data: dict) -> dict:
+    """Migrate schema v1 board data to v2 by adding external_source=None to existing tasks."""
+    if data.get("schema_version", 1) < 2:
+        for task in data.get("tasks", []):
+            if "external_source" not in task:
+                task["external_source"] = None
+        data["schema_version"] = SCHEMA_VERSION
+    return data
+
+
 # --- Pydantic models ---
 
 
@@ -82,6 +98,32 @@ class TaskCreate(BaseModel):
     tags: list[str] = []
     project_id: Optional[str] = None
     position: int = 0
+    external_source: Optional[dict] = None
+
+    @field_validator("external_source")
+    @classmethod
+    def validate_external_source(cls, v: Optional[dict]) -> Optional[dict]:
+        if v is None:
+            return None
+        if not isinstance(v, dict):
+            raise ValueError("external_source must be a dict")
+        platform = v.get("platform")
+        task_id = v.get("task_id")
+        if not platform or not isinstance(platform, str):
+            raise ValueError("external_source.platform is required and must be a string")
+        if not task_id or not isinstance(task_id, str):
+            raise ValueError("external_source.task_id is required and must be a string")
+        if platform not in VALID_EXTERNAL_PLATFORMS:
+            raise ValueError(f"external_source.platform must be one of {sorted(VALID_EXTERNAL_PLATFORMS)}")
+        if len(platform) > 50:
+            raise ValueError("external_source.platform exceeds 50 characters")
+        if len(task_id) > 200:
+            raise ValueError("external_source.task_id exceeds 200 characters")
+        # Only allow exactly these two keys
+        extra_keys = set(v.keys()) - {"platform", "task_id"}
+        if extra_keys:
+            raise ValueError(f"external_source contains unexpected keys: {extra_keys}")
+        return {"platform": platform, "task_id": task_id}
 
     @field_validator("title")
     @classmethod
@@ -161,6 +203,31 @@ class TaskUpdate(BaseModel):
     project_id: Optional[str] = None
     position: Optional[int] = None
     archived: Optional[bool] = None
+    external_source: Optional[dict] = None
+
+    @field_validator("external_source")
+    @classmethod
+    def validate_external_source(cls, v: Optional[dict]) -> Optional[dict]:
+        if v is None:
+            return None
+        if not isinstance(v, dict):
+            raise ValueError("external_source must be a dict")
+        platform = v.get("platform")
+        task_id = v.get("task_id")
+        if not platform or not isinstance(platform, str):
+            raise ValueError("external_source.platform is required and must be a string")
+        if not task_id or not isinstance(task_id, str):
+            raise ValueError("external_source.task_id is required and must be a string")
+        if platform not in VALID_EXTERNAL_PLATFORMS:
+            raise ValueError(f"external_source.platform must be one of {sorted(VALID_EXTERNAL_PLATFORMS)}")
+        if len(platform) > 50:
+            raise ValueError("external_source.platform exceeds 50 characters")
+        if len(task_id) > 200:
+            raise ValueError("external_source.task_id exceeds 200 characters")
+        extra_keys = set(v.keys()) - {"platform", "task_id"}
+        if extra_keys:
+            raise ValueError(f"external_source contains unexpected keys: {extra_keys}")
+        return {"platform": platform, "task_id": task_id}
 
     @field_validator("title")
     @classmethod
@@ -244,6 +311,136 @@ class ReorderRequest(BaseModel):
     position_start: int = 0
 
 
+# --- Internal upsert / archive for todo_sync (not HTTP) ---
+
+
+def upsert_external_task(
+    external_source: dict,
+    title: str,
+    status: str,
+    description: str = "",
+    source_label: str = "",
+    project_id: Optional[str] = None,
+) -> dict:
+    """Idempotent upsert of a synced card keyed by (platform, task_id).
+
+    If an active (non-archived) card with the same external_source exists,
+    update its title/status/description. Otherwise create a new card.
+    Returns the created or updated task dict.
+
+    This function is called from todo_sync while holding no lock;
+    it acquires _lock internally.
+    """
+    platform = external_source["platform"]
+    task_id = external_source["task_id"]
+    with _lock:
+        data = _load_board()
+        tasks = copy.deepcopy(data.get("tasks", []))
+        # Look for existing active card with same external_source
+        existing = None
+        for t in tasks:
+            es = t.get("external_source")
+            if (
+                es
+                and es.get("platform") == platform
+                and es.get("task_id") == task_id
+                and not t.get("archived", False)
+            ):
+                existing = t
+                break
+        now_ts = _now_iso()
+        if existing is not None:
+            # Update in place
+            existing["title"] = title[:200]
+            existing["status"] = status
+            existing["description"] = description[:4000]
+            existing["updated_at"] = now_ts
+            new_data = {"schema_version": SCHEMA_VERSION, "tasks": tasks}
+            _save_board(new_data)
+            return existing
+        else:
+            # Check if there's an archived card we should un-archive
+            archived_match = None
+            for t in tasks:
+                es = t.get("external_source")
+                if (
+                    es
+                    and es.get("platform") == platform
+                    and es.get("task_id") == task_id
+                    and t.get("archived", False)
+                ):
+                    archived_match = t
+                    break
+            if archived_match is not None:
+                # Un-archive and update
+                archived_match["archived"] = False
+                archived_match["title"] = title[:200]
+                archived_match["status"] = status
+                archived_match["description"] = description[:4000]
+                archived_match["updated_at"] = now_ts
+                new_data = {"schema_version": SCHEMA_VERSION, "tasks": tasks}
+                _save_board(new_data)
+                return archived_match
+            else:
+                # Create new card
+                if _active_count(tasks) >= MAX_ACTIVE_TASKS:
+                    logger.warning(
+                        "todo_board: active task limit reached (%d), skipping sync for %s/%s",
+                        MAX_ACTIVE_TASKS, platform, task_id,
+                    )
+                    return {}
+                task = {
+                    "id": str(uuid.uuid4()),
+                    "title": title[:200],
+                    "description": description[:4000],
+                    "status": status,
+                    "priority": "medium",
+                    "assignee": "",
+                    "due_date": None,
+                    "tags": [source_label] if source_label else [],
+                    "project_id": project_id,
+                    "position": 0,
+                    "created_at": now_ts,
+                    "updated_at": now_ts,
+                    "archived": False,
+                    "external_source": {"platform": platform, "task_id": task_id},
+                }
+                tasks.append(task)
+                new_data = {"schema_version": SCHEMA_VERSION, "tasks": tasks}
+                _save_board(new_data)
+                return task
+
+
+def archive_external_task(external_source: dict) -> Optional[dict]:
+    """Archive (soft-delete) a synced card by its external_source key.
+
+    Returns the archived task dict, or None if not found.
+    """
+    platform = external_source["platform"]
+    task_id = external_source["task_id"]
+    with _lock:
+        data = _load_board()
+        tasks = copy.deepcopy(data.get("tasks", []))
+        target = None
+        for t in tasks:
+            es = t.get("external_source")
+            if (
+                es
+                and es.get("platform") == platform
+                and es.get("task_id") == task_id
+                and not t.get("archived", False)
+            ):
+                target = t
+                break
+        if target is None:
+            return None
+        target["archived"] = True
+        target["updated_at"] = _now_iso()
+        new_data = {"schema_version": SCHEMA_VERSION, "tasks": tasks}
+        _save_board(new_data)
+        return target
+
+
 # --- Endpoints ---
 
 
@@ -282,6 +479,7 @@ def create_task(body: TaskCreate):
             "created_at": now,
             "updated_at": now,
             "archived": False,
+            "external_source": body.external_source,
         }
         tasks.append(task)
         new_data = {"schema_version": SCHEMA_VERSION, "tasks": tasks}

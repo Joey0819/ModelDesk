@@ -384,7 +384,10 @@ async def test_connection(identifier: uuid.UUID, request: Request):
     alias = PREFIX + record["id"] + ":" + model
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(45, connect=8), trust_env=False, follow_redirects=False) as client:
-            response = await client.post(**request_options({"model": alias, "messages": [{"role": "user", "content": "Reply with OK."}], "max_tokens": 16}))
+            # Reasoning models spend the budget on reasoning_content before they
+            # emit any content, so a tiny cap reports a false failure for a model
+            # that answers fine in real use.
+            response = await client.post(**request_options({"model": alias, "messages": [{"role": "user", "content": "Reply with OK."}], "max_tokens": 256}))
             response.raise_for_status()
             data = response.json()
             text = data["choices"][0]["message"]["content"]

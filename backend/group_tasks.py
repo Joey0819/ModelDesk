@@ -367,6 +367,9 @@ class TaskManager:
         # Last kanban status mirrored per task; save() also records events, and
         # each sync rewrites the whole board file, so only mirror real changes.
         self._todo_synced = {}
+        # Only the production manager may write to the real kanban board;
+        # scratch directories (tests) must never leak fixtures onto it.
+        self._todo_sync_enabled = Path(self.directory).resolve() == (ROOT / "data/group-tasks").resolve()
         self.load()
 
     def load(self, *, recover_interrupted=False):
@@ -402,6 +405,8 @@ class TaskManager:
         self.store.save(item)
         # Sync to todo kanban (fire-and-forget, never raises)
         status = item.get("status")
+        if not getattr(self, "_todo_sync_enabled", True):
+            return
         synced = getattr(self, "_todo_synced", None)
         if synced is None:
             synced = self._todo_synced = {}

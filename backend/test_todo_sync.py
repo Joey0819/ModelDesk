@@ -196,6 +196,9 @@ class TestSyncFailureDoesNotAffectTaskSave(unittest.TestCase):
         from backend.workbench import JobManager
         wb_dir = Path(_test_tmp) / "workbench_test"
         jm = JobManager(wb_dir)
+        # A scratch-directory manager is isolated from the live board by design;
+        # force the sync path on so this test still covers the swallow-on-error branch.
+        jm._todo_sync_enabled = True
         job_id = str(_uuid.uuid4())
         job = {
             "id": job_id,
@@ -227,6 +230,9 @@ class TestSyncFailureDoesNotAffectTaskSave(unittest.TestCase):
         tm.directory = store_dir
         tm.store = store
         tm.records = {}
+        # Scratch-directory managers skip syncing; force it on to test the guard.
+        tm._todo_sync_enabled = True
+        tm._todo_synced = {}
         item_id = str(_uuid.uuid4())
         item = {
             "id": item_id,
@@ -239,6 +245,35 @@ class TestSyncFailureDoesNotAffectTaskSave(unittest.TestCase):
         with patch("backend.todo_sync.sync_task", side_effect=RuntimeError("sync boom")):
             # Should NOT raise
             tm.save(item)
+
+    def test_scratch_managers_do_not_touch_the_live_board(self):
+        """Test fixtures must never leak onto the production kanban board."""
+        import uuid as _uuid
+        from backend.workbench import JobManager
+        from backend.group_tasks import TaskManager
+        from backend.harness.store import RunStore
+
+        before = json.loads(tb.BOARD_FILE.read_text(encoding="utf-8"))["tasks"] if tb.BOARD_FILE.exists() else []
+
+        jm = JobManager(Path(_test_tmp) / "isolation_wb")
+        job = {"id": str(_uuid.uuid4()), "status": "queued", "prompt": "ISOLATION_FIXTURE",
+               "mode": "chat", "events": [],
+               "created_at": "2026-01-01T00:00:00+00:00", "updated_at": "2026-01-01T00:00:00+00:00"}
+        jm.jobs[job["id"]] = job
+        jm.save(job)
+
+        store_dir = Path(_test_tmp) / "isolation_group"
+        store_dir.mkdir(parents=True, exist_ok=True)
+        tm = TaskManager(store_dir)
+        item = {"id": str(_uuid.uuid4()), "status": "queued", "title": "ISOLATION_FIXTURE",
+                "events": [], "updated_at": "2026-01-01T00:00:00+00:00"}
+        tm.records[item["id"]] = item
+        tm.save(item)
+
+        after = json.loads(tb.BOARD_FILE.read_text(encoding="utf-8"))["tasks"] if tb.BOARD_FILE.exists() else []
+        titles = [t.get("title") for t in after]
+        self.assertNotIn("ISOLATION_FIXTURE", titles)
+        self.assertEqual(len(after), len(before))
 
 
 class TestExternalSourceInHttpEndpoints(unittest.TestCase):

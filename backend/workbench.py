@@ -195,12 +195,18 @@ class JobManager:
         # event, and each sync rewrites the whole board file, so only mirror
         # when the status the board displays actually changed.
         self._todo_synced = {}
+        # Only the production manager may write to the real kanban board.
+        # Tests (and any other manager built on a scratch directory) must stay
+        # isolated; otherwise suite runs leak fixture jobs onto the live board.
+        self._todo_sync_enabled = Path(self.directory).resolve() == (PROJECT / "data/workbench").resolve()
 
     def save(self, job):
         from .execution_store import save_checkpoint
         save_checkpoint(self.directory, job["id"], job)
         # Sync to todo kanban (fire-and-forget, never raises)
         status = job.get("status")
+        if not getattr(self, "_todo_sync_enabled", True):
+            return
         synced = getattr(self, "_todo_synced", None)
         if synced is None:
             synced = self._todo_synced = {}

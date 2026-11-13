@@ -8,6 +8,7 @@ export default function WorkspaceNavigation({
   groupsView,
   onGroups,
   missionView,
+  todoView,
   navigationTab,
   platformView,
   projectView,
@@ -16,13 +17,14 @@ export default function WorkspaceNavigation({
   modeMenu,
   activeJobs,
   onMissions,
+  onTodo,
   onMode,
   onPlatform,
   onModeMenu,
   onNewConversation,
   onProjects,
 }) {
-  const singleActive = !agentsView && !missionView && !groupsView;
+  const singleActive = !agentsView && !missionView && !groupsView && !todoView;
   return <>
     <div className="sidebar-workspace-grid" role="navigation" aria-label="核心工作台切换">
       <button className={`mission-entry sidebar-grid-tile ${groupsView ? "selected" : ""}`} onClick={onGroups} title="固定成员，持续讨论与协作">
@@ -40,6 +42,10 @@ export default function WorkspaceNavigation({
       <button type="button" className={`agent-settings-entry sidebar-grid-tile ${agentsView ? "selected" : ""}`} onClick={onAgents} title="添加成员、Grok / API、Muse">
         <Icon name="settings" size={16} />
         <span><strong>Agent 与连接</strong><small>模型 / API / Muse</small></span>
+      </button>
+      <button type="button" className={`sidebar-grid-tile ${todoView ? 'selected' : ''}`} onClick={onTodo} title="任务看板，拖拽管理" style={{ gridColumn: '1 / -1' }}>
+        <Icon name="dashboard" size={16} />
+        <span><strong>任务看板</strong><small>待办 / 进行中 / 已完成</small></span>
       </button>
     </div>
     <div className="sidebar-navigation-tabs">

@@ -3,6 +3,7 @@ import { autonomyApi } from '../autonomy-api';
 import { AUTONOMY_STATES, autonomyActive, autonomyCounts, autonomyUnread, scopedAutonomyTasks } from '../autonomy-state';
 import { Icon } from './WorkbenchResults';
 import { WorkerStatus } from './ReadinessPanel';
+import { machineShort } from '../machine';
 import './AutonomyTaskCenter.css';
 
 const timeLabel = (value) => {
@@ -10,10 +11,10 @@ const timeLabel = (value) => {
   return Number.isNaN(date.getTime()) ? '' : date.toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 };
 
-export function BackgroundDelegateSetting({ checked, onChange, disabled = false }) {
+export function BackgroundDelegateSetting({ checked, onChange, disabled = false, hostShort = '这台电脑' }) {
   return <div className="background-delegate-setting">
     <label><input type="checkbox" checked={checked} disabled={disabled} onChange={(event) => onChange(event.target.checked)} /><strong>后台托管</strong></label>
-    <p>离开当前页面后继续执行；遇到可恢复问题时，最多 2 次安全续跑。外部任务状态不确定时等待你处理，不重复派发。Mac 需要保持唤醒并联网，代码合入仍需审批。</p>
+    <p>离开当前页面后继续执行；遇到可恢复问题时，最多 2 次安全续跑。外部任务状态不确定时等待你处理，不重复派发。{hostShort}需要保持唤醒并联网，代码合入仍需审批。</p>
   </div>;
 }
 
@@ -33,7 +34,8 @@ export function AutonomyTaskList({ tasks = [], loading = false, error = '', acti
   </div>;
 }
 
-export default function AutonomyTaskCenter({ projectId, projectName, onOpenTask, onOpenFeishu }) {
+export default function AutonomyTaskCenter({ projectId, projectName, onOpenTask, onOpenFeishu, status }) {
+  const hostShort = machineShort(status);
   const [tasks, setTasks] = useState([]);
   const [worker, setWorker] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -77,8 +79,8 @@ export default function AutonomyTaskCenter({ projectId, projectName, onOpenTask,
     <button type="button" className="autonomy-center-trigger" onClick={() => { dialog.current?.showModal(); refresh(); }} aria-haspopup="dialog" title={error ? '后台任务暂未同步，点击重新连接' : `运行中 ${counts.active} · 需要处理 ${counts.attention} · 未读 ${counts.unread}`}><Icon name="tasks" size={15} /><span>后台任务</span>{counts.unread > 0 && <b aria-label={`${counts.unread} 条未读任务通知`}>{counts.unread}</b>}{counts.active > 0 && <span className="autonomy-trigger-running">{counts.active} 运行中</span>}{error && <span aria-label="后台任务连接失败">!</span>}</button>
     <dialog className="autonomy-center-dialog" ref={dialog} aria-label="后台任务中心">
       <header><div><strong>后台任务</strong><p>{projectName || '未关联项目'} · {counts.active} 运行中 · {counts.attention} 待处理</p></div><button type="button" className="icon-button" aria-label="关闭后台任务" onClick={() => dialog.current?.close()}><Icon name="close" size={18} /></button></header>
-      <WorkerStatus worker={error ? null : worker} />
-      <p className="autonomy-center-explanation">状态与通知保存在本机，刷新后可以继续查看。Mac 休眠、关机或服务停止时无法继续执行。系统通知需要桌面应用运行；配置飞书后可接收远程交付。</p>
+      <WorkerStatus worker={error ? null : worker} machineShort={hostShort} />
+      <p className="autonomy-center-explanation">状态与通知保存在本机，刷新后可以继续查看。{hostShort}休眠、关机或服务停止时无法继续执行。系统通知需要桌面应用运行；配置飞书后可接收远程交付。</p>
       {onOpenFeishu && <button type="button" className="subtle-button autonomy-feishu-link" onClick={() => { dialog.current?.close(); onOpenFeishu(); }}>配置飞书：从手机发指令并接收成果</button>}
       <AutonomyTaskList tasks={tasks} loading={loading} error={error} actionError={actionError} busyId={busyId} onRefresh={refresh} onOpenTask={(task) => act(task, 'open')} onRead={(task) => act(task, 'read')} onPause={(task) => act(task, 'pause')} />
     </dialog>

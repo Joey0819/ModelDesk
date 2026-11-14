@@ -49,7 +49,7 @@ test('Feishu actual configuration form uses password-only entry and explicit cha
   assert.match(html, /aria-label="飞书 App Secret" type="password"/); assert.match(html, /留空保留/);
   assert.doesNotMatch(html, /never-return-this-secret|localStorage/);
   assert.match(html, /允许的飞书会话/); assert.match(html, /oc_allowed/); assert.match(html, /My project/); assert.match(html, /room-a/);
-  assert.match(html, /允许的用户 Open ID/); assert.match(html, /允许此会话触发 Mac 原生 Agent/);
+  assert.match(html, /允许的用户 Open ID/); assert.match(html, /允许此会话触发这台电脑原生 Agent/);
   assert.match(html, /<input type="checkbox"\/><span>允许此会话触发/); assert.match(html, /保存飞书设置/);
 });
 
@@ -68,7 +68,7 @@ test('actual Feishu status view distinguishes saved credentials from real connec
   assert.match(unbound, /已连接，但尚未允许任何聊天/); assert.match(unbound, /未绑定会话不会执行指令/);
   assert.match(fresh, /不代表任务已经完成/); assert.match(fresh, /官方长连接配置指南/);
   assert.ok(fresh.includes(FEISHU_SETUP_URL));
-  const remote = render({ remote: true }); assert.match(remote, /请在 Mac 设置/); assert.doesNotMatch(remote, /验证已保存的应用凭据/);
+  const remote = render({ remote: true }); assert.match(remote, /请在这台电脑设置/); assert.doesNotMatch(remote, /验证已保存的应用凭据/);
   assert.equal(safeFeishuError('failed for exact-secret', 'exact-secret'), 'failed for [密钥已隐藏]');
 });
 

@@ -319,6 +319,23 @@ test('simple output controls keep advanced settings collapsed and text tasks fre
   assert.match(video, /Muse 原生生成仅在 Mac 上可用/); assert.match(video, /disabled=""/); assert.doesNotMatch(video, /OpenAI 生图|Gemini 生图|配图数量/);
 });
 
+// The macOS branch is the one real Mac users hit. Asserting only the Linux copy
+// would leave it unverified, so both hosts are rendered explicitly here.
+test('Muse stays offered on a macOS host and is refused with a reason elsewhere', () => {
+  const mac = { label: '这台 Mac', short: 'Mac', system: 'Darwin', isMacos: true, known: true };
+  const linux = { label: '运行 ModelDesk 的这台电脑', short: '这台电脑', system: 'Linux', isMacos: false, known: true };
+  const macVideo = render(DeliveryOutputOptions, { value: { outputFormat: 'video' }, onChange() {}, machine: mac });
+  assert.match(macVideo, /Muse（Mac 本机）/);
+  assert.match(macVideo, /Muse 需要 Mac 原生应用/);
+  assert.doesNotMatch(macVideo, /当前主机不是 Mac/);
+  const macIllustrated = render(DeliveryOutputOptions, { value: { outputFormat: 'illustrated', mediaProvider: 'muse' }, onChange() {}, machine: mac });
+  assert.match(macIllustrated, /Muse（Mac 本机）/);
+  const linuxVideo = render(DeliveryOutputOptions, { value: { outputFormat: 'video' }, onChange() {}, machine: linux });
+  assert.doesNotMatch(linuxVideo, /Muse（Mac 本机）/);
+  assert.match(linuxVideo, /Muse 原生生成仅在 Mac 上可用/);
+  assert.match(linuxVideo, /当前主机不是 Mac/);
+});
+
 test('changing from OpenAI illustrations to video resets the actual saved and submitted provider', () => {
   const illustrated = { outputFormat: 'illustrated', imageCount: 3, mediaProvider: 'openai' };
   const video = groupOutputOptions(illustrated, { outputFormat: 'video' });

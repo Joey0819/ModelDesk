@@ -310,9 +310,13 @@ def create_gateway(remote_store=None, *, frontend=None, upstream_transport=None,
 
     @app.get("/remote/info")
     async def info(request: Request):
-        from .platform_support import get_platform_info
+        from .platform_support import public_platform_info
+        # This endpoint answers BEFORE pairing, so it must not disclose local
+        # filesystem paths. get_platform_info() carries tailscale_path; the
+        # public projection drops it and keeps only labels and flags.
         return {"remote": True, "pairing_required": auth.session(request.cookies.get(COOKIE)) is None,
-                "origin": auth.origin, "capabilities": CAPABILITIES, "platform": get_platform_info()}
+                "origin": auth.origin, "capabilities": CAPABILITIES,
+                "platform": public_platform_info()}
 
     @app.get("/remote/session")
     async def session(request: Request):

@@ -59,6 +59,25 @@ class StatusPlatformTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(machine_label(), ("运行 ModelDesk 的这台电脑", "这台 Mac"))
         self.assertIn(machine_short(), ("这台电脑", "Mac"))
 
+    async def test_public_platform_info_never_discloses_local_paths(self):
+        # /remote/info answers before pairing. It must not leak where binaries
+        # live on this host, while still giving the phone the labels it needs.
+        from backend.platform_support import public_platform_info
+        public = public_platform_info()
+        self.assertNotIn("tailscale_path", public)
+        for value in public.values():
+            if isinstance(value, str):
+                self.assertFalse(value.startswith("/"), f"local path leaked: {value}")
+                self.assertNotIn("/usr/", value)
+        # Labels stay available so remote screens can word themselves.
+        self.assertEqual(public["machine_label"], machine_label())
+        self.assertEqual(public["machine_short"], machine_short())
+        self.assertEqual(public["is_macos"], is_macos)
+        self.assertEqual(public["is_linux"], is_linux)
+        self.assertEqual(public["has_native_muse_bridge"], is_macos)
+        # The admin surface keeps the full block, including the path.
+        self.assertIn("tailscale_path", get_platform_info())
+
 
 if __name__ == "__main__":
     unittest.main()

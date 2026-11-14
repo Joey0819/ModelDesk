@@ -6,10 +6,13 @@ backend/platform_support.py and costs no subprocess per request.
 """
 
 import platform as _platform
+import tempfile
 import unittest
 from unittest.mock import patch
 
-from backend import workbench
+import httpx
+
+from backend import remote_access as remote, workbench
 from backend.platform_support import get_platform_info, is_linux, is_macos, is_windows, machine_label, machine_short
 
 
@@ -77,6 +80,31 @@ class StatusPlatformTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(public["has_native_muse_bridge"], is_macos)
         # The admin surface keeps the full block, including the path.
         self.assertIn("tailscale_path", get_platform_info())
+
+
+    async def test_unpaired_remote_info_carries_no_local_path(self):
+        # /remote/info answers before pairing (pairing_required: True). Hit the
+        # real gateway app unauthenticated and inspect the actual wire payload:
+        # no field may carry a filesystem path, while labels still arrive.
+        origin = "https://modeldesk.example.ts.net:8443"
+        with tempfile.TemporaryDirectory() as temp:
+            store = remote.RemoteStore(temp)
+            store.configure(origin)
+            app = remote.create_gateway(store)
+            transport = httpx.ASGITransport(app=app)
+            async with httpx.AsyncClient(transport=transport, base_url=origin,
+                                         headers={"Host": "modeldesk.example.ts.net:8443"}) as client:
+                response = await client.get("/remote/info")
+            self.assertEqual(response.status_code, 200)
+            payload = response.json()
+            self.assertTrue(payload["pairing_required"])
+            self.assertIn("platform", payload)
+            for value in payload["platform"].values():
+                if isinstance(value, str):
+                    self.assertFalse(value.startswith("/"), f"local path leaked: {value}")
+                    self.assertNotIn("/usr/", value)
+            self.assertNotIn("tailscale_path", payload["platform"])
+            self.assertEqual(payload["platform"]["machine_label"], machine_label())
 
 
 if __name__ == "__main__":

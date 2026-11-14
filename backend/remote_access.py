@@ -310,8 +310,9 @@ def create_gateway(remote_store=None, *, frontend=None, upstream_transport=None,
 
     @app.get("/remote/info")
     async def info(request: Request):
+        from .platform_support import get_platform_info
         return {"remote": True, "pairing_required": auth.session(request.cookies.get(COOKIE)) is None,
-                "origin": auth.origin, "capabilities": CAPABILITIES}
+                "origin": auth.origin, "capabilities": CAPABILITIES, "platform": get_platform_info()}
 
     @app.get("/remote/session")
     async def session(request: Request):

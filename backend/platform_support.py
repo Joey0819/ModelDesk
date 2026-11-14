@@ -26,6 +26,7 @@ def get_platform_info() -> dict:
         "has_native_muse_bridge": is_macos,
         "tailscale_path": resolve_tailscale_path(),
         "machine_label": machine_label(),
+        "machine_short": machine_short(),
     }
 
 

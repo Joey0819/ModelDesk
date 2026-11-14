@@ -166,6 +166,23 @@ class FeishuController:
     async def accept(self, record):
         from .groups import MessageRequest, submit_message
         command = record["command"]
+        if record.get("input_mode") == "bootstrap":
+            await self.run_bootstrap(record)
+            return
+        if (command.split(maxsplit=1) or [""])[0].casefold() in {"unlink", "解除绑定"}:
+            config = self.store.config()
+            owners = config.get("owner_sender_ids") or []
+            if record["sender_id"] not in owners:
+                await self.reply_once(record, "unlink", "只有配置的管理员 Open ID 可以使用 /modeldesk unlink。")
+                self.store.update(record, state="delivered", reason="解绑指令被拒绝：发起人不是管理员")
+                return
+            if self.store.remove_binding(config, record["chat_id"]):
+                await self.reply_once(record, "unlink", "已解除当前会话的绑定。项目、团队和项目群保持不变；可重新用 /modeldesk setup 开通。", relaxed=True)
+                self.store.update(record, state="delivered", reason="解绑指令已处理")
+            else:
+                await self.reply_once(record, "unlink", "当前会话没有绑定，无需解绑。")
+                self.store.update(record, state="delivered", reason="解绑指令已处理（无绑定）")
+            return
         if command in {"status", "状态"}:
             related = [job for job in self.jobs.jobs.values() if self.belongs(job, record)]
             latest = sorted(related, key=lambda job: job.get("created_at", ""))[-3:]
@@ -225,6 +242,41 @@ class FeishuController:
             # created job or prevent its separate completion notification.
             self.store.update(record, reason="任务已创建；接收确认消息未确认，不会重复发送，仍会等待最终成果")
 
+    def bootstrap_service(self):
+        """Construct the bootstrap service; tests patch this for scratch stores."""
+        from .feishu_bootstrap import Bootstrap
+        return Bootstrap(self.store)
+
+    async def run_bootstrap(self, record):
+        """Handle an admitted owner setup/confirm directive end-to-end."""
+        from .feishu_bootstrap import BootstrapError
+        bootstrap = self.bootstrap_service()
+        config = self.store.config()
+        try:
+            # setup and confirm validate against this revision; executing a
+            # plan rotates the revision via the binding write.
+            reply, binding = bootstrap.handle(record, config)
+            if reply is None:
+                self.store.update(record, state="delivered", reason="指令不在自助开通范围内，未执行")
+                return
+            if binding:
+                # The plan was executed and the config revision rotated. Adopt
+                # the new revision and the just-written binding so the receipt
+                # reply is validated against the configuration this run made.
+                current = self.store.config()
+                if current["enabled"] and current["app_id"] == record["app_id"]:
+                    self.store.update(record, config_revision=current["revision"], binding=binding)
+            await self.reply_once(record, "bootstrap", reply)
+            self.store.update(record, state="delivered", reason="自助开通指令已处理")
+        except BootstrapError as error:
+            try:
+                await self.reply_once(record, "bootstrap", str(error))
+                self.store.update(record, state="delivered", reason="自助开通指令被拒绝：" + str(error)[:200])
+            except Exception:
+                self.store.update(record, state="needs_attention", reason="开通结果未能回传；请在本机检查")
+        except Exception as error:
+            self.store.update(record, state="needs_attention", reason=safe_error(error))
+
     @staticmethod
     def belongs(job, record):
         source = job.get("external_source") or {}
@@ -236,8 +288,15 @@ class FeishuController:
         if not self.store.current(record):
             raise FeishuAPIError("飞书连接已停用或授权配置已改变，未继续派发或回传")
 
-    async def operation(self, record, key, function, *args):
-        self.assert_current(record)
+    async def operation(self, record, key, function, *args, relaxed=False):
+        """Reserve one idempotent outbound send.
+
+        relaxed skips the config-revision guard for receipts whose own action
+        legitimately rotated the configuration (binding written or removed).
+        The message dedupe and sent-uncertain accounting still apply.
+        """
+        if not relaxed:
+            self.assert_current(record)
         identifier = str(uuid.uuid5(uuid.NAMESPACE_URL, "modeldesk:feishu-out:" + record["id"] + ":" + key))
         reserved, receipt = self.store.reserve_outgoing(identifier, record["id"], {"kind": key})
         if not reserved:
@@ -246,7 +305,8 @@ class FeishuController:
             raise RuntimeError("outbound result unconfirmed")
         try:
             def dispatch():
-                self.assert_current(record)
+                if not relaxed:
+                    self.assert_current(record)
                 return function(*args, identifier)
             result = await asyncio.to_thread(dispatch)
         except asyncio.CancelledError:
@@ -259,9 +319,9 @@ class FeishuController:
         self.store.finish_outgoing(identifier, state="sent", response_id=result)
         return result
 
-    async def reply_once(self, record, key, text):
+    async def reply_once(self, record, key, text, relaxed=False):
         sdk = self.sdk_factory(self.store.config())
-        return await self.operation(record, key, lambda value, dispatch: sdk.reply(record["message_id"], "text", {"text": value}, dispatch), text)
+        return await self.operation(record, key, lambda value, dispatch: sdk.reply(record["message_id"], "text", {"text": value}, dispatch), text, relaxed=relaxed)
 
     async def deliver(self, record):
         from .autonomy import completion_problem

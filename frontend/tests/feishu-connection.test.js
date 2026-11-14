@@ -22,7 +22,7 @@ test('Feishu drafts never restore credentials or arbitrary server fields and bod
   assert.equal('token' in draft, false); assert.equal('hidden' in draft.bindings[0], false);
   assert.equal(draft.bindings[0].allow_native, false);
   const body = feishuBody({ ...draft, arbitrary_url: 'https://attacker.invalid', bindings: [{ ...draft.bindings[0], sender_text: 'not sent' }] });
-  assert.deepEqual(body, { enabled: true, app_id: 'cli_myapp', bindings: [binding] });
+  assert.deepEqual(body, { enabled: true, app_id: 'cli_myapp', owner_sender_ids: [], bindings: [binding] });
   assert.equal('app_secret' in body, false); assert.equal('has_app_secret' in body, false); assert.equal('original_app_id' in body, false);
   assert.equal(feishuBody({ ...draft, app_secret: ' replacement ' }).app_secret, 'replacement');
   assert.deepEqual(feishuSenderIds('ou_a\nou_b,ou_a， ou_c'), ['ou_a', 'ou_b', 'ou_c']);
@@ -125,4 +125,38 @@ test('Feishu receipt renderer exposes bounded actual delivery failures separatel
   const empty = renderToStaticMarkup(React.createElement(FeishuRecentReceipts));
   assert.match(empty, /暂无指令回执/); assert.doesNotMatch(empty, /回传已确认/);
   for (const [state, label] of [['attention', '任务有待处理事项'], ['rejected', '指令已拒绝']]) assert.match(renderToStaticMarkup(React.createElement(FeishuRecentReceipts, { recent: [{ id: state, state, reason: 'Actual reason' }] })), new RegExp(label));
+});
+
+test('Feishu owner allowlist is normalized, validated and only enters the body when configured', () => {
+  const draft = feishuDraft({ ...config, owner_sender_ids: ['ou_owner1', 'ou_owner1', 'ou_owner2'] });
+  assert.deepEqual(draft.owner_sender_ids, ['ou_owner1', 'ou_owner2']);
+  assert.equal(draft.owner_text, undefined);
+  assert.deepEqual(feishuDraft({ ...config, owner_sender_ids: 'not-a-list' }).owner_sender_ids, []);
+  const body = feishuBody({ ...draft, owner_text: 'never-sent' });
+  assert.deepEqual(body.owner_sender_ids, ['ou_owner1', 'ou_owner2']);
+  const parsed = feishuBody({ ...draft, owner_sender_ids: feishuSenderIds('ou_owner3\nou_owner4,ou_owner3') });
+  assert.deepEqual(parsed.owner_sender_ids, ['ou_owner3', 'ou_owner4']);
+  assert.equal(feishuBody(feishuDraft(config)).owner_sender_ids.length, 0);
+});
+
+test('Feishu owner validation rejects malformed ids and enforces the cap of ten', () => {
+  const base = feishuDraft(config);
+  assert.equal(feishuIssue({ ...base, owner_sender_ids: ['ou_ok'] }), '');
+  assert.match(feishuIssue({ ...base, owner_sender_ids: ['not_ou'] }), /管理员 Open ID/);
+  assert.match(feishuIssue({ ...base, owner_sender_ids: ['ou_ok', 'cli_bad'] }), /管理员 Open ID/);
+  assert.match(feishuIssue({ ...base, owner_sender_ids: Array.from({ length: 11 }, (_, i) => `ou_cap${i}`) }), /最多 10 个/);
+  assert.equal(feishuIssue({ ...base, owner_sender_ids: Array.from({ length: 10 }, (_, i) => `ou_cap${i}`) }), '');
+});
+
+test('Feishu configuration form exposes the owner allowlist with p2p-only self-service wording', () => {
+  const draft = feishuDraft({ ...config, owner_sender_ids: ['ou_owner1'] });
+  const html = renderToStaticMarkup(React.createElement(FeishuConfigurationForm, { draft, projects: [{ id: 'project-a', name: 'My project' }], chats: [], onChange() {}, onSave() {} }));
+  assert.match(html, /aria-label="飞书自助开通管理员 Open ID"/);
+  assert.match(html, /ou_owner1/);
+  assert.match(html, /\/modeldesk setup/);
+  assert.match(html, /私聊/);
+  assert.match(html, /留空则完全关闭/);
+  assert.match(html, /最多 10 个/);
+  const noOwners = renderToStaticMarkup(React.createElement(FeishuConfigurationForm, { draft: feishuDraft(config), projects: [], chats: [], onChange() {}, onSave() {} }));
+  assert.match(noOwners, /留空则完全关闭飞书内自助开通/);
 });

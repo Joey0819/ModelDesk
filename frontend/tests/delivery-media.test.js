@@ -316,7 +316,7 @@ test('simple output controls keep advanced settings collapsed and text tasks fre
   assert.match(html, /配图数量/); assert.match(html, /复用当前登录网关/); assert.doesNotMatch(html, /必须.*API|open=""/);
   assert.doesNotMatch(render(DeliveryOutputOptions, { value: { outputFormat: 'text' }, onChange() {} }), /生成设置|配图数量/);
   const video = render(DeliveryOutputOptions, { value: { outputFormat: 'video' }, disabled: true, onChange() {} });
-  assert.match(video, /Muse（Mac 本机）/); assert.match(video, /disabled=""/); assert.doesNotMatch(video, /OpenAI 生图|Gemini 生图|配图数量/);
+  assert.match(video, /Muse 原生生成仅在 Mac 上可用/); assert.match(video, /disabled=""/); assert.doesNotMatch(video, /OpenAI 生图|Gemini 生图|配图数量/);
 });
 
 test('changing from OpenAI illustrations to video resets the actual saved and submitted provider', () => {

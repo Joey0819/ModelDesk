@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { API_BASE, apiFetch } from '../api-base';
 import { loadMediaCapabilities } from '../delivery-media';
 import { groupOutputOptions } from '../group-state';
+import { NEUTRAL_MACHINE } from '../machine';
 
 const providerNames = { openai: 'ChatGPT / OpenAI', gemini: 'Gemini', xai: 'Grok' };
 
@@ -14,7 +15,7 @@ export function MediaCapabilityStatus({ state, onRefresh }) {
   </section>;
 }
 
-export default function DeliveryOutputOptions({ value, onChange, disabled = false }) {
+export default function DeliveryOutputOptions({ value, onChange, disabled = false, machine = NEUTRAL_MACHINE }) {
   const [capabilities, setCapabilities] = useState({ status: 'idle', entries: [], error: '' });
   const controller = useRef(null);
   useEffect(() => () => controller.current?.abort(), []);
@@ -32,13 +33,14 @@ export default function DeliveryOutputOptions({ value, onChange, disabled = fals
   };
   const options = groupOutputOptions(value);
   const update = (change) => onChange(groupOutputOptions(options, change));
-  const providers = options.outputFormat === 'video' ? [['auto', '自动选择'], ['muse', 'Muse（Mac 本机）']] : [['auto', '自动选择'], ['openai', 'OpenAI 生图'], ['gemini', 'Gemini 生图'], ['muse', 'Muse（Mac 本机）']];
+  const providers = options.outputFormat === 'video' ? (machine.isMacos ? [['auto', '自动选择'], ['muse', 'Muse（Mac 本机）']] : [['auto', '自动选择']]) : (machine.isMacos ? [['auto', '自动选择'], ['openai', 'OpenAI 生图'], ['gemini', 'Gemini 生图'], ['muse', 'Muse（Mac 本机）']] : [['auto', '自动选择'], ['openai', 'OpenAI 生图'], ['gemini', 'Gemini 生图']]);
+  const museNote = machine.isMacos ? 'Muse 需要 Mac 原生应用。' : 'Muse 原生生成仅在 Mac 上可用，当前主机不是 Mac；视频成果需要 Mac 部署。';
   return <div className="group-output-options">
     <label>成果形式<select aria-label="成果形式" disabled={disabled} value={options.outputFormat} onChange={(event) => update({ outputFormat: event.target.value })}><option value="auto">按要求自动</option><option value="text">仅文字</option><option value="illustrated">图文并茂</option><option value="video">视频成果</option></select></label>
     {options.outputFormat !== 'text' && <details className="group-output-settings" onToggle={(event) => { if (event.currentTarget.open) refreshCapabilities(); }}><summary>生成设置</summary><div>
       {options.outputFormat !== 'video' && <label>{options.outputFormat === 'auto' ? '未指定时的配图数量' : '配图数量'}<select aria-label="配图数量" disabled={disabled} value={options.imageCount} onChange={(event) => update({ imageCount: Number(event.target.value) })}>{[1, 2, 3, 4].map((count) => <option key={count} value={count}>{count} 张</option>)}</select></label>}
       <label>生成工具<select aria-label="图片与视频生成工具" disabled={disabled} value={options.mediaProvider} onChange={(event) => update({ mediaProvider: event.target.value })}>{providers.map(([id, name]) => <option key={id} value={id}>{name}</option>)}</select></label>
-      <p>{options.outputFormat === 'auto' ? '按任务描述确定实际数量；例如“每章一图”会逐章配图，单轮最多 12 份媒体。上方数量只在未指定时使用。' : options.outputFormat === 'video' ? '视频需由可用的 Muse 生成并回传实际文件。' : '正文与实际配图将一起呈现在成果栏。'} 复用当前登录网关或已添加的 API 连接；实际能力以调用结果为准。Muse 需要 Mac 原生应用。</p>
+      <p>{options.outputFormat === 'auto' ? '按任务描述确定实际数量；例如“每章一图”会逐章配图，单轮最多 12 份媒体。上方数量只在未指定时使用。' : options.outputFormat === 'video' ? '视频需由可用的 Muse 生成并回传实际文件。' : '正文与实际配图将一起呈现在成果栏。'} 复用当前登录网关或已添加的 API 连接；实际能力以调用结果为准。{museNote}</p>
       <MediaCapabilityStatus state={capabilities} onRefresh={refreshCapabilities} />
     </div></details>}
   </div>;

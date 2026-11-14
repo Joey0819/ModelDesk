@@ -62,6 +62,7 @@ import './TaskContextControl.css';
 import JobAttachments from './JobAttachments';
 import GroupAgentTasks from './GroupAgentTasks';
 import DeliveryOutputOptions from './DeliveryOutputOptions';
+import { machineInfo, hostIsMacos } from '../machine';
 import DocumentOutputOptions from './DocumentOutputOptions';
 import { DeliveryMediaProgress } from './MediaDelivery';
 import './GroupWorkspace.css';
@@ -84,7 +85,7 @@ export function GroupMuseTurn({ task: rawTask, projectId, roomId, onUseReply, on
   const videoUrl = resolveMuseVideoUrl(task);
   return <article className="group-room-turn group-muse-turn" aria-label={`Muse 群聊记录 ${dateLabel(task.created_at)}`}>
     <GroupTaskPrompt task={task} name="Muse" copyLabel="复制交给 Muse 的任务" />
-    <section className="group-member-message" style={{ '--member-color': '#946028' }}><span className="group-member-avatar" aria-hidden="true">M</span><div><header><strong>{task.member?.name || 'Muse'}</strong><small>{task.harness_generated ? '旧版未验证内容' : 'Mac 本机桥接'}</small><small>{MUSE_STATUS[task.status] || task.status}</small></header>
+    <section className="group-member-message" style={{ '--member-color': '#946028' }}><span className="group-member-avatar" aria-hidden="true">M</span><div><header><strong>{task.member?.name || 'Muse'}</strong><small>{task.harness_generated ? '旧版未验证内容' : 'Muse 本机桥接'}</small><small>{MUSE_STATUS[task.status] || task.status}</small></header>
       {videoUrl && (
         <div className="muse-video-card" aria-label="Muse 已回传视频成片">
           <div className="muse-video-header">
@@ -237,6 +238,7 @@ function GroupTeamSettings({ room, models, catalog, addRequested, onOpenAgentSet
 }
 
 function GroupRoom({ roomId, projectId, initialJob, status, models, context, onContextChange, onOpenArtifacts, onClearArtifacts, onOpenProjects, onOpenAgentSettings, renderIntegration, focusHistory, onToggleFocusHistory }) {
+  const machine = machineInfo(status);
   const { assets, transfers } = useProjects();
   const [workMode, setWorkMode] = useState(() => { const value = localStorage.getItem(`modeldesk.group.mode.${projectId || 'none'}.${roomId}`); return !initialJob && ['code', 'review'].includes(value) ? value : 'discussion'; });
   useEffect(() => { localStorage.setItem(`modeldesk.group.mode.${projectId || 'none'}.${roomId}`, workMode); }, [workMode, projectId, roomId]);
@@ -545,7 +547,7 @@ function GroupRoom({ roomId, projectId, initialJob, status, models, context, onC
       setContextMode('continue');
       if (deliveryMode === 'auto') {
         pendingDeliveryRevealRef.current = job.id;
-        setHarnessNotice(backgroundMode ? '后台托管已启动。你可以离开本页面，在顶部“后台任务”查看进度、成果和待处理通知。Mac 需保持唤醒并联网。' : '任务已启动。系统会按要求安排群内成员，执行后整理完整成果；请在本轮进度中查看实际状态。');
+        setHarnessNotice(backgroundMode ? `后台托管已启动。你可以离开本页面，在顶部“后台任务”查看进度、成果和待处理通知。${machine.short}需保持唤醒并联网。` : '任务已启动。系统会按要求安排群内成员，执行后整理完整成果；请在本轮进度中查看实际状态。');
         globalThis.dispatchEvent?.(new Event('modeldesk-autonomy-changed'));
       } else if (harnessMode === 'discuss_muse') {
         pendingHarnessJobRef.current = { jobId: job.id, mode: 'discuss_muse', userPrompt: sentPrompt };
@@ -644,7 +646,7 @@ function GroupRoom({ roomId, projectId, initialJob, status, models, context, onC
       </div>}
     </div>
     {memberSettings && <GroupTeamSettings room={memberSettings.room} models={models} catalog={status?.models || []} addRequested={memberSettings.add} onOpenAgentSettings={onOpenAgentSettings} onApplied={applyMembers} onClose={() => setMemberSettings(null)} />}
-    {workMode !== 'discussion' && room ? <GroupAgentTasks projectId={projectId} room={room} kind={workMode} onKindChange={setWorkMode} onOpenProjects={onOpenProjects} onOpenArtifacts={onOpenArtifacts} /> : <>
+    {workMode !== 'discussion' && room ? <GroupAgentTasks projectId={projectId} room={room} kind={workMode} onKindChange={setWorkMode} onOpenProjects={onOpenProjects} onOpenArtifacts={onOpenArtifacts} status={status} /> : <>
       {renderIntegration && <dialog ref={museDialog} className="group-options-dialog group-muse-dialog" aria-label="Muse 任务与连接">
         <header><div><strong>Muse 任务与连接</strong><p>查看原生任务、实际回复和媒体。</p></div><button type="button" className="subtle-button" onClick={() => museDialog.current?.close()}>关闭</button></header>
         <div ref={integrationRef} className="group-options-body">{renderIntegration({ projectId, roomId, onUseReply: useMuseReply })}</div>
@@ -724,8 +726,8 @@ function GroupRoom({ roomId, projectId, initialJob, status, models, context, onC
             </label>
           )}
         </div>
-        {!runtimeMember && deliveryMode === 'auto' && <BackgroundDelegateSetting checked={backgroundMode} onChange={setBackgroundMode} disabled={busy || Boolean(activeJob)} />}
-        {!runtimeMember && deliveryMode === 'auto' && <DeliveryOutputOptions value={outputOptions} onChange={setOutputOptions} disabled={busy || Boolean(activeJob)} />}
+        {!runtimeMember && deliveryMode === 'auto' && <BackgroundDelegateSetting checked={backgroundMode} onChange={setBackgroundMode} disabled={busy || Boolean(activeJob)} hostShort={machine.short} />}
+        {!runtimeMember && deliveryMode === 'auto' && <DeliveryOutputOptions value={outputOptions} onChange={setOutputOptions} disabled={busy || Boolean(activeJob)} machine={machine} />}
         {!runtimeMember && deliveryMode === 'auto' && <DocumentOutputOptions value={documentOptions} onChange={setDocumentOptions} disabled={busy || Boolean(activeJob)} />}
         <div className="group-quick-recipe-bar" role="toolbar" aria-label="快捷协作配方">
           <span>快捷配方</span>
@@ -834,7 +836,7 @@ function GroupRoom({ roomId, projectId, initialJob, status, models, context, onC
           </div>
         </form>
         {(!runtimeMember && (errors.length > 0 || attachmentPending || transfers > 0)) && <p className="mission-form-note">{attachmentPending || transfers > 0 ? '请等待资料准备完成。' : errors[0]}</p>}
-        {runtimeMember && <p className="group-runtime-boundary">{runtimeKind === 'muse' ? (REMOTE_CLIENT ? 'Muse 原生窗口操作需要在 Mac 端派发。' : runtimeReadiness.ready ? '将操作本机 Muse。回复与文件仅在桥接实际读取后显示；附件不会自动传入原生应用。' : `${runtimeReadiness.label}：${runtimeReadiness.detail} 请打开 Muse 面板检查连接。`) : !projectId ? '代码 Agent 需要选择本地 Git 项目。' : !runtimeReady ? (runtimeEngine?.error || '请在“Agent 与连接”检查本机执行器安装与登录状态。') : '将在隔离 Git 工作区执行，改动需要独立审阅和你的合入审批。附件不会自动传入执行器。'} <button type="button" className="subtle-button" onClick={refreshRuntimeStatus}>重新检查执行器</button></p>}
+        {runtimeMember && <p className="group-runtime-boundary">{runtimeKind === 'muse' ? (hostIsMacos(status) ? (REMOTE_CLIENT ? 'Muse 原生窗口操作需要在 Mac 端派发。' : runtimeReadiness.ready ? '将操作本机 Muse。回复与文件仅在桥接实际读取后显示；附件不会自动传入原生应用。' : `${runtimeReadiness.label}：${runtimeReadiness.detail} 请打开 Muse 面板检查连接。`) : 'Muse 原生窗口操作仅在 Mac 上可用；当前主机不是 Mac，无法派发 Muse 任务。') : !projectId ? '代码 Agent 需要选择本地 Git 项目。' : !runtimeReady ? (runtimeEngine?.error || '请在“Agent 与连接”检查本机执行器安装与登录状态。') : '将在隔离 Git 工作区执行，改动需要独立审阅和你的合入审批。附件不会自动传入执行器。'} <button type="button" className="subtle-button" onClick={refreshRuntimeStatus}>重新检查执行器</button></p>}
 
       </div>
     </>}

@@ -159,13 +159,14 @@ class AutonomySupervisor:
 
     async def advance(self, job):
         from .coordination import ContinueRequest, continue_job, load_inputs
+        from .platform_support import machine_short
         meta = job["autonomy"]
         if job.get("status") == "cancelled" or meta.get("stop_reason") == "user_cancel":
             self.set_state(job, "cancelled", "任务已停止，不会自动继续")
             return
         if job.get("status") not in TERMINAL or self.jobs.tasks.get(job["id"]):
             if meta.get("enabled") is True:
-                self.set_state(job, "running", "后台正在执行；可以离开此页面，Mac 和 ModelDesk 服务需要保持运行")
+                self.set_state(job, "running", f"后台正在执行；可以离开此页面，{machine_short()} 和 ModelDesk 服务需要保持运行")
             return
         if delivery_of(job).get("status") == "complete":
             # Verify once at the completed transition; export endpoints also

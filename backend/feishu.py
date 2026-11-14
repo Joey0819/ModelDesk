@@ -217,8 +217,9 @@ class FeishuController:
                              admission_check=lambda: self.assert_current(record))
         self.store.update(record, state="monitoring", reason="任务已交给 ModelDesk 后台执行")
         try:
+            from .platform_support import machine_short
             await self.reply_once(record, "accepted", "已收到任务，ModelDesk 正在后台协作。\n任务 ID：" + record["job_id"]
-                                  + "\n完成或需要处理时会回传到本条消息；Mac 和 ModelDesk 服务需保持运行。")
+                                  + f"\n完成或需要处理时会回传到本条消息；{machine_short()} 和 ModelDesk 服务需保持运行。")
         except Exception:
             # An uncertain acknowledgement must not lose a successfully
             # created job or prevent its separate completion notification.

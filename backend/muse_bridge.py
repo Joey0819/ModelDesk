@@ -279,6 +279,7 @@ def native_stage(identifier, *, create=False):
 def import_native_files(task, result):
     """Read exact helper-selected basenames; never inspect the user's Downloads."""
     from .delivery_media import store as media_store
+    from .platform_support import machine_short
     assets, errors = [], []
     if result.get("file_request_id") != task["request_id"]:
         return assets, errors
@@ -288,7 +289,7 @@ def import_native_files(task, result):
     diagnostics = {
         'native_video_unavailable': 'Muse 原生附件显示 Video not found：视频资源不可用，文字回复不代表已交付。',
         'native_download_save_panel_unavailable': 'Muse 下载按钮未打开保存窗口，尚未取得附件。',
-        'native_download_focus_unconfirmed': '附件下载时 Muse 窗口焦点未确认，请保持 Mac 解锁并打开对应会话。',
+        'native_download_focus_unconfirmed': f'附件下载时 Muse 窗口焦点未确认，请保持{machine_short()}解锁并打开对应会话。',
         'native_gallery_preview_unconfirmed': 'Muse 图片预览未就绪，尚未取得原图。',
     }
     if result.get("download_errors"):

@@ -1,0 +1,441 @@
+/* ==========================================================================
+   Astryx 主题试点 · 仅作用于看板页（.todo-board）
+   配色：Matcha（墨绿/米绿）  字体：Stone（Montserrat + Figtree）
+   范围：只重定义本页用到的 token，侧边栏与其他页面完全不受影响
+   ========================================================================== */
+
+@font-face {
+  font-family: 'Figtree';
+  src: url('/fonts/figtree-latin.woff2') format('woff2');
+  font-weight: 400 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Montserrat';
+  src: url('/fonts/montserrat-latin.woff2') format('woff2');
+  font-weight: 500 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+.todo-board {
+  /* 字体：拉丁走 Figtree / Montserrat，中文回落系统黑体 */
+  --astryx-body: 'Figtree', 'PingFang SC', 'Hiragino Sans GB', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --astryx-heading: 'Montserrat', 'Figtree', 'PingFang SC', 'Hiragino Sans GB', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+
+  /* 配色（Matcha 浅色） */
+  --astryx-body-bg: #f0f0e0;
+  --astryx-paper: #ffffff;
+  --astryx-soft: #e7e8d6;
+  --astryx-line: #dce3ce;
+  --astryx-ink: #3e481d;
+  --astryx-muted: #5a6b2a;
+  --astryx-accent: #3e481d;
+  --astryx-on-accent: #ffffff;
+  --astryx-accent-wash: rgba(62, 72, 29, 0.07);
+
+  /* 状态色（在米绿底上略作收敛，避免刺眼） */
+  --astryx-danger: #c1402f;
+  --astryx-warning: #c07f14;
+  --astryx-info: #3a5e8c;
+  --astryx-neutral: #8a9670;
+
+  /* 圆角与阴影（Astryx radius 阶梯） */
+  --astryx-r-inner: 6px;
+  --astryx-r-element: 12px;
+  --astryx-r-container: 18px;
+  --astryx-shadow-card: 0 1px 2px rgba(62, 72, 29, 0.06);
+  --astryx-shadow-hover: 0 4px 14px rgba(62, 72, 29, 0.12);
+  --astryx-shadow-modal: 0 18px 48px rgba(20, 26, 10, 0.22);
+  --astryx-ring: 0 0 0 3px rgba(62, 72, 29, 0.22);
+
+  /* 覆写本页既有 token，TodoBoard.css 无需改动即可换肤 */
+  --line: var(--astryx-line);
+  --ink: var(--astryx-ink);
+  --muted: var(--astryx-muted);
+  --accent: var(--astryx-accent);
+  --shell-paper: var(--astryx-paper);
+  --shell-soft: var(--astryx-soft);
+
+  font-family: var(--astryx-body);
+  background: var(--astryx-body-bg);
+  color: var(--astryx-ink);
+}
+
+.modeldesk[data-theme=dark] .todo-board {
+  --astryx-body-bg: #12140e;
+  --astryx-paper: #1a1c14;
+  --astryx-soft: #23261b;
+  --astryx-line: rgba(192, 203, 169, 0.18);
+  --astryx-ink: #c0cba9;
+  --astryx-muted: #94a468;
+  --astryx-accent: #c0cba9;
+  --astryx-on-accent: #3e481d;
+  --astryx-accent-wash: rgba(192, 203, 169, 0.12);
+  --astryx-danger: #e8756a;
+  --astryx-warning: #e3b04b;
+  --astryx-info: #a7c9e3;
+  --astryx-neutral: #7f8a68;
+  --astryx-shadow-card: 0 1px 2px rgba(0, 0, 0, 0.35);
+  --astryx-shadow-hover: 0 6px 18px rgba(0, 0, 0, 0.45);
+  --astryx-shadow-modal: 0 18px 48px rgba(0, 0, 0, 0.6);
+  --astryx-ring: 0 0 0 3px rgba(192, 203, 169, 0.3);
+}
+
+/* ---------- 工具栏 ---------- */
+
+.todo-board .todo-toolbar {
+  background: var(--astryx-paper);
+  border-bottom: 1px solid var(--astryx-line);
+  padding: 14px 22px;
+  gap: 10px;
+}
+
+/* 前缀 .modeldesk[data-theme] 是为了压过 PlatformTheme.css 里同优先级的全局深色输入框规则 */
+.modeldesk[data-theme] .todo-board .todo-toolbar input[type="text"],
+.modeldesk[data-theme] .todo-board .todo-toolbar select {
+  border: 1px solid var(--astryx-line);
+  border-radius: var(--astryx-r-element);
+  background: var(--astryx-paper);
+  color: var(--astryx-ink);
+  padding: 7px 12px;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.modeldesk[data-theme] .todo-board .todo-toolbar input[type="text"]:focus,
+.modeldesk[data-theme] .todo-board .todo-toolbar select:focus {
+  outline: none;
+  border-color: var(--astryx-accent);
+  box-shadow: var(--astryx-ring);
+}
+
+.modeldesk[data-theme] .todo-board .todo-toolbar input[type="text"]::placeholder {
+  color: var(--astryx-muted);
+  opacity: 0.75;
+}
+
+.todo-board .todo-toolbar label {
+  color: var(--astryx-muted);
+  font-size: 12.5px;
+}
+
+.todo-board .todo-toolbar input[type="checkbox"] {
+  accent-color: var(--astryx-accent);
+}
+
+.todo-board .todo-stats {
+  color: var(--astryx-muted);
+  font-size: 12.5px;
+  letter-spacing: 0.01em;
+}
+
+/* 工具栏主按钮（原本无样式，走浏览器默认） */
+.todo-board .todo-new-task {
+  border: 1px solid var(--astryx-accent);
+  background: var(--astryx-accent);
+  color: var(--astryx-on-accent);
+  border-radius: var(--astryx-r-element);
+  padding: 8px 16px;
+  font-family: var(--astryx-heading);
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  transition: opacity 0.15s ease, transform 0.15s ease;
+}
+
+.todo-board .todo-new-task:hover {
+  opacity: 0.88;
+}
+
+.todo-board .todo-new-task:active {
+  transform: translateY(1px);
+}
+
+.todo-board .todo-new-task:focus-visible {
+  outline: none;
+  box-shadow: var(--astryx-ring);
+}
+
+/* ---------- 列 ---------- */
+
+.todo-board .todo-columns {
+  gap: 14px;
+  padding: 18px;
+}
+
+.todo-board .todo-column {
+  background: var(--astryx-soft);
+  border: 1px solid var(--astryx-line);
+  border-radius: var(--astryx-r-container);
+  box-shadow: none;
+}
+
+.todo-board .todo-column.drag-over {
+  border-color: var(--astryx-accent);
+  background: var(--astryx-accent-wash);
+}
+
+.todo-board .todo-column-header {
+  font-family: var(--astryx-heading);
+  font-size: 12.5px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--astryx-ink);
+  padding: 14px 16px 12px;
+  border-bottom: 1px solid var(--astryx-line);
+}
+
+.todo-board .todo-column-count {
+  font-family: var(--astryx-body);
+  background: var(--astryx-paper);
+  color: var(--astryx-muted);
+  border: 1px solid var(--astryx-line);
+  border-radius: 999px;
+  padding: 1px 8px;
+  font-size: 11.5px;
+  font-weight: 500;
+  letter-spacing: 0;
+}
+
+.todo-board .todo-column-body {
+  padding: 10px;
+}
+
+.todo-board .todo-empty {
+  color: var(--astryx-muted);
+  font-size: 12.5px;
+  padding: 26px 8px;
+  opacity: 0.8;
+}
+
+/* ---------- 卡片 ---------- */
+
+.todo-board .todo-card {
+  background: var(--astryx-paper);
+  border: 1px solid var(--astryx-line);
+  border-radius: var(--astryx-r-element);
+  padding: 12px 13px;
+  margin-bottom: 9px;
+  box-shadow: var(--astryx-shadow-card);
+  transition: box-shadow 0.16s ease, border-color 0.16s ease, transform 0.16s ease;
+}
+
+.todo-board .todo-card:hover {
+  box-shadow: var(--astryx-shadow-hover);
+  border-color: color-mix(in srgb, var(--astryx-accent) 28%, var(--astryx-line));
+}
+
+.todo-board .todo-card:focus-within {
+  box-shadow: var(--astryx-ring);
+}
+
+.todo-board .todo-card-title {
+  font-family: var(--astryx-body);
+  font-size: 13.5px;
+  font-weight: 600;
+  line-height: 1.45;
+  color: var(--astryx-ink);
+}
+
+.todo-board .todo-card-desc {
+  font-size: 12px;
+  color: var(--astryx-muted);
+  line-height: 1.5;
+}
+
+.todo-board .todo-card-assignee,
+.todo-board .todo-card-due {
+  font-size: 11.5px;
+  color: var(--astryx-muted);
+}
+
+.todo-board .todo-card-due.overdue {
+  color: var(--astryx-danger);
+}
+
+.todo-board .todo-card-priority-bar {
+  width: 3px;
+  background: var(--astryx-neutral);
+}
+
+.todo-board .todo-card-priority-bar.priority-urgent { background: var(--astryx-danger); }
+.todo-board .todo-card-priority-bar.priority-high { background: var(--astryx-warning); }
+.todo-board .todo-card-priority-bar.priority-medium { background: var(--astryx-info); }
+.todo-board .todo-card-priority-bar.priority-low { background: var(--astryx-neutral); }
+
+.todo-board .todo-tag {
+  background: var(--astryx-soft);
+  border: 1px solid var(--astryx-line);
+  border-radius: var(--astryx-r-inner);
+  color: var(--astryx-muted);
+  font-size: 11px;
+  padding: 1.5px 7px;
+}
+
+.todo-board .todo-card-synced {
+  border-left: 3px solid var(--astryx-accent);
+}
+
+.todo-board .todo-source-badge {
+  background: var(--astryx-accent);
+  color: var(--astryx-on-accent);
+  border-radius: 999px;
+  font-family: var(--astryx-heading);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  padding: 2.5px 9px;
+}
+
+/* ---------- 行内新建 ---------- */
+
+.todo-board .todo-add-form {
+  border-top: 1px solid var(--astryx-line);
+  padding: 9px 10px;
+}
+
+.modeldesk .todo-board .todo-add-input {
+  border: 1px solid transparent;
+  border-radius: var(--astryx-r-inner);
+  background: transparent;
+  color: var(--astryx-ink);
+  padding: 7px 9px;
+  font-size: 12.5px;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.todo-board .todo-add-input:hover {
+  background: var(--astryx-paper);
+  border-color: var(--astryx-line);
+}
+
+.todo-board .todo-add-input:focus {
+  outline: none;
+  background: var(--astryx-paper);
+  border-color: var(--astryx-accent);
+  box-shadow: var(--astryx-ring);
+}
+
+.todo-board .todo-add-input::placeholder {
+  color: var(--astryx-muted);
+  opacity: 0.8;
+}
+
+/* ---------- 弹窗 ---------- */
+
+.todo-board .todo-modal-overlay {
+  background: rgba(18, 20, 14, 0.42);
+  backdrop-filter: blur(2px);
+}
+
+.todo-board .todo-modal {
+  background: var(--astryx-paper);
+  border: 1px solid var(--astryx-line);
+  border-radius: var(--astryx-r-container);
+  box-shadow: var(--astryx-shadow-modal);
+  padding: 26px;
+}
+
+.todo-board .todo-modal h3 {
+  font-family: var(--astryx-heading);
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  color: var(--astryx-ink);
+  margin-bottom: 18px;
+}
+
+.todo-board .todo-field label {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--astryx-muted);
+  letter-spacing: 0.02em;
+}
+
+.modeldesk .todo-board .todo-field input,
+.modeldesk .todo-board .todo-field textarea,
+.modeldesk .todo-board .todo-field select {
+  border: 1px solid var(--astryx-line);
+  border-radius: var(--astryx-r-element);
+  background: var(--astryx-paper);
+  color: var(--astryx-ink);
+  padding: 9px 12px;
+  font-family: var(--astryx-body);
+  font-size: 13.5px;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.modeldesk .todo-board .todo-field input:focus,
+.modeldesk .todo-board .todo-field textarea:focus,
+.modeldesk .todo-board .todo-field select:focus {
+  outline: none;
+  border-color: var(--astryx-accent);
+  box-shadow: var(--astryx-ring);
+}
+
+.todo-board .todo-field-error {
+  color: var(--astryx-danger);
+}
+
+.todo-board .todo-modal-actions button {
+  border-radius: var(--astryx-r-element);
+  font-family: var(--astryx-heading);
+  font-size: 13px;
+  font-weight: 600;
+  padding: 9px 18px;
+  transition: opacity 0.15s ease, background 0.15s ease;
+}
+
+.todo-board .todo-btn-primary {
+  background: var(--astryx-accent);
+  color: var(--astryx-on-accent);
+  border-color: var(--astryx-accent) !important;
+}
+
+.todo-board .todo-btn-primary:hover:not(:disabled) {
+  opacity: 0.9;
+}
+
+.todo-board .todo-btn-secondary {
+  background: transparent;
+  color: var(--astryx-ink);
+  border-color: var(--astryx-line) !important;
+}
+
+.todo-board .todo-btn-secondary:hover {
+  background: var(--astryx-soft);
+}
+
+.todo-board .todo-btn-danger {
+  background: transparent;
+  color: var(--astryx-danger);
+  border-color: var(--astryx-danger) !important;
+}
+
+.todo-board .todo-btn-danger:hover {
+  background: color-mix(in srgb, var(--astryx-danger) 10%, transparent);
+}
+
+/* ---------- 加载与错误 ---------- */
+
+.todo-board .todo-loading {
+  color: var(--astryx-muted);
+}
+
+.todo-board .todo-spinner {
+  border: 2px solid var(--astryx-line);
+  border-top-color: var(--astryx-accent);
+}
+
+.todo-board .todo-error {
+  color: var(--astryx-danger);
+}
+
+.todo-board .todo-error button {
+  border: 1px solid var(--astryx-line);
+  border-radius: var(--astryx-r-element);
+  background: var(--astryx-paper);
+  color: var(--astryx-ink);
+}

@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { todoApi } from '../todo-api';
 import { COLUMNS, groupByStatus, computeReorder, filterTasks, countByStatus, validateTask } from '../todo-state';
 import './TodoBoard.css';
+import './TodoBoardTheme.css';
 
 const PRIORITY_LABELS = { urgent: '紧急', high: '高', medium: '中', low: '低' };
 

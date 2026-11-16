@@ -19,10 +19,22 @@ from backend.workbench import JobManager, JobRequest
 class WorkbenchTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.temporary = tempfile.TemporaryDirectory()
+        self.tools_dir = tempfile.TemporaryDirectory()
+        t = Path(self.tools_dir.name)
+        for name in ["camel", "crewai"]:
+            (t / f".venv-{name}/bin").mkdir(parents=True, exist_ok=True)
+            (t / f".venv-{name}/bin/python").touch(mode=0o755)
+        (t / "examples").mkdir(parents=True, exist_ok=True)
+        (t / "examples/camel_dialogue.py").touch(mode=0o755)
+        (t / "examples/crewai_team.py").touch(mode=0o755)
+        self._tools_patch = patch.object(workbench, "TOOLS", t)
+        self._tools_patch.start()
         self.manager = JobManager(Path(self.temporary.name))
         self.manager.recover()
 
     async def asyncTearDown(self):
+        self._tools_patch.stop()
+        self.tools_dir.cleanup()
         await self.manager.shutdown()
         self.temporary.cleanup()
 

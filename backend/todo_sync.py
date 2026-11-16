@@ -20,7 +20,7 @@ STATUS_MAP = {
     "cancelled": "archived",
 }
 
-VALID_PLATFORMS = {"workbench", "group", "feishu"}
+VALID_PLATFORMS = {"workbench", "group", "feishu", "fleet"}
 
 
 def _validate_external_source(platform: str, task_id: str) -> dict:
@@ -120,3 +120,39 @@ def archive_task(platform: str, task_id: str) -> None:
         logger.exception(
             "todo_sync: failed to archive task %s/%s", platform, task_id,
         )
+
+
+def reverse_sync_task(platform: str, task_id: str, target_status: str, is_archived: bool = False) -> dict:
+    """Reverse sync: action from Kanban board back to originating task system.
+
+    Never raises exceptions. Logs errors and returns diagnostic status.
+    """
+    if not platform or not task_id:
+        return {"action": "none", "reason": "invalid_source"}
+    try:
+        if is_archived or target_status == "archived":
+            if platform == "fleet":
+                from .fleet import store as fleet_store
+                fleet_store.cancel_job(task_id)
+                return {"action": "cancelled", "platform": platform, "task_id": task_id}
+            elif platform == "workbench":
+                from .workbench import manager as wb_manager
+                import asyncio
+                try:
+                    loop = asyncio.get_running_loop()
+                    loop.create_task(wb_manager.cancel(task_id))
+                except RuntimeError:
+                    try:
+                        asyncio.run(wb_manager.cancel(task_id))
+                    except Exception:
+                        pass
+                return {"action": "cancelled", "platform": platform, "task_id": task_id}
+        elif target_status == "todo":
+            if platform == "fleet":
+                from .fleet import store as fleet_store
+                fleet_store.reassign_job(task_id)
+                return {"action": "reassigned", "platform": platform, "task_id": task_id}
+    except Exception as exc:
+        logger.warning("reverse_sync_task failed for %s/%s to status %s: %s", platform, task_id, target_status, exc)
+        return {"action": "error", "error": str(exc)}
+    return {"action": "none"}

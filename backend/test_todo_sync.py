@@ -351,5 +351,43 @@ class TestArchiveTask(unittest.TestCase):
         archive_task("group", "nonexistent")
 
 
+class TestReverseSync(unittest.TestCase):
+    """Test reverse sync from Kanban board updates to task systems."""
+
+    def setUp(self):
+        _reset_board()
+
+    def tearDown(self):
+        _reset_board()
+
+    def test_fleet_reverse_sync_cancel_and_reassign(self):
+        from backend.todo_sync import reverse_sync_task, sync_task
+        with patch("backend.fleet.store.cancel_job") as mock_cancel, \
+             patch("backend.fleet.store.reassign_job") as mock_reassign:
+            res_cancel = reverse_sync_task("fleet", "flt_123", target_status="archived", is_archived=True)
+            self.assertEqual(res_cancel["action"], "cancelled")
+            mock_cancel.assert_called_once_with("flt_123")
+
+            res_reassign = reverse_sync_task("fleet", "flt_123", target_status="todo", is_archived=False)
+            self.assertEqual(res_reassign["action"], "reassigned")
+            mock_reassign.assert_called_once_with("flt_123")
+
+    def test_board_update_triggers_reverse_sync(self):
+        from backend.todo_sync import sync_task
+        sync_task("fleet", "flt_abc", title="Fleet Task", status="running")
+        tasks = tb._load_board()["tasks"]
+        card_id = tasks[0]["id"]
+
+        with patch("backend.todo_sync.reverse_sync_task") as mock_rev:
+            # Change status to todo (e.g. dragging back)
+            tb.update_task(card_id, tb.TaskUpdate(status="todo"))
+            mock_rev.assert_called_with("fleet", "flt_abc", target_status="todo", is_archived=False)
+
+        with patch("backend.todo_sync.reverse_sync_task") as mock_rev:
+            # Soft delete card
+            tb.delete_task(card_id)
+            mock_rev.assert_called_with("fleet", "flt_abc", target_status="todo", is_archived=True)
+
+
 if __name__ == "__main__":
     unittest.main()

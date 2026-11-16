@@ -19,10 +19,11 @@ function isOverdue(dueDate) {
   return due < today;
 }
 
-const SOURCE_LABELS = { feishu: '飞书', workbench: '工作台', group: '协作任务' };
+const SOURCE_LABELS = { feishu: '飞书', workbench: '工作台', group: '协作任务', fleet: 'Fleet 节点' };
 
 function TodoCard({ task, onEdit, onDragStart }) {
   const hasExternalSource = !!task.external_source;
+  const isFleet = hasExternalSource && task.external_source.platform === 'fleet';
   // Prefer the label the source system reported: a workbench job dispatched
   // from Feishu keeps platform "workbench" but must still read 飞书.
   const sourceLabel = hasExternalSource
@@ -31,10 +32,10 @@ function TodoCard({ task, onEdit, onDragStart }) {
 
   return (
     <div
-      className={`todo-card${hasExternalSource ? ' todo-card-synced' : ''}`}
+      className={`todo-card${hasExternalSource ? ' todo-card-synced' : ''}${isFleet ? ' todo-card-fleet' : ''}`}
       data-task-id={task.id}
-      draggable={!hasExternalSource}
-      onDragStart={hasExternalSource ? undefined : (e) => onDragStart(e, task.id)}
+      draggable={true}
+      onDragStart={(e) => onDragStart(e, task.id)}
       onClick={() => onEdit(task)}
     >
       <div className={`todo-card-priority-bar priority-${task.priority}`} />
@@ -274,6 +275,15 @@ export default function TodoBoard() {
     const draggedId = dragIdRef.current;
     if (!draggedId) return;
     dragIdRef.current = null;
+
+    // Guard: confirmation when cancelling an actively running synced task
+    const draggedTask = tasks.find((t) => t.id === draggedId);
+    if (draggedTask?.external_source && columnId === 'archived' && draggedTask.status === 'doing') {
+      if (!window.confirm('该任务正在后台执行中，移动到已归档将取消后台任务，是否确认取消？')) {
+        document.querySelectorAll('.todo-card.dragging').forEach((el) => el.classList.remove('dragging'));
+        return;
+      }
+    }
 
     // Remove dragging class
     document.querySelectorAll('.todo-card.dragging').forEach((el) => el.classList.remove('dragging'));

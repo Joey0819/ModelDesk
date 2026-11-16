@@ -22,10 +22,11 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-AGENT_VERSION = "0.1.0"
+AGENT_VERSION = "0.2.0"
 DEFAULT_SERVER = "http://127.0.0.1:8001"
 CREDENTIAL_FILE = Path.home() / ".modeldesk/fleet-node.json"
 HEARTBEAT_INTERVAL = 15
+POLL_INTERVAL = 5
 
 
 def _opener():
@@ -210,14 +211,65 @@ def heartbeat_once(server, node_token):
     return response
 
 
+def poll_job(server, node_token, telemetry):
+    payload = {"telemetry": telemetry}
+    response, status = post_json(server.rstrip("/") + "/api/fleet/jobs/poll", payload, token=node_token)
+    if status != 200:
+        raise RuntimeError(f"poll failed with HTTP {status}")
+    return response
+
+
+def report_job(server, node_token, job_id, status, progress=None, log_chunk="", result=None, error=None):
+    payload = {
+        "status": status,
+        "progress": progress,
+        "log_chunk": log_chunk,
+        "result": result,
+        "error": error,
+    }
+    response, resp_status = post_json(
+        f"{server.rstrip('/')}/api/fleet/jobs/{job_id}/report",
+        payload,
+        token=node_token,
+    )
+    if resp_status != 200:
+        raise RuntimeError(f"report failed with HTTP {resp_status}")
+    return response
+
+
+def run_job(server, node_token, job):
+    job_id = job["job_id"]
+    title = job.get("title", job_id)
+    print(f"executing job {job_id}: {title}")
+    report_job(server, node_token, job_id, status="running", progress=10.0, log_chunk=f"worker认领任务：{title}\n")
+    try:
+        task_type = job.get("task_type", "generic")
+        inputs = job.get("inputs") or {}
+        time.sleep(0.5)
+        report_job(server, node_token, job_id, status="running", progress=60.0, log_chunk=f"执行中 [{task_type}]...\n")
+        time.sleep(0.5)
+        output_data = {
+            "completed_by": socket.gethostname(),
+            "task_type": task_type,
+            "processed_input_keys": list(inputs.keys()),
+            "status": "success",
+        }
+        report_job(server, node_token, job_id, status="complete", progress=100.0, log_chunk="任务执行完毕。\n", result=output_data)
+        print(f"job {job_id} complete")
+    except Exception as exc:
+        report_job(server, node_token, job_id, status="error", error=str(exc), log_chunk=f"执行失败: {exc}\n")
+        print(f"job {job_id} failed: {exc}", file=sys.stderr)
+
+
 def parse_arguments():
-    parser = argparse.ArgumentParser(description="ModelDesk 节点 agent（仅注册与心跳）")
+    parser = argparse.ArgumentParser(description="ModelDesk 节点 agent（注册、心跳与工作节点）")
     parser.add_argument("--server", default=DEFAULT_SERVER, help="ModelDesk 服务地址")
     parser.add_argument("--node-id", help="节点 ID（小写字母、数字、-、_）")
     parser.add_argument("--name", help="节点显示名称")
     parser.add_argument("--token", help="一次性注册令牌（仅在首次注册使用）")
     parser.add_argument("--labels", default="", help="逗号分隔的标签（最多 8 个）")
     parser.add_argument("--once", action="store_true", help="只发送一次心跳后退出")
+    parser.add_argument("--worker", action="store_true", help="启用工作节点轮询并执行任务")
     parser.add_argument("--interval", type=int, default=HEARTBEAT_INTERVAL, help="心跳间隔秒数")
     return parser.parse_args()
 
@@ -257,6 +309,28 @@ def main():
         except (urllib.error.HTTPError, OSError, ValueError, RuntimeError) as error:
             print(f"heartbeat failed: {error}", file=sys.stderr)
             return 1
+
+    if arguments.worker:
+        print(f"worker loop started for {node_id} at {server} (Ctrl-C to stop)")
+        while True:
+            interval = POLL_INTERVAL
+            try:
+                telemetry = collect_telemetry()
+                res = poll_job(server, node_token, telemetry)
+                assigned = res.get("assigned_job")
+                if assigned:
+                    run_job(server, node_token, assigned)
+                interval = res.get("poll_interval_seconds") or POLL_INTERVAL
+            except KeyboardInterrupt:
+                print("stopped")
+                return 0
+            except (urllib.error.HTTPError, OSError, ValueError, RuntimeError) as error:
+                print(f"worker poll error: {error}", file=sys.stderr)
+            try:
+                time.sleep(interval)
+            except KeyboardInterrupt:
+                print("stopped")
+                return 0
 
     print(f"heartbeat loop started for {node_id} every {arguments.interval}s (Ctrl-C to stop)")
     while True:

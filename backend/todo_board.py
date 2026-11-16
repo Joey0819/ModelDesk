@@ -24,7 +24,7 @@ DATA_DIR = ROOT / "data" / "todo"
 BOARD_FILE = DATA_DIR / "board.json"
 SCHEMA_VERSION = 2
 MAX_ACTIVE_TASKS = 2000
-VALID_EXTERNAL_PLATFORMS = {"workbench", "group", "feishu"}
+VALID_EXTERNAL_PLATFORMS = {"workbench", "group", "feishu", "fleet"}
 
 _lock = threading.RLock()
 _cache: dict | None = None
@@ -474,11 +474,25 @@ def update_task(task_id: str, body: TaskUpdate):
         updates = body.model_dump(exclude_unset=True)
         if not updates:
             return target
+        old_status = target.get("status")
+        old_archived = target.get("archived")
         for key, value in updates.items():
             target[key] = value
         target["updated_at"] = _now_iso()
         new_data = {"schema_version": SCHEMA_VERSION, "tasks": tasks}
         _save_board(new_data)
+
+        ext = target.get("external_source")
+        if ext and isinstance(ext, dict):
+            new_status = target.get("status")
+            new_archived = target.get("archived", False)
+            if new_status != old_status or new_archived != old_archived:
+                try:
+                    from .todo_sync import reverse_sync_task
+                    reverse_sync_task(ext.get("platform"), ext.get("task_id"), target_status=new_status, is_archived=new_archived)
+                except Exception as exc:
+                    logger.warning("reverse_sync_task failed: %s", exc)
+
         return target
 
 
@@ -499,6 +513,15 @@ def delete_task(task_id: str):
         target["updated_at"] = _now_iso()
         new_data = {"schema_version": SCHEMA_VERSION, "tasks": tasks}
         _save_board(new_data)
+
+        ext = target.get("external_source")
+        if ext and isinstance(ext, dict):
+            try:
+                from .todo_sync import reverse_sync_task
+                reverse_sync_task(ext.get("platform"), ext.get("task_id"), target_status=target.get("status"), is_archived=True)
+            except Exception as exc:
+                logger.warning("reverse_sync_task failed on delete: %s", exc)
+
         return target
 
 
@@ -518,10 +541,21 @@ def reorder_tasks(body: ReorderRequest):
         # at once. Rejecting the mix made every drag in a mixed column fail, so
         # positions are assigned across scopes in the order the user saw.
         now = _now_iso()
+        changed_externals = []
         for idx, tid in enumerate(body.ids):
+            old_status = task_map[tid].get("status")
             task_map[tid]["status"] = body.status
             task_map[tid]["position"] = body.position_start + idx
             task_map[tid]["updated_at"] = now
+            ext = task_map[tid].get("external_source")
+            if ext and isinstance(ext, dict) and old_status != body.status:
+                changed_externals.append((ext.get("platform"), ext.get("task_id"), body.status))
         new_data = {"schema_version": SCHEMA_VERSION, "tasks": tasks}
         _save_board(new_data)
+        for platform, task_id, status in changed_externals:
+            try:
+                from .todo_sync import reverse_sync_task
+                reverse_sync_task(platform, task_id, target_status=status)
+            except Exception as exc:
+                logger.warning("reverse_sync_task in reorder failed: %s", exc)
         return {"ok": True, "reordered": len(body.ids)}

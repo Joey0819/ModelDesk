@@ -40,13 +40,48 @@ class Binding(BaseModel):
         return values
 
 
+OWNER_PATTERN = re.compile(r"^ou_[A-Za-z0-9_-]{1,180}$")
+SETUP_COMMAND = re.compile(r"^[/／]modeldesk\s+(setup|confirm)\b", re.IGNORECASE)
+
+
+def parse_setup_command(command):
+    """Parse a gated bootstrap command body into (action, argument, models)."""
+    match = re.match(r"^(setup|confirm)\s+(.+)$", command, re.IGNORECASE | re.DOTALL)
+    if not match:
+        return None
+    action = match[1].lower()
+    argument = match[2].strip()
+    if action == "confirm":
+        code = re.match(r"^(\d{4})$", argument)
+        return ("confirm", code[1], []) if code else ("confirm", "", [])
+    name, models = argument, []
+    separated = re.split(r"\s+with\s+", argument, maxsplit=1, flags=re.IGNORECASE)
+    if len(separated) == 2:
+        name, model_text = separated[0].strip(), separated[1]
+        models = [item.strip() for item in re.split(r"[,，;；]", model_text) if item.strip()]
+        if not models or len(models) > 4 or any(not 1 <= len(item) <= 200 or any(ord(char) < 32 for char in item) for item in models):
+            return ("setup", "", [])
+    name = name.strip()
+    if not name or len(name) > 100 or any(ord(char) < 32 for char in name):
+        return ("setup", "", [])
+    return ("setup", name, models)
+
+
 class ConfigInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
     enabled: bool = False
     app_id: str = Field(default="", max_length=180, pattern=r"^(cli_[A-Za-z0-9_-]+)?$")
     app_secret: SecretStr | None = None
     clear_secret: bool = False
+    owner_sender_ids: list[str] = Field(default_factory=list, max_length=10)
     bindings: list[Binding] = Field(default_factory=list, max_length=30)
+
+    @field_validator("owner_sender_ids")
+    @classmethod
+    def clean_owners(cls, values):
+        if len(set(values)) != len(values) or any(not OWNER_PATTERN.fullmatch(item) for item in values):
+            raise ValueError("管理员 Open ID 无效或重复")
+        return values
 
     @model_validator(mode="after")
     def validate_config(self):
@@ -90,7 +125,7 @@ class FeishuStore:
 
     def public_config(self):
         config = self.config()
-        return {key: copy.deepcopy(config.get(key)) for key in ["enabled", "app_id", "bindings", "updated_at"]} | {"has_app_secret": bool(config.get("app_secret"))}
+        return {key: copy.deepcopy(config.get(key)) for key in ["enabled", "app_id", "owner_sender_ids", "bindings", "updated_at"]} | {"has_app_secret": bool(config.get("app_secret"))}
 
     def save_config(self, request):
         with self.lock:
@@ -122,6 +157,35 @@ class FeishuStore:
                     os.unlink(temporary)
             return self.public_config()
 
+    def save_binding(self, config, binding):
+        """Append/update one binding without touching credentials or owners.
+
+        Rebuilds ConfigInput from the stored private config so the write path
+        keeps every existing validation (chat uniqueness, room references).
+        """
+        with self.lock:
+            current = self.config()
+            if current["revision"] != config["revision"] or current["app_id"] != config["app_id"]:
+                raise HTTPException(409, "飞书配置在开通期间已变更，请重新执行")
+            bindings = [item for item in current["bindings"] if item["chat_id"] != binding["chat_id"]] + [binding]
+            request = ConfigInput(enabled=current["enabled"], app_id=current["app_id"],
+                                   owner_sender_ids=current.get("owner_sender_ids") or [], bindings=bindings)
+            return self.save_config(request)
+
+    def remove_binding(self, config, chat_id):
+        """Drop one chat binding; projects, teams and rooms are untouched."""
+        with self.lock:
+            current = self.config()
+            if current["revision"] != config["revision"] or current["app_id"] != config["app_id"]:
+                raise HTTPException(409, "飞书配置在解绑期间已变更，请重试")
+            bindings = [item for item in current["bindings"] if item["chat_id"] != chat_id]
+            if len(bindings) == len(current["bindings"]):
+                return False
+            request = ConfigInput(enabled=current["enabled"], app_id=current["app_id"],
+                                   owner_sender_ids=current.get("owner_sender_ids") or [], bindings=bindings)
+            self.save_config(request)
+            return True
+
     @contextmanager
     def db(self):
         self.prepare()
@@ -137,6 +201,10 @@ class FeishuStore:
                 chat_id TEXT NOT NULL, state TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, data TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS outgoing (id TEXT PRIMARY KEY, event_id TEXT NOT NULL, state TEXT NOT NULL, data TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS observed (id TEXT PRIMARY KEY, app_id TEXT NOT NULL, data TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS plans (id TEXT PRIMARY KEY, app_id TEXT NOT NULL, chat_id TEXT NOT NULL, sender_id TEXT NOT NULL,
+                code TEXT NOT NULL, payload TEXT NOT NULL, created_at TEXT NOT NULL, expires_at TEXT NOT NULL, used_at TEXT);
+            CREATE INDEX IF NOT EXISTS plans_chat ON plans(app_id, chat_id);
+            CREATE INDEX IF NOT EXISTS plans_rate ON plans(app_id, chat_id, created_at);
         """)
         try:
             with db:
@@ -169,9 +237,28 @@ class FeishuStore:
             with self.db() as db:
                 db.execute("INSERT OR REPLACE INTO observed VALUES (?, ?, ?)", (config["app_id"] + ":" + chat_id, config["app_id"], json.dumps(observed)))
         binding = next((item for item in config["bindings"] if item["chat_id"] == chat_id), None)
+        # Self-service bootstrap gate: an unbound chat is only admitted as a
+        # command when it is a private chat, the sender is a configured owner,
+        # and the text is exactly a setup/confirm directive. Everything else
+        # from an unbound chat keeps today's behaviour: diagnostics only, the
+        # body is never persisted. This is the sole authorization source, so
+        # someone who adds the bot to a group cannot self-authorize.
+        owners = config.get("owner_sender_ids") or []
+        gated = bool(owners) and sender in owners and event.get("chat_type") == "p2p"
+        text = event.get("text") if not binding else None
         if not binding:
-            observe('unbound', '消息已收到；此会话尚未绑定项目群，没有派发任务。')
-            return None
+            if not gated:
+                observe('unbound', '消息已收到；此会话尚未绑定项目群，没有派发任务。')
+                return None
+            if event.get("message_type") not in {"text", "post"} or not isinstance(text, str):
+                observe('unsupported_content', '消息已收到；请使用文字或文字富文本发送 /modeldesk 指令。')
+                return None
+            text = re.sub(r"<at\b[^>]*>.*?</at>", "", text).strip()
+            if not SETUP_COMMAND.match(text):
+                observe('unbound', '消息已收到；此会话尚未绑定项目群，没有派发任务。管理员可在私聊中使用 /modeldesk setup 自助开通。')
+                return None
+            observe('bootstrap_received', '已收到管理员的开通或确认指令；处理结果见最近收发记录。')
+            return self._commit_event(config, event, chat_id, sender, message_id, text, None, stamp, "bootstrap")
         if binding["allowed_sender_ids"] and sender not in binding["allowed_sender_ids"]:
             observe('sender_not_allowed', '消息已收到；发起人不在此会话的允许名单中，没有派发任务。')
             return None
@@ -185,16 +272,24 @@ class FeishuStore:
         if not prefix and not direct:
             observe('not_command', '消息已收到；未识别到 /modeldesk 指令，没有派发任务。请使用 /modeldesk task 任务内容。')
             return None
-        if prefix:
-            command = text[prefix.end():].strip()
-        elif not text or text.startswith(('/', '／')) or text.casefold() in {'你好', '您好', 'hi', 'hello', '帮助', 'help'}:
-            command = ''  # A greeting or unknown slash command shows help, never runs a task.
-        elif text.casefold() in {'status', '状态'}:
-            command = 'status'
-        else:
-            continuation = re.match(r'^(?:继续|continue)[：:\s]+(.+)$', text, flags=re.IGNORECASE | re.DOTALL)
-            command = 'continue ' + continuation[1] if continuation else 'task ' + text
         observe('command_received', '已识别任务或控制消息；执行与回传情况见最近收发记录。')
+        return self._commit_event(config, event, chat_id, sender, message_id, text, binding, stamp, "command" if prefix else "natural_language")
+
+    def _commit_event(self, config, event, chat_id, sender, message_id, text, binding, stamp, input_mode):
+        # A deterministic message key makes Feishu redelivery idempotent: the
+        # same message_id can only ever create one durable event.
+        command = re.sub(r"^[/／]modeldesk\s+", "", text, count=1, flags=re.IGNORECASE).strip() if input_mode == "bootstrap" else None
+        prefix = re.match(r'^[/／]modeldesk(?:\s+|$)', text, flags=re.IGNORECASE) if input_mode != "bootstrap" else None
+        if command is None:
+            if prefix:
+                command = text[prefix.end():].strip()
+            elif not text or text.startswith(('/', '／')) or text.casefold() in {'你好', '您好', 'hi', 'hello', '帮助', 'help'}:
+                command = ''  # A greeting or unknown slash command shows help, never runs a task.
+            elif text.casefold() in {'status', '状态'}:
+                command = 'status'
+            else:
+                continuation = re.match(r'^(?:继续|continue)[：:\s]+(.+)$', text, flags=re.IGNORECASE | re.DOTALL)
+                command = 'continue ' + continuation[1] if continuation else 'task ' + text
         identifier = str(uuid.uuid5(uuid.NAMESPACE_URL, "modeldesk:feishu:" + config["app_id"] + ":" + message_id))
         with self.db() as db:
             db.execute("BEGIN IMMEDIATE")
@@ -208,8 +303,8 @@ class FeishuStore:
                 reason = '此指令含暂不支持的消息内容，未派发任务。请发送纯文字或文字富文本；图片和附件请先添加到 ModelDesk 项目。'
             record = {"id": identifier, "app_id": config["app_id"], "message_id": message_id, "chat_id": chat_id,
                       "sender_id": sender, "command": command[:12000], "binding": binding, "config_revision": config["revision"],
-                      "input_mode": "command" if prefix else "natural_language",
-                      "job_id": str(uuid.uuid5(uuid.NAMESPACE_URL, "modeldesk:feishu-job:" + identifier)),
+                      "input_mode": input_mode,
+                      "job_id": None if input_mode == "bootstrap" else str(uuid.uuid5(uuid.NAMESPACE_URL, "modeldesk:feishu-job:" + identifier)),
                       "state": "rejected" if reason else "received", "reason": reason, "created_at": stamp, "updated_at": stamp,
                       "notifications": []}
             db.execute("INSERT INTO events VALUES (?, ?, ?, ?, ?, ?, ?, ?)", (identifier, config["app_id"], message_id, chat_id,
@@ -259,5 +354,10 @@ class FeishuStore:
 
     def current(self, record):
         config = self.config()
-        return (config["enabled"] and config["app_id"] == record["app_id"] and config["revision"] == record["config_revision"]
-                and record["binding"] in config["bindings"])
+        if not config["enabled"] or config["app_id"] != record["app_id"] or config["revision"] != record["config_revision"]:
+            return False
+        if record.get("input_mode") == "bootstrap":
+            # Bootstrap events carry no binding; their authority is the owner
+            # allowlist at ingest time plus this revision check.
+            return record["sender_id"] in (config.get("owner_sender_ids") or [])
+        return record["binding"] in config["bindings"]

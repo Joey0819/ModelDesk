@@ -9,10 +9,10 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { FEISHU_SETUP_URL, feishuBinding, feishuBody, feishuConnectionStatus, feishuDraft, feishuIssue, feishuSenderIds, safeFeishuError } from '../src/feishu-state.js';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const compiled = buildSync({ stdin: { contents: 'export {FeishuConfigurationForm,FeishuConnectionOverview,FeishuRecentReceipts} from "./src/components/FeishuConnection.jsx"; export {feishuApi} from "./src/feishu-api.js";', resolveDir: root }, bundle: true, platform: 'node', format: 'cjs', jsx: 'automatic', write: false, external: ['react', 'react/jsx-runtime'], define: { 'import.meta.env': '{}' }, loader: { '.css': 'empty' } });
+const compiled = buildSync({ stdin: { contents: 'export {FeishuConfigurationForm,FeishuConnectionOverview,FeishuRecentReceipts} from "./src/components/FeishuConnection.jsx"; export {feishuApi} from "./src/feishu-api.js"; export {machineInfo} from "./src/machine.js";', resolveDir: root }, bundle: true, platform: 'node', format: 'cjs', jsx: 'automatic', write: false, external: ['react', 'react/jsx-runtime'], define: { 'import.meta.env': '{}' }, loader: { '.css': 'empty' } });
 const filename = path.join(root, 'tests/feishu-virtual.cjs');
 const module = new Module(filename); module.paths = Module._nodeModulePaths(path.dirname(filename)); module._compile(compiled.outputFiles[0].text, filename);
-const { FeishuConfigurationForm, FeishuConnectionOverview, FeishuRecentReceipts, feishuApi } = module.exports;
+const { FeishuConfigurationForm, FeishuConnectionOverview, FeishuRecentReceipts, feishuApi, machineInfo } = module.exports;
 const binding = { chat_id: 'oc_allowed', name: 'Work group', project_id: 'project-a', room_id: 'room-a', allowed_sender_ids: ['ou_owner'], allow_native: false, natural_language_tasks: false };
 const config = { app_id: 'cli_myapp', enabled: true, has_app_secret: true, bindings: [binding] };
 
@@ -22,7 +22,7 @@ test('Feishu drafts never restore credentials or arbitrary server fields and bod
   assert.equal('token' in draft, false); assert.equal('hidden' in draft.bindings[0], false);
   assert.equal(draft.bindings[0].allow_native, false);
   const body = feishuBody({ ...draft, arbitrary_url: 'https://attacker.invalid', bindings: [{ ...draft.bindings[0], sender_text: 'not sent' }] });
-  assert.deepEqual(body, { enabled: true, app_id: 'cli_myapp', bindings: [binding] });
+  assert.deepEqual(body, { enabled: true, app_id: 'cli_myapp', owner_sender_ids: [], bindings: [binding] });
   assert.equal('app_secret' in body, false); assert.equal('has_app_secret' in body, false); assert.equal('original_app_id' in body, false);
   assert.equal(feishuBody({ ...draft, app_secret: ' replacement ' }).app_secret, 'replacement');
   assert.deepEqual(feishuSenderIds('ou_a\nou_b,ou_a， ou_c'), ['ou_a', 'ou_b', 'ou_c']);
@@ -49,7 +49,7 @@ test('Feishu actual configuration form uses password-only entry and explicit cha
   assert.match(html, /aria-label="飞书 App Secret" type="password"/); assert.match(html, /留空保留/);
   assert.doesNotMatch(html, /never-return-this-secret|localStorage/);
   assert.match(html, /允许的飞书会话/); assert.match(html, /oc_allowed/); assert.match(html, /My project/); assert.match(html, /room-a/);
-  assert.match(html, /允许的用户 Open ID/); assert.match(html, /允许此会话触发 Mac 原生 Agent/);
+  assert.match(html, /允许的用户 Open ID/); assert.match(html, /允许此会话触发这台电脑原生 Agent/);
   assert.match(html, /<input type="checkbox"\/><span>允许此会话触发/); assert.match(html, /保存飞书设置/);
 });
 
@@ -68,8 +68,27 @@ test('actual Feishu status view distinguishes saved credentials from real connec
   assert.match(unbound, /已连接，但尚未允许任何聊天/); assert.match(unbound, /未绑定会话不会执行指令/);
   assert.match(fresh, /不代表任务已经完成/); assert.match(fresh, /官方长连接配置指南/);
   assert.ok(fresh.includes(FEISHU_SETUP_URL));
-  const remote = render({ remote: true }); assert.match(remote, /请在 Mac 设置/); assert.doesNotMatch(remote, /验证已保存的应用凭据/);
+  const remote = render({ remote: true }); assert.match(remote, /请在这台电脑设置/); assert.doesNotMatch(remote, /验证已保存的应用凭据/);
   assert.equal(safeFeishuError('failed for exact-secret', 'exact-secret'), 'failed for [密钥已隐藏]');
+});
+
+// A macOS host reports itself through status.platform; the Feishu copy must
+// follow it (Mac labels) instead of the neutral fallback. The neutral branch
+// stays covered by the assertions above; both host shapes are pinned here.
+test('Feishu host copy follows the platform report on macOS and stays neutral without one', () => {
+  const macStatus = { platform: { system: 'Darwin', is_macos: true, is_linux: false, is_windows: false, has_native_muse_bridge: true, machine_label: '\u8fd9\u53f0 Mac', machine_short: 'Mac' } };
+  const mac = machineInfo(macStatus);
+  assert.equal(mac.label, '\u8fd9\u53f0 Mac'); assert.equal(mac.short, 'Mac'); assert.equal(mac.isMacos, true);
+  const form = renderToStaticMarkup(React.createElement(FeishuConfigurationForm, { draft: feishuDraft(config), machine: mac, onChange() {} }));
+  assert.match(form, /\u5bc6\u94a5\u4ec5\u4fdd\u5b58\u5728\u8fd9\u53f0 Mac\u7684\u670d\u52a1\u4e2d/);
+  assert.match(form, /\u5141\u8bb8\u6b64\u4f1a\u8bdd\u89e6\u53d1Mac\u539f\u751f Agent\uff08\u5982 Muse\uff09/);
+  assert.doesNotMatch(form, /\u8fd9\u53f0\u7535\u8111/);
+  const overview = renderToStaticMarkup(React.createElement(FeishuConnectionOverview, { connection: { config, status: { state: 'connected' } }, machine: mac, onRefresh() {}, onTest() {}, onDiscover() {} }));
+  assert.match(overview, /ModelDesk \u5728\u8fd9\u53f0 Mac\u6267\u884c/);
+  assert.match(overview, /Mac\u4e0e ModelDesk \u670d\u52a1\u9700\u8981\u4fdd\u6301\u8fd0\u884c\u5e76\u8054\u7f51/);
+  const remoteOverview = renderToStaticMarkup(React.createElement(FeishuConnectionOverview, { connection: { config: {}, status: { state: 'not_configured' } }, remote: true, machine: mac, onRefresh() {}, onTest() {}, onDiscover() {} }));
+  assert.match(remoteOverview, /\u8bf7\u5728Mac\u8bbe\u7f6e/);
+  assert.doesNotMatch(remoteOverview, /\u8bf7\u5728\u8fd9\u53f0\u7535\u8111\u8bbe\u7f6e/);
 });
 
 test('Feishu API uses fixed local endpoints and transmits changed credentials only on explicit save', async () => {
@@ -106,4 +125,38 @@ test('Feishu receipt renderer exposes bounded actual delivery failures separatel
   const empty = renderToStaticMarkup(React.createElement(FeishuRecentReceipts));
   assert.match(empty, /暂无指令回执/); assert.doesNotMatch(empty, /回传已确认/);
   for (const [state, label] of [['attention', '任务有待处理事项'], ['rejected', '指令已拒绝']]) assert.match(renderToStaticMarkup(React.createElement(FeishuRecentReceipts, { recent: [{ id: state, state, reason: 'Actual reason' }] })), new RegExp(label));
+});
+
+test('Feishu owner allowlist is normalized, validated and only enters the body when configured', () => {
+  const draft = feishuDraft({ ...config, owner_sender_ids: ['ou_owner1', 'ou_owner1', 'ou_owner2'] });
+  assert.deepEqual(draft.owner_sender_ids, ['ou_owner1', 'ou_owner2']);
+  assert.equal(draft.owner_text, undefined);
+  assert.deepEqual(feishuDraft({ ...config, owner_sender_ids: 'not-a-list' }).owner_sender_ids, []);
+  const body = feishuBody({ ...draft, owner_text: 'never-sent' });
+  assert.deepEqual(body.owner_sender_ids, ['ou_owner1', 'ou_owner2']);
+  const parsed = feishuBody({ ...draft, owner_sender_ids: feishuSenderIds('ou_owner3\nou_owner4,ou_owner3') });
+  assert.deepEqual(parsed.owner_sender_ids, ['ou_owner3', 'ou_owner4']);
+  assert.equal(feishuBody(feishuDraft(config)).owner_sender_ids.length, 0);
+});
+
+test('Feishu owner validation rejects malformed ids and enforces the cap of ten', () => {
+  const base = feishuDraft(config);
+  assert.equal(feishuIssue({ ...base, owner_sender_ids: ['ou_ok'] }), '');
+  assert.match(feishuIssue({ ...base, owner_sender_ids: ['not_ou'] }), /管理员 Open ID/);
+  assert.match(feishuIssue({ ...base, owner_sender_ids: ['ou_ok', 'cli_bad'] }), /管理员 Open ID/);
+  assert.match(feishuIssue({ ...base, owner_sender_ids: Array.from({ length: 11 }, (_, i) => `ou_cap${i}`) }), /最多 10 个/);
+  assert.equal(feishuIssue({ ...base, owner_sender_ids: Array.from({ length: 10 }, (_, i) => `ou_cap${i}`) }), '');
+});
+
+test('Feishu configuration form exposes the owner allowlist with p2p-only self-service wording', () => {
+  const draft = feishuDraft({ ...config, owner_sender_ids: ['ou_owner1'] });
+  const html = renderToStaticMarkup(React.createElement(FeishuConfigurationForm, { draft, projects: [{ id: 'project-a', name: 'My project' }], chats: [], onChange() {}, onSave() {} }));
+  assert.match(html, /aria-label="飞书自助开通管理员 Open ID"/);
+  assert.match(html, /ou_owner1/);
+  assert.match(html, /\/modeldesk setup/);
+  assert.match(html, /私聊/);
+  assert.match(html, /留空则完全关闭/);
+  assert.match(html, /最多 10 个/);
+  const noOwners = renderToStaticMarkup(React.createElement(FeishuConfigurationForm, { draft: feishuDraft(config), projects: [], chats: [], onChange() {}, onSave() {} }));
+  assert.match(noOwners, /留空则完全关闭飞书内自助开通/);
 });

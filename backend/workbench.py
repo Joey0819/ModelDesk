@@ -1156,6 +1156,7 @@ async def status():
     gateway_by_id = {item["id"]: item for item in entries}
     models = [api_by_id.get(model) or {**gateway_by_id[model], "verified": model in verified_models, "last_success": evidence.get(model), "verification_scope": "recent_text_call" if model in verified_models else "not_recently_verified"} for model in catalog]
     from .media_providers import capabilities
+    from .platform_support import get_platform_info
     # Reuse the exact fetched catalogs; reading stored image receipts does not
     # make another provider request or promote a text test to image evidence.
     image_evidence = {item["id"]: item for item in await capabilities(catalog=entries, connections=saved_connections)}
@@ -1163,7 +1164,7 @@ async def status():
         if model.get("capability") == "image":
             receipt = image_evidence.get(model["id"], {})
             model.update(verified=bool(receipt.get("verified")), verification_scope="stored_image" if receipt.get("verified") else "not_verified_image", last_test_at=receipt.get("checked_at"))
-    return {"checked_at": now(), "gateway": gateway, "providers": providers, "models": models, "tools": tools, **({"connections_error": connections_error} if connections_error else {})}
+    return {"checked_at": now(), "gateway": gateway, "providers": providers, "models": models, "tools": tools, "platform": get_platform_info(), **({"connections_error": connections_error} if connections_error else {})}
 
 
 @router.get("/jobs")

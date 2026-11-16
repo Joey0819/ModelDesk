@@ -158,6 +158,26 @@ class RoomStore:
         self.save(item)
         return {**copy.deepcopy(item), "team_revision": team_revision(snapshot)}
 
+    def hard_delete(self, identifier, project_id=None):
+        """Remove a room that has never carried any task; 409 otherwise."""
+        with self.lock:
+            room = self.get(identifier, project_id)
+            from .group_tasks import manager as tasks
+            from .muse_bridge import manager as muse
+            jobs = [job for job in workbench.manager.jobs.values()
+                    if job.get("group_room_id") == room["id"] and job.get("conversation_id") == room["id"]]
+            agent_tasks = [task for task in tasks.records.values()
+                           if task.get("room_id") == room["id"] and task.get("project_id") == room["project_id"]]
+            muse_tasks = [task for task in muse.records.values()
+                          if task.get("room_id") == room["id"] and task.get("project_id") == room["project_id"]]
+            if jobs or agent_tasks or muse_tasks:
+                raise HTTPException(409, "该群已有历史任务，不能删除")
+            path = self.atomic.directory / (checked_id(identifier) + ".json")
+            if path.is_symlink():
+                raise HTTPException(409, "项目群保存路径无效")
+            path.unlink()
+            return {"removed": True}
+
 
 store = RoomStore()
 
@@ -277,6 +297,21 @@ async def list_rooms(project_id: str | None = None):
 async def create_room(request: RoomRequest):
     from .harness.manager import manager as harness
     return await asyncio.to_thread(store.create, request, harness.teams)
+
+
+def room_delete_guard(request: Request):
+    """Deleting a room is a destructive local-admin action, unlike reading."""
+    from .remote_access import require_local
+    require_local(request)
+    if request.headers.get("x-modeldesk-remote"):
+        from .platform_support import machine_label
+        raise HTTPException(403, f"项目群删除只能在{machine_label()}的 ModelDesk 中操作")
+
+
+@router.delete("/{identifier}")
+async def delete_room(identifier: str, request: Request, project_id: str | None = None):
+    room_delete_guard(request)
+    return await asyncio.to_thread(store.hard_delete, identifier, project_id)
 
 
 @router.get("/{identifier}")

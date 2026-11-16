@@ -26,6 +26,25 @@ def get_platform_info() -> dict:
         "has_native_muse_bridge": is_macos,
         "tailscale_path": resolve_tailscale_path(),
         "machine_label": machine_label(),
+        "machine_short": machine_short(),
+    }
+
+
+def public_platform_info() -> dict:
+    """Platform metadata safe for surfaces reachable before authentication.
+
+    ``get_platform_info`` also reports where the Tailscale binary lives. That is
+    a local filesystem path: useful on a loopback admin surface, meaningless to
+    a remote client and not something an unpaired caller should learn.
+    """
+    return {
+        "system": _platform,
+        "is_macos": is_macos,
+        "is_linux": is_linux,
+        "is_windows": is_windows,
+        "has_native_muse_bridge": is_macos,
+        "machine_label": machine_label(),
+        "machine_short": machine_short(),
     }
 
 

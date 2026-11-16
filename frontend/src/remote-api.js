@@ -7,6 +7,7 @@ async function request(path, method = 'GET', body, gateway = false) {
   return response.json();
 }
 export const remoteApi = {
+  info: () => request('/remote/info', 'GET', undefined, true),
   status: () => request('/api/remote/status'),
   start: () => request('/api/remote/start', 'POST', {}),
   stop: () => request('/api/remote/stop', 'POST', {}),

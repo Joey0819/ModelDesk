@@ -27,15 +27,44 @@ class TestR1PlatformCopy(unittest.TestCase):
     """R1: detect Mac/macOS in user-facing string literals with ratchet baseline."""
 
     def test_real_backend_hit_detected(self):
-        """Real文案『模型连接只能在这台 Mac 的 ModelDesk 中管理』must be caught."""
-        # This string exists in backend/model_connections.py:45
+        """Real文案『模型连接只能在这台 Mac 的 ModelDesk 中管理』must be caught.
+
+        The sentence is kept here as a fixture rather than read back from
+        model_connections.py: that file has since been migrated to
+        machine_label(), and a rule test that only passes while the bug is still
+        in the tree fails the moment somebody fixes the bug. The historical
+        literal is the evidence that matters, so it lives in the test.
+        """
+        historical = 'raise HTTPException(403, "模型连接只能在这台 Mac 的 ModelDesk 中管理")'
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".py",
+            dir=str(lint_rules.REPO_ROOT / "backend"), delete=False,
+        ) as f:
+            f.write(historical + "\n")
+            tmpname = f.name
+        try:
+            literals = lint_rules._extract_py_string_literals(Path(tmpname))
+            mac_strings = [t for _, t in literals if lint_rules.R1_PATTERN.search(t)]
+            found = any("模型连接只能在这台 Mac 的 ModelDesk 中管理" in s for s in mac_strings)
+            self.assertTrue(
+                found,
+                "R1 failed to flag the real historical sentence; "
+                f"extracted literals were {mac_strings}",
+            )
+        finally:
+            os.unlink(tmpname)
+
+    def test_migrated_production_copy_uses_machine_label(self):
+        """The sentence above is historical: production code must not carry it."""
         filepath = lint_rules.REPO_ROOT / "backend" / "model_connections.py"
         if not filepath.exists():
             self.skipTest("model_connections.py not present")
-        literals = lint_rules._extract_py_string_literals(filepath)
-        mac_strings = [t for _, t in literals if lint_rules.R1_PATTERN.search(t)]
-        found = any("模型连接只能在这台 Mac 的 ModelDesk 中管理" in s for s in mac_strings)
-        self.assertTrue(found, "Expected to find Mac-specific string in model_connections.py")
+        source = filepath.read_text(encoding="utf-8")
+        self.assertNotIn(
+            "模型连接只能在这台 Mac 的 ModelDesk 中管理",
+            source,
+            "model_connections.py regressed to hardcoded Mac copy; use machine_label()",
+        )
 
     def test_neutral_text_not_flagged(self):
         """Neutral text『运行 ModelDesk 的这台电脑』should NOT match R1 pattern."""
@@ -67,14 +96,23 @@ class TestR1PlatformCopy(unittest.TestCase):
         # Build a baseline that covers ALL current real hits plus one phantom entry
         full_baseline = {}
         # Scan real code to build complete baseline
+        # Build the baseline the same way check_r1 decides what is a hit, so
+        # exempted capability statements are not mistaken for shrink candidates.
         for relpath in lint_rules._walk_backend_py(exclude_tests=True, exclude_platform_support=True):
+            if relpath in lint_rules.R1_EXEMPT_FILES:
+                continue
             filepath = lint_rules.REPO_ROOT / relpath
             literals = lint_rules._extract_py_string_literals(filepath)
             for _, text in literals:
-                if lint_rules.R1_PATTERN.search(text):
-                    fp = text.strip()
-                    full_baseline[("R1", relpath, fp)] = {"rule": "R1"}
+                if not lint_rules.R1_PATTERN.search(text):
+                    continue
+                if lint_rules.R1_EXCLUDE_PATTERN.search(text):
+                    continue
+                fp = text.strip()
+                full_baseline[("R1", relpath, fp)] = {"rule": "R1"}
         for relpath in lint_rules._walk_frontend_src(exclude_tests=True):
+            if relpath in lint_rules.R1_EXEMPT_FILES:
+                continue
             filepath = lint_rules.REPO_ROOT / relpath
             try:
                 with open(filepath, "r", encoding="utf-8") as f:
@@ -82,17 +120,24 @@ class TestR1PlatformCopy(unittest.TestCase):
             except (UnicodeDecodeError, OSError):
                 continue
             stripped = lint_rules._strip_js_comments(source)
+            source_lines = stripped.split("\n")
             strings = lint_rules._extract_js_strings(stripped)
-            for _, text in strings:
-                if lint_rules.R1_PATTERN.search(text):
-                    fp = text.strip()
-                    full_baseline[("R1", relpath, fp)] = {"rule": "R1"}
+            for lineno, text in strings:
+                if not lint_rules.R1_PATTERN.search(text):
+                    continue
+                if lint_rules.R1_EXCLUDE_PATTERN.search(text):
+                    continue
+                if lint_rules._r1_guarded(source_lines, lineno):
+                    continue
+                fp = text.strip()
+                full_baseline[("R1", relpath, fp)] = {"rule": "R1"}
         # Add phantom entry that doesn't exist in code
         full_baseline[("R1", "backend/nonexistent_removed.py", "旧的 Mac 文案")] = {"rule": "R1"}
         viols, shrink = lint_rules.check_r1(full_baseline)
         self.assertEqual(len(viols), 0, f"Shrink should not produce violations, got: {viols[:3]}")
         self.assertGreater(len(shrink), 0, "Should report at least one shrink entry")
-        self.assertIn("nonexistent_removed.py", shrink[0], "Shrink should name the file")
+        named = [s for s in shrink if "nonexistent_removed.py" in s]
+        self.assertTrue(named, f"Shrink should name the phantom file, got: {shrink[:3]}")
 
     def test_new_violation_without_baseline(self):
         """New Mac string NOT in baseline must be flagged as violation."""

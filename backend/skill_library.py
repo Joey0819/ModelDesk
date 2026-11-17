@@ -51,12 +51,15 @@ def parse_frontmatter(text):
     Only triggers when text starts exactly with '---\\n'. Supports single-line 'key: value' pairs.
     Values wrapped in single/double quotes are unquoted; literal true/false become booleans.
     On any parse error or missing end delimiter, degrades safely: entire text as body, empty meta.
-    Returns (meta_dict, body_text). Raises HTTPException(422) if body is empty after stripping.
+    Returns (meta_dict, body_text, frontmatter_raw). Always a 3-tuple: the early
+    returns hand back an empty ``frontmatter_raw`` instead of a shorter shape, so
+    callers unpack once and never index conditionally.
+    Raises HTTPException(422) if body is empty after stripping.
     """
     if not text.startswith('---\n'):
         if not text.strip():
             raise HTTPException(422, '技能指令为空')
-        return {}, text
+        return {}, text, ''
     # Find closing delimiter: next line that is exactly '---' or '...'
     lines = text.split('\n')
     end_idx = None
@@ -68,7 +71,7 @@ def parse_frontmatter(text):
         # No closing delimiter found: degrade to treating entire text as body
         if not text.strip():
             raise HTTPException(422, '技能指令为空')
-        return {}, text
+        return {}, text, ''
     # Parse frontmatter block (lines between opening and closing delimiters)
     meta = {}
     fm_block_lines = lines[1:end_idx]

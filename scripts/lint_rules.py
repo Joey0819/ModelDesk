@@ -21,9 +21,30 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parent
 BASELINE_PATH = SCRIPT_DIR / "rules-baseline.json"
 CLAUDE_MD_PATH = REPO_ROOT / "CLAUDE.md"
-TODAY = date(2026, 11, 17)
+TODAY = date.today()
 
+# R1 exists for one specific bug: user-facing copy that asserts the *current
+# host* is a Mac without consulting the platform. Verified against the three
+# historical commits (9b12b67, e85bcba, 8be0ee6) — every line they had to fix
+# matches R1_PATTERN. Not every mention of Mac is that bug: naming macOS as a
+# capability ("the Muse bridge only works on macOS, Linux is unsupported") is
+# accurate on any host, and a platform id -> label map ("darwin" -> "macOS")
+# is the source of truth rather than an assumption, so both are exempt below.
 R1_PATTERN = re.compile(r"(?<![A-Za-z])Mac(?![a-z])|(?<![A-Za-z])macOS(?![A-Za-z])")
+R1_EXCLUDE_PATTERN = re.compile(r"仅在|只在|不支持|不是\s*Mac|非\s*macOS")
+R1_GUARD_PATTERN = re.compile(r"is_macos|machine_label|isMacos|machine\.|platform")
+R1_EXEMPT_FILES = {
+    "frontend/src/machine.js",        # the label table is the source of truth
+    "frontend/src/fleet-state.js",    # platform id -> display name map
+    "backend/platform_support.py",    # defines machine_label() itself
+}
+
+
+def _r1_guarded(source_lines, lineno):
+    """A line that already consults the platform is allowed to name it."""
+    if not source_lines or not (1 <= lineno <= len(source_lines)):
+        return False
+    return bool(R1_GUARD_PATTERN.search(source_lines[lineno - 1]))
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -233,19 +254,22 @@ def check_r1(baseline=None):
 
     # Backend scan
     for relpath in _walk_backend_py(exclude_tests=True, exclude_platform_support=True):
+        if relpath in R1_EXEMPT_FILES:
+            continue
         filepath = REPO_ROOT / relpath
         literals = _extract_py_string_literals(filepath)
         for lineno, text in literals:
-            if R1_PATTERN.search(text):
-                fp = text.strip()
-                key = ("R1", relpath, fp)
-                current_hits[(relpath, fp)] = lineno
-                if key not in baseline:
-                    violations.append(
-                        f"R1 {relpath}:{lineno} — "
-                        f"字符串字面量含平台特定文案「{fp[:60]}」；"
-                        f"修复：改用 backend/platform_support.py 的 machine_label()"
-                    )
+            if not R1_PATTERN.search(text) or R1_EXCLUDE_PATTERN.search(text):
+                continue
+            fp = text.strip()
+            key = ("R1", relpath, fp)
+            current_hits[(relpath, fp)] = lineno
+            if key not in baseline:
+                violations.append(
+                    f"R1 {relpath}:{lineno} — "
+                    f"文案断言当前主机是 Mac「{fp[:60]}」；"
+                    f"修复：改用 backend/platform_support.py 的 machine_label()"
+                )
 
     # Frontend scan
     for relpath in _walk_frontend_src(exclude_tests=True):
@@ -256,18 +280,22 @@ def check_r1(baseline=None):
         except (UnicodeDecodeError, OSError):
             continue
         stripped = _strip_js_comments(source)
+        source_lines = stripped.split("\n")
         strings = _extract_js_strings(stripped)
         for lineno, text in strings:
-            if R1_PATTERN.search(text):
-                fp = text.strip()
-                key = ("R1", relpath, fp)
-                current_hits[(relpath, fp)] = lineno
-                if key not in baseline:
-                    violations.append(
-                        f"R1 {relpath}:{lineno} — "
-                        f"字符串字面量含平台特定文案「{fp[:60]}」；"
-                        f"修复：使用中性文案『运行 ModelDesk 的这台电脑』"
-                    )
+            if not R1_PATTERN.search(text) or R1_EXCLUDE_PATTERN.search(text):
+                continue
+            if relpath in R1_EXEMPT_FILES or _r1_guarded(source_lines, lineno):
+                continue
+            fp = text.strip()
+            key = ("R1", relpath, fp)
+            current_hits[(relpath, fp)] = lineno
+            if key not in baseline:
+                violations.append(
+                    f"R1 {relpath}:{lineno} — "
+                    f"文案断言当前主机是 Mac「{fp[:60]}」；"
+                    f"修复：用 machineInfo() 的 label，或改成中性文案『运行 ModelDesk 的这台电脑』"
+                )
 
     # Detect shrink: baseline entries that no longer exist in code
     shrink = []
@@ -609,15 +637,21 @@ def main():
             viols = checker()
             all_violations.extend(viols)
 
-    # Count R1 hits (baseline matches)
+    # Count R1 hits the same way check_r1 does — raw pattern matches minus the
+    # documented exemptions. Counting raw matches here reported 18 while only 6
+    # were actionable, which reads like missing violations that do not exist.
     r1_current_hits = 0
     for relpath_info in _walk_backend_py(exclude_tests=True, exclude_platform_support=True):
+        if relpath_info in R1_EXEMPT_FILES:
+            continue
         filepath = REPO_ROOT / relpath_info
         literals = _extract_py_string_literals(filepath)
         for _, text in literals:
-            if R1_PATTERN.search(text):
+            if R1_PATTERN.search(text) and not R1_EXCLUDE_PATTERN.search(text):
                 r1_current_hits += 1
     for relpath_info in _walk_frontend_src(exclude_tests=True):
+        if relpath_info in R1_EXEMPT_FILES:
+            continue
         filepath = REPO_ROOT / relpath_info
         try:
             with open(filepath, "r", encoding="utf-8") as f:
@@ -625,10 +659,14 @@ def main():
         except (UnicodeDecodeError, OSError):
             continue
         stripped = _strip_js_comments(source)
+        source_lines = stripped.split("\n")
         strings = _extract_js_strings(stripped)
-        for _, text in strings:
-            if R1_PATTERN.search(text):
-                r1_current_hits += 1
+        for lineno, text in strings:
+            if not R1_PATTERN.search(text) or R1_EXCLUDE_PATTERN.search(text):
+                continue
+            if _r1_guarded(source_lines, lineno):
+                continue
+            r1_current_hits += 1
 
     # Print violations
     for v in all_violations:

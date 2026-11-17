@@ -17,6 +17,7 @@ import MissionTeamPicker from './MissionTeamPicker';
 import GroupWorkspace from './GroupWorkspace';
 import MuseDesktopPanel from './MuseDesktopPanel';
 import { REMOTE_CLIENT } from '../api-base';
+import { machineShort, hostIsMacos } from '../machine';
 import { teamIssues } from '../mission-teams';
 import './MissionWorkspace.css';
 
@@ -45,7 +46,7 @@ export default function MissionWorkspace(props) {
       <span>{mode === 'auto' ? '分工、执行、检查、交付' : '手动安排步骤与审阅节点'}</span>
     </nav>
     {mode === 'auto' ? <GroupWorkspace key={`auto:${activeProjectId}`} {...props}
-      renderIntegration={(integration) => REMOTE_CLIENT ? <p className="group-remote-muse-note">Muse 原生窗口操作请在 Mac 完成。项目讨论与 Agent 任务可在此继续。</p> : <MuseDesktopPanel {...integration} />} />
+      renderIntegration={(integration) => hostIsMacos(props.status) ? (REMOTE_CLIENT ? <p className="group-remote-muse-note">Muse 原生窗口操作请在{machineShort(props.status)}完成。项目讨论与 Agent 任务可在此继续。</p> : <MuseDesktopPanel {...integration} />) : <p className="group-remote-muse-note">Muse 原生窗口操作仅在 Mac 上可用；当前主机不是 Mac。项目讨论与 Agent 任务可在此继续。</p>} />
       : <StagedMissionWorkspace key={`pipeline:${activeProjectId}`} {...props} />}
   </section>;
 }

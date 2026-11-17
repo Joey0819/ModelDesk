@@ -1,18 +1,19 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { API_BASE, apiFetch, REMOTE_CLIENT } from '../api-base';
+import { machineShort } from '../machine';
 import { Icon } from './WorkbenchResults';
 import './ReadinessPanel.css';
 
 const labels = { ready: '可执行', reachable: '连接可访问', unauthorized: '需要登录', unavailable: '尚未就绪',
   unreachable: '连接失败', unknown: '待确认', disabled: '已停用', needs_attention: '需要处理', degraded: '服务异常' };
 
-export function WorkerStatus({ worker }) {
+export function WorkerStatus({ worker, machineShort: hostShort = machineShort() }) {
   const active = worker?.online === true;
   const ready = active && worker?.state === 'running';
   const attention = active && Object.values(worker.services || {}).some((item) => item.state === 'needs_attention');
   return <div className={`worker-status ${ready ? 'worker-ready' : ''}`} role="status">
     <Icon name="tasks" size={17} /><div><strong>{ready ? '后台服务正在守护任务' : attention ? '后台服务需要处理' : active ? '后台服务正在恢复连接' : '后台守护尚未连接'}</strong>
-      <p>{ready ? '可以关闭工作台窗口。Mac 需保持唤醒和联网。' : attention ? '部分服务已达到恢复次数上限；请检查服务后重试，已有成果会保留。' : active ? '恢复有次数限制；任务与已生成文件会保留。' : '打开 ModelDesk 桌面应用以启动守护；已有任务状态保存在本机。'}</p></div>
+      <p>{ready ? `可以关闭工作台窗口。${hostShort}需保持唤醒和联网。` : attention ? '部分服务已达到恢复次数上限；请检查服务后重试，已有成果会保留。' : active ? '恢复有次数限制；任务与已生成文件会保留。' : '打开 ModelDesk 桌面应用以启动守护；已有任务状态保存在本机。'}</p></div>
   </div>;
 }
 

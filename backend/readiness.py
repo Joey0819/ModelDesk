@@ -126,11 +126,19 @@ async def inspect():
                      "capabilities": engine.get("capabilities", [])})
     if engines is None:
         rows.append({"id": "code_agents", "label": "代码 Agent", "state": "unknown", "reason": "执行器检查暂未完成"})
+    from .platform_support import is_linux
     native = native or {}
-    rows.append({"id": "muse", "label": "Muse", "state": "ready" if native.get("native_ready") else "needs_attention",
-                 "reason": "原生输入窗口已就绪" if native.get("native_ready") else "打开 Muse 聊天输入框" if native.get("permission") else "检查 Muse 安装与辅助功能授权",
+    if is_linux:
+        muse_state, muse_reason = "unavailable", "Muse 原生桥接仅在 macOS 上可用，Linux 平台不支持此功能。"
+    elif native.get("native_ready"):
+        muse_state, muse_reason = "ready", "原生输入窗口已就绪"
+    elif native.get("permission"):
+        muse_state, muse_reason = "needs_attention", "打开 Muse 聊天输入框"
+    else:
+        muse_state, muse_reason = "needs_attention", "检查 Muse 安装与辅助功能授权"
+    rows.append({"id": "muse", "label": "Muse", "state": muse_state, "reason": muse_reason,
                  "capabilities": ["text", "image", "video"], "requires_awake_desktop": True,
-                 "remote_cancel_supported": False})
+                 "remote_cancel_supported": False, **({"available": False} if is_linux else {})})
     try:
         rows.extend(await asyncio.gather(*(connection_health(item) for item in store.list() if not item.get("testing"))))
     except Exception:

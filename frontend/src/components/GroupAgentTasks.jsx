@@ -3,6 +3,7 @@ import { groupTaskApi } from '../group-task-api';
 import { groupMemberKind, groupMemberKindLabel } from '../group-state';
 import { APPROVAL_LABELS, TASK_LABELS, approvalDecision, eligibleReviews, memberEngineSupports, readTaskDraft, taskEngineLabel, taskActive, taskDraftKey, taskRequest } from '../group-task-state';
 import { Icon, Markdown, AgentOutput } from './WorkbenchResults';
+import { machineShort } from '../machine';
 import { CopyTextButton } from './ConversationActions';
 import './GroupAgentTasks.css';
 
@@ -50,7 +51,8 @@ export function TaskCard({ task, tasks, approvals, busy, onReview, onCancel, onR
   </article>;
 }
 
-export default function GroupAgentTasks({ projectId, room, kind, onKindChange, onOpenProjects, onOpenArtifacts }) {
+export default function GroupAgentTasks({ projectId, room, kind, onKindChange, onOpenProjects, onOpenArtifacts, status }) {
+  const hostShort = machineShort(status);
   const roomId = room.id;
   const members = (room.team_snapshot?.members || []).filter((member) => groupMemberKind(member) !== 'muse');
   const [draft, setDraft] = useState(() => readTaskDraft(localStorage, projectId, roomId));
@@ -118,7 +120,8 @@ export default function GroupAgentTasks({ projectId, room, kind, onKindChange, o
       {selectedKind === 'model' && engine?.id !== 'member_model' && <p className="mission-form-note">此成员是 LLM 角色。本次明确使用 {engine?.label || engine?.id || 'CLI'} 独立执行器，执行器沿用自己的登录与模型；可在群成员中添加对应的 Codex 或 Claude Code Agent。</p>}
       {!members.length && <p className="mission-form-note">本群只有 Muse 成员。请添加 LLM 审阅者或 Codex / Claude Code 执行 Agent；Muse 任务在群聊中明确选择后派发。</p>}
       {kind === 'review' && source?.member_id === memberId && <p className="mission-form-note">请选择另一位成员独立审阅，执行者不能审阅自己的改动。</p>}
-      {!available.length && !enginesLoading && <p className="mission-form-note">{kind === 'review' ? '请检查成员模型的本地网关连接，或在 Mac 登录可用的 CLI 执行引擎。' : '请在 Mac 检查 Codex 或 Claude Code 的安装、支持能力与登录状态，然后重新连接。沿用各自 CLI 已有登录。'}</p>}
+      {!available.length && !enginesLoading && <p className="mission-form-note">{kind === 'review' ? `请检查成员模型的本地网关连接，或在${hostShort}登录可用的 CLI 执行引擎。` : `请在${hostShort}检查 Codex 或 Claude Code 的安装、支持能力与登录状态，然后重新连接。沿用各自 CLI 已有登录。`}</p>}
+
       {enginesLoading && <p className="group-composer-note" role="status">正在检测本机 Agent 执行引擎…</p>}
       {engine?.error && <p className="mission-form-note">{engine.error}</p>}
       {engine && <details className="group-engine-explanation"><summary>执行引擎与权限说明</summary><p className="group-composer-note">{engine.id === 'member_model' ? `使用 ${selectedMember?.name || '当前成员'} 的 ${selectedMember?.model || '已保存模型'} 审阅固定补丁，不执行代码或工具。` : engine.id === 'codex' && /^(gpt-|o[1-9])[A-Za-z0-9._-]+$/.test(selectedMember?.model || '') ? `Codex 将使用成员模型 ${selectedMember.model}，沿用本机 Codex 登录。` : `${engine.label || engine.id} 使用自己的 CLI 模型与登录；群聊成员负责本次分工。`}{engine.limitation || ''}</p></details>}

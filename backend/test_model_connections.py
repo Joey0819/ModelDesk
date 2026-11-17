@@ -284,7 +284,7 @@ class ConnectionTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn(KEY, response.text)
         self.assertEqual(len(requests), 1)
         self.assertFalse(options[0]["follow_redirects"])
-        self.assertEqual(json.loads(requests[0].content)["max_tokens"], 16)
+        self.assertEqual(json.loads(requests[0].content)["max_tokens"], 256)
         def success(request):
             return httpx.Response(200, json={"choices": [{"message": {"content": "OK"}}]})
         with self.upstream(success):

@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import sys
 import urllib.request
@@ -36,20 +37,39 @@ def owned_multibot():
         return False
 
 
+def chrome_profile_bases():
+    """Chrome user-data roots for this platform, most specific first."""
+    home = Path.home()
+    if sys.platform == "darwin":
+        return [home / "Library/Application Support/Google/Chrome"]
+    if sys.platform.startswith("win"):
+        local = os.environ.get("LOCALAPPDATA")
+        return [Path(local) / "Google/Chrome/User Data"] if local else []
+    return [home / ".config/google-chrome", home / ".config/chromium"]
+
+
 def chathub_entry():
     # Read only extension registration metadata, never Chrome cookies or logins.
-    base = Path.home() / "Library/Application Support/Google/Chrome"
-    for filename in ["Secure Preferences", "Preferences"]:
-        for path in sorted(base.glob("*/" + filename)):
-            try:
-                settings = json.loads(path.read_text()).get("extensions", {}).get("settings", {})
-            except (OSError, ValueError):
-                continue
-            for identifier, entry in settings.items():
-                registered = entry.get("path")
-                if re.fullmatch(r"[a-p]{32}", identifier) and registered and Path(registered).resolve() == CHATHUB_DIST.resolve():
-                    return "chrome-extension://" + identifier + "/app.html"
-    return None
+    entries = []
+    for base in chrome_profile_bases():
+        if not base.is_dir():
+            continue
+        for filename in ["Secure Preferences", "Preferences"]:
+            entries.extend(_chathub_from(sorted(base.glob("*/" + filename))))
+    return entries[0] if entries else None
+
+
+def _chathub_from(paths):
+    for path in paths:
+        try:
+            settings = json.loads(path.read_text()).get("extensions", {}).get("settings", {})
+        except (OSError, ValueError):
+            continue
+        for identifier, entry in settings.items():
+            registered = entry.get("path")
+            if re.fullmatch(r"[a-p]{32}", identifier) and registered and Path(registered).resolve() == CHATHUB_DIST.resolve():
+                return ["chrome-extension://" + identifier + "/app.html"]
+    return []
 
 
 def catalog():
@@ -84,18 +104,37 @@ def install():
     subprocess.run([str(PYTHON), "-m", "pip", "install", "-r", str(VENDOR / "requirements.txt"), "-r", str(PROJECT / "scripts/original-requirements.txt")], check=True)
 
 
+def _python_executable():
+    """Resolve the best available Python 3 interpreter."""
+    return sys.executable or shutil.which("python3") or "/usr/bin/python3"
+
+
+def _open_extension(entry):
+    """Open a chrome-extension:// URL in the platform's default handler."""
+    if sys.platform == "darwin":
+        command = ["/usr/bin/open", "-a", "Google Chrome", entry]
+    elif sys.platform.startswith("win"):
+        command = ["cmd", "/c", "start", "", entry]
+    else:
+        command = [shutil.which("xdg-open") or "xdg-open", entry]
+    subprocess.run(command, check=True, timeout=10)
+
+
 def start(identifier):
     if identifier == "chathub":
         entry = chathub_entry()
         if not entry:
             raise RuntimeError("未发现 ChatHub 扩展，请在 Chrome 加载现有扩展")
-        subprocess.run(["/usr/bin/open", "-a", "Google Chrome", entry], check=True, timeout=10)
+        _open_extension(entry)
     elif identifier == "multibot":
         if not (VENDOR / "app.py").is_file() or not PYTHON.exists():
             raise RuntimeError("请先安装 MultiBot 原版独立环境")
         if healthy() and not owned_multibot():
             raise RuntimeError("8501 端口已被其他服务占用")
-        subprocess.run(["/usr/bin/python3", str(TOOLS / "scripts/services.py"), "start", "--service", "multibot-original"], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=45)
+        services_script = TOOLS / "scripts/services.py"
+        if not services_script.is_file():
+            raise RuntimeError(f"未找到上游服务控制器: {services_script}")
+        subprocess.run([_python_executable(), str(services_script), "start", "--service", "multibot-original"], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=45)
         if not healthy() or not owned_multibot():
             raise RuntimeError("原版服务未通过健康与进程归属检查")
     else:

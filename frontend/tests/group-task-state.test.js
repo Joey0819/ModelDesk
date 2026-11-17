@@ -35,6 +35,8 @@ test('phone API always uses its secure gateway origin even with a localhost buil
   assert.equal(isRemoteLocation(phone), true);
   assert.equal(resolveApiBase(phone, 'http://localhost:8001'), phone.origin);
   assert.equal(resolveApiBase(new URL('http://localhost:5173/')), 'http://localhost:8001');
+  assert.equal(resolveApiBase(new URL('http://127.0.0.1:5173/')), 'http://127.0.0.1:8001');
+  assert.equal(resolveApiBase(new URL('http://127.0.0.1:5173/'), 'http://localhost:8001'), 'http://localhost:8001');
   assert.equal(resolveApiBase(new URL('http://127.0.0.1:8001/'), 'http://127.0.0.1:8001'), 'http://127.0.0.1:8001');
   assert.equal(isRemoteLocation(new URL('http://localhost:8765/')), true);
   assert.equal(isRemoteLocation(new URL('file:///Applications/ModelDesk.app')), false);

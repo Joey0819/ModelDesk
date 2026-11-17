@@ -191,10 +191,58 @@ class JobManager:
         self.wakeups = {}
         self.processes = {}
         self.conversation_locks = {}
+        # Last kanban status mirrored per job. save() runs on every emitted
+        # event, and each sync rewrites the whole board file, so only mirror
+        # when the status the board displays actually changed.
+        self._todo_synced = {}
+        # Only the production manager may write to the real kanban board.
+        # Tests (and any other manager built on a scratch directory) must stay
+        # isolated; otherwise suite runs leak fixture jobs onto the live board.
+        self._todo_sync_enabled = Path(self.directory).resolve() == (PROJECT / "data/workbench").resolve()
 
     def save(self, job):
         from .execution_store import save_checkpoint
         save_checkpoint(self.directory, job["id"], job)
+        # Sync to todo kanban (fire-and-forget, never raises)
+        status = job.get("status")
+        if not getattr(self, "_todo_sync_enabled", True):
+            return
+        synced = getattr(self, "_todo_synced", None)
+        if synced is None:
+            synced = self._todo_synced = {}
+        if synced.get(job["id"]) != status:
+            synced[job["id"]] = status
+            try:
+                self._sync_to_todo(job)
+            except Exception:
+                pass  # Already handled inside _sync_to_todo
+
+    def _sync_to_todo(self, job):
+        """Mirror job state to the todo kanban board."""
+        import logging as _logging
+        _logger = _logging.getLogger(__name__)
+        try:
+            from .todo_sync import sync_task
+            status = job.get("status", "queued")
+            title = (job.get("prompt") or "")[:200] or f"Job {job['id']}"
+            ext_src = job.get("external_source")
+            if ext_src and isinstance(ext_src, dict) and ext_src.get("platform") == "feishu":
+                source_label = "飞书"
+            else:
+                source_label = "工作台"
+            detail = f"Mode: {job.get('mode', 'unknown')}\nID: {job['id']}"
+            project_id = job.get("project_id")
+            sync_task(
+                "workbench",
+                job["id"],
+                title=title,
+                status=status,
+                detail=detail,
+                source_label=source_label,
+                project_id=project_id,
+            )
+        except Exception:
+            _logger.exception("workbench: todo sync failed for job %s", job.get("id"))
 
     def recover(self):
         """A restarted service cannot claim abandoned jobs are still running."""
@@ -1108,6 +1156,7 @@ async def status():
     gateway_by_id = {item["id"]: item for item in entries}
     models = [api_by_id.get(model) or {**gateway_by_id[model], "verified": model in verified_models, "last_success": evidence.get(model), "verification_scope": "recent_text_call" if model in verified_models else "not_recently_verified"} for model in catalog]
     from .media_providers import capabilities
+    from .platform_support import get_platform_info
     # Reuse the exact fetched catalogs; reading stored image receipts does not
     # make another provider request or promote a text test to image evidence.
     image_evidence = {item["id"]: item for item in await capabilities(catalog=entries, connections=saved_connections)}
@@ -1115,7 +1164,7 @@ async def status():
         if model.get("capability") == "image":
             receipt = image_evidence.get(model["id"], {})
             model.update(verified=bool(receipt.get("verified")), verification_scope="stored_image" if receipt.get("verified") else "not_verified_image", last_test_at=receipt.get("checked_at"))
-    return {"checked_at": now(), "gateway": gateway, "providers": providers, "models": models, "tools": tools, **({"connections_error": connections_error} if connections_error else {})}
+    return {"checked_at": now(), "gateway": gateway, "providers": providers, "models": models, "tools": tools, "platform": get_platform_info(), **({"connections_error": connections_error} if connections_error else {})}
 
 
 @router.get("/jobs")

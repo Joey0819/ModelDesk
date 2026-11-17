@@ -4,6 +4,7 @@ import { modelConnectionApi } from '../model-connection-api';
 import { ModelCatalogContext } from '../model-catalog-context';
 import { catalogOptions, mergeDiscoveries } from '../model-catalog-state';
 import ModelConnections from './ModelConnections';
+import { machineShort } from '../machine';
 import { Icon } from './WorkbenchResults';
 
 function ConnectionsDialog({ onClose, onRefresh, theme }) {
@@ -36,7 +37,7 @@ export default function ModelCatalogProvider({ status, onRefresh, theme, childre
   }, [onRefresh]);
   const ensureModel = async (model) => {
     if (model.registered) return model.id;
-    if (REMOTE_CLIENT) throw new Error('请先在 Mac 上把此模型加入连接。');
+    if (REMOTE_CLIENT) throw new Error(`请先在${machineShort(status)}上把此模型加入连接。`);
     const saved = await modelConnectionApi.addModel(model.connection_id, { model: { id: model.model_id, label: model.label || '' }, expected_updated_at: model.expected_updated_at });
     setDiscovery((previous) => previous && ({ ...previous, sources: previous.sources.map((source) => source.connection.id === saved.id ? { ...source, connection: { ...source.connection, updated_at: saved.updated_at } } : source) }));
     await onRefresh();

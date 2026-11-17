@@ -364,6 +364,12 @@ class TaskManager:
         self.records, self.tasks, self.processes = {}, {}, {}
         self.process_trees, self.process_monitors = {}, {}
         self.slots = asyncio.Semaphore(2)
+        # Last kanban status mirrored per task; save() also records events, and
+        # each sync rewrites the whole board file, so only mirror real changes.
+        self._todo_synced = {}
+        # Only the production manager may write to the real kanban board;
+        # scratch directories (tests) must never leak fixtures onto it.
+        self._todo_sync_enabled = Path(self.directory).resolve() == (ROOT / "data/group-tasks").resolve()
         self.load()
 
     def load(self, *, recover_interrupted=False):
@@ -397,6 +403,41 @@ class TaskManager:
         if self.directory.is_symlink() or path.is_symlink() or path.with_suffix(".tmp").is_symlink():
             raise ValueError("任务保存路径不可用")
         self.store.save(item)
+        # Sync to todo kanban (fire-and-forget, never raises)
+        status = item.get("status")
+        if not getattr(self, "_todo_sync_enabled", True):
+            return
+        synced = getattr(self, "_todo_synced", None)
+        if synced is None:
+            synced = self._todo_synced = {}
+        if synced.get(item["id"]) != status:
+            synced[item["id"]] = status
+            try:
+                self._sync_to_todo(item)
+            except Exception:
+                pass  # Already handled inside _sync_to_todo
+
+    def _sync_to_todo(self, item):
+        """Mirror task state to the todo kanban board."""
+        import logging as _logging
+        _logger = _logging.getLogger(__name__)
+        try:
+            from .todo_sync import sync_task
+            status = item.get("status", "queued")
+            title = (item.get("title") or item.get("prompt") or f"Task {item['id']}")[:200]
+            detail = f"Kind: {item.get('kind', 'unknown')}\nEngine: {item.get('engine', 'unknown')}\nID: {item['id']}"
+            project_id = item.get("project_id")
+            sync_task(
+                "group",
+                item["id"],
+                title=title,
+                status=status,
+                detail=detail,
+                source_label="协作任务",
+                project_id=project_id,
+            )
+        except Exception:
+            _logger.exception("group_tasks: todo sync failed for item %s", item.get("id"))
 
     def get(self, identifier, project_id, room_id=None):
         identifier, project_id = checked_id(identifier), checked_id(project_id)

@@ -10,7 +10,8 @@
     "test": "node --test test/*.test.cjs",
     "icon": "node scripts/icon.cjs",
     "build:muse": "node scripts/build-muse.cjs",
-    "package": "npm run test && npm run icon && npm run build:muse && node scripts/package.cjs"
+    "package": "npm run test && npm run icon && npm run build:muse && node scripts/package.cjs",
+    "package:linux": "node scripts/package.cjs --linux"
   },
   "devDependencies": {
     "@electron/packager": "20.3.0",

@@ -81,7 +81,19 @@ test('actual inbox renderer separates no tasks, loading and an offline stale sna
   const stale = renderList({ tasks: [task], error: '后台服务离线' });
   assert.match(stale, /上次同步的状态，尚未确认最新进度/); assert.match(stale, /Write a complete report/); assert.doesNotMatch(stale, /已交付/);
   const center = renderToStaticMarkup(React.createElement(AutonomyTaskCenter, { projectId: 'project-a', projectName: 'A', onOpenTask() {} }));
-  assert.match(center, /后台任务/); assert.match(center, /后台任务中心/); assert.match(center, /Mac 休眠、关机或服务停止时无法继续执行/);
+  assert.match(center, /后台任务/); assert.match(center, /后台任务中心/); assert.match(center, /这台电脑休眠、关机或服务停止时无法继续执行/);
+});
+
+// A macOS host reports itself through status.platform and the autonomy copy
+// follows it; the neutral branch stays covered above. Both hosts are pinned.
+test('autonomy host copy follows the platform report on macOS', () => {
+  const macStatus = { platform: { system: 'Darwin', is_macos: true, is_linux: false, is_windows: false, has_native_muse_bridge: true, machine_label: '\u8fd9\u53f0 Mac', machine_short: 'Mac' } };
+  const center = renderToStaticMarkup(React.createElement(AutonomyTaskCenter, { projectId: 'project-a', projectName: 'A', status: macStatus, onOpenTask() {} }));
+  assert.match(center, /Mac\u4f11\u7720\u3001\u5173\u673a\u6216\u670d\u52a1\u505c\u6b62\u65f6\u65e0\u6cd5\u7ee7\u7eed\u6267\u884c/);
+  assert.doesNotMatch(center, /\u8fd9\u53f0\u7535\u8111\u4f11\u7720/);
+  const setting = renderToStaticMarkup(React.createElement(BackgroundDelegateSetting, { checked: true, hostShort: 'Mac', onChange() {} }));
+  assert.match(setting, /Mac\u9700\u8981\u4fdd\u6301\u5524\u9192\u5e76\u8054\u7f51/);
+  assert.doesNotMatch(setting, /\u8fd9\u53f0\u7535\u8111\u9700\u8981\u4fdd\u6301\u5524\u9192/);
 });
 
 test('notification targets cannot open another project, room, or substituted job', () => {
@@ -99,5 +111,5 @@ test('new automatic tasks delegate by default while discussion and explicit opt 
   assert.equal(groupMessageRequest({ prompt: 'Discuss', deliveryMode: 'discussion', backgroundMode: true }).background_mode, false);
   assert.equal(groupMessageRequest({ prompt: 'Discuss', deliveryMode: 'discussion', context: { background_mode: true } }).background_mode, false);
   const setting = renderToStaticMarkup(React.createElement(BackgroundDelegateSetting, { checked: true, onChange() {} }));
-  assert.match(setting, /type="checkbox" checked=""/); assert.match(setting, /后台托管/); assert.match(setting, /Mac 需要保持唤醒并联网/); assert.match(setting, /不重复派发/);
+  assert.match(setting, /type="checkbox" checked=""/); assert.match(setting, /后台托管/); assert.match(setting, /这台电脑需要保持唤醒并联网/); assert.match(setting, /不重复派发/);
 });

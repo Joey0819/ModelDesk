@@ -3,7 +3,7 @@ const { execFile } = require('node:child_process');
 const { promisify } = require('node:util');
 const fs = require('node:fs');
 const path = require('node:path');
-const { UI_URL, HEALTH_URLS, workspaceRoot, serviceEnvironment, isWorkbenchURL, isOriginalFrameURL, isExportURL, exportFormat, isExternalURL, isStatusURL, isTrustedWorkbenchIPC } = require('./runtime.cjs');
+const { UI_URL, HEALTH_URLS, healthURLsFor, workspaceRoot, serviceEnvironment, isWorkbenchURL, isOriginalFrameURL, isExportURL, exportFormat, isExternalURL, isStatusURL, isTrustedWorkbenchIPC } = require('./runtime.cjs');
 const { INPUT_EXTENSIONS, collectSelectedFiles } = require('./input-files.cjs');
 const { installMusePermissionActions } = require('./muse-permissions.cjs');
 
@@ -46,22 +46,29 @@ async function connectWorkbench() {
   try {
     await showState('starting');
     const root = workspaceRoot();
+    const pythonBin = process.platform === 'darwin' ? '/usr/bin/python3' : (process.env.PYTHON || 'python3');
     const controller = path.join(root, 'scripts', 'services.py');
-    if (!fs.existsSync(controller)) throw new Error('workspace-controller-missing');
-    // Fixed executable and separate arguments; renderer content never becomes shell code.
-    await execFileAsync('/usr/bin/python3', [controller, 'start'], {
-      cwd: root,
-      env: serviceEnvironment(),
-      timeout: 65000,
-      maxBuffer: 128 * 1024,
-      windowsHide: true,
-    });
+    if (fs.existsSync(controller)) {
+      // Fixed executable and separate arguments; renderer content never becomes shell code.
+      await execFileAsync(pythonBin, [controller, 'start'], {
+        cwd: root,
+        env: serviceEnvironment(),
+        timeout: 65000,
+        maxBuffer: 128 * 1024,
+        windowsHide: true,
+      });
+    } else {
+      console.warn('[ModelDesk] workspace controller not found at', controller, '; falling back to health probe.');
+    }
     const supervisor = path.join(root, '..', 'llm-council', 'scripts', 'modeldesk_worker.py');
-    if (!fs.existsSync(supervisor)) throw new Error('background-worker-missing');
-    await execFileAsync('/usr/bin/python3', [supervisor, 'start', '--workspace', root], {
-      cwd: root, env: serviceEnvironment(), timeout: 10000, maxBuffer: 16384, windowsHide: true,
-    });
-    const checks = await Promise.all(HEALTH_URLS.map(healthy));
+    if (fs.existsSync(supervisor)) {
+      await execFileAsync(pythonBin, [supervisor, 'start', '--workspace', root], {
+        cwd: root, env: serviceEnvironment(), timeout: 10000, maxBuffer: 16384, windowsHide: true,
+      });
+    } else {
+      console.warn('[ModelDesk] background worker not found at', supervisor, '; skipping worker start.');
+    }
+    const checks = await Promise.all(healthURLsFor().map(healthy));
     if (!checks.every(Boolean)) throw new Error('workbench-not-ready');
     if (mainWindow && !mainWindow.isDestroyed()) await mainWindow.loadURL(UI_URL);
   } catch {
@@ -81,6 +88,10 @@ function installProjectPicker() {
   ipcMain.handle('modeldesk:open-muse', async event => {
     const owner = mainWindow;
     if (!owner || owner.isDestroyed() || !isTrustedWorkbenchIPC(event, owner.webContents)) return false;
+    if (process.platform !== 'darwin') {
+      console.warn('[ModelDesk] Muse native bridge is only available on macOS.');
+      return false;
+    }
     try {
       await execFileAsync('/usr/bin/open', ['-b', 'com.meta.endo'], { timeout: 10000, maxBuffer: 4096 });
       return true;
@@ -132,7 +143,8 @@ function installProjectPicker() {
     try {
       const root = workspaceRoot();
       const controller = path.resolve(root, '../llm-council/scripts/original_apps.py');
-      await execFileAsync('/usr/bin/python3', [controller, 'start', 'chathub'], {
+      const pythonBin = process.platform === 'darwin' ? '/usr/bin/python3' : (process.env.PYTHON || 'python3');
+      await execFileAsync(pythonBin, [controller, 'start', 'chathub'], {
         env: serviceEnvironment(), timeout: 15000, maxBuffer: 32 * 1024,
       });
       return true;

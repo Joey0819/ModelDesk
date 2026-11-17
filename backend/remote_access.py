@@ -23,6 +23,8 @@ from urllib.parse import urlsplit
 
 import httpx
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request
+
+from .platform_support import machine_label, machine_short
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -96,7 +98,7 @@ class RemoteStore:
 
     def create_pairing(self, label):
         if not self.origin:
-            raise HTTPException(409, "请先在 Mac 启用手机访问入口")
+            raise HTTPException(409, f"请先在{machine_short()}启用手机访问入口")
         code = "-".join(secrets.token_hex(3).upper() for _ in range(2))
         expires = self.clock() + 300
         with self.db() as db:
@@ -126,7 +128,7 @@ class RemoteStore:
                 row = db.execute("SELECT * FROM pairing WHERE hash=?", (digest(normalized),)).fetchone() if valid_code else None
                 if row is None:
                     db.execute("INSERT INTO attempts VALUES (?)", (now,))
-                    error = HTTPException(401, "配对码无效或已过期，请在 Mac 重新生成")
+                    error = HTTPException(401, f"配对码无效或已过期，请在{machine_short()}重新生成")
                 else:
                     session["label"] = label or row["label"]
                     db.execute("DELETE FROM pairing WHERE hash=?", (row["hash"],))
@@ -167,10 +169,8 @@ class RemoteStore:
 
 
 def tailscale_binary():
-    native = "/Applications/Tailscale.app/Contents/MacOS/Tailscale"
-    # Some installations wrap this binary in a shell without exec. Calling the
-    # native CLI directly ensures timeout cancellation reaps the real process.
-    return native if Path(native).is_file() else shutil.which("tailscale")
+    from .platform_support import resolve_tailscale_path
+    return resolve_tailscale_path()
 
 
 def tailscale_status():
@@ -201,7 +201,7 @@ def require_local(request: Request):
         is_local = False
     # Host and Origin are both checked: a web page cannot configure via DNS rebinding.
     if not is_local or request.url.hostname not in {"localhost", "127.0.0.1", "::1"}:
-        raise HTTPException(403, "手机配对和设备管理只能在这台 Mac 操作")
+        raise HTTPException(403, f"手机配对和设备管理只能在{machine_label()}操作")
     if request.headers.get("sec-fetch-site") == "cross-site":
         raise HTTPException(403, "不接受跨站配置请求")
     origin = request.headers.get("origin")
@@ -250,7 +250,7 @@ async def revoke_all():
 
 
 def api_allowed(path, method):
-    if path.startswith(("/api/remote", "/api/model-connections", "/api/model-runtime", "/api/autonomy/inbox", "/api/feishu")):
+    if path.startswith(("/api/remote", "/api/model-connections", "/api/model-runtime", "/api/autonomy/inbox", "/api/feishu", "/api/fleet")):
         return False
     if method not in SAFE_METHODS:
         if path.startswith("/api/muse") or path.startswith("/api/platform/originals"):
@@ -310,8 +310,13 @@ def create_gateway(remote_store=None, *, frontend=None, upstream_transport=None,
 
     @app.get("/remote/info")
     async def info(request: Request):
+        from .platform_support import public_platform_info
+        # This endpoint answers BEFORE pairing, so it must not disclose local
+        # filesystem paths. get_platform_info() carries tailscale_path; the
+        # public projection drops it and keeps only labels and flags.
         return {"remote": True, "pairing_required": auth.session(request.cookies.get(COOKIE)) is None,
-                "origin": auth.origin, "capabilities": CAPABILITIES}
+                "origin": auth.origin, "capabilities": CAPABILITIES,
+                "platform": public_platform_info()}
 
     @app.get("/remote/session")
     async def session(request: Request):
@@ -339,10 +344,10 @@ def create_gateway(remote_store=None, *, frontend=None, upstream_transport=None,
     async def proxy(path: str, request: Request):
         token = request.cookies.get(COOKIE)
         if not auth.session(token):
-            raise HTTPException(401, "请先在这台 Mac 生成配对码并连接手机")
+            raise HTTPException(401, f"请先在{machine_label()}生成配对码并连接手机")
         target = "/api/" + path
         if not api_allowed(target, request.method):
-            raise HTTPException(403, "此操作需要在 Mac 的 ModelDesk 中完成")
+            raise HTTPException(403, f"此操作需要在{machine_short()}的 ModelDesk 中完成")
         # A fixed origin and narrow header allowlist prevent SSRF and identity spoofing.
         headers = {key: value for key, value in request.headers.items()
                    if key.lower() in {"content-type", "accept", "last-event-id", "range", "if-none-match", "origin"}}
@@ -372,14 +377,14 @@ def create_gateway(remote_store=None, *, frontend=None, upstream_transport=None,
             except (ValueError, UnicodeError):
                 raise HTTPException(400, "任务必须使用有效的 JSON 请求")
             if isinstance(payload, dict) and payload.get("mode") == "sdk_script":
-                raise HTTPException(403, "原生 SDK 脚本只能在 Mac 上运行；手机可以查看执行结果")
+                raise HTTPException(403, f"原生 SDK 脚本只能在{machine_short()}上运行；手机可以查看执行结果")
         client = request.app.state.upstream
         try:
             forwarded = client.build_request(request.method, target, headers=headers, content=bytes(body))
             forwarded.headers.pop("cookie", None)
             upstream = await client.send(forwarded, stream=True)
         except httpx.HTTPError:
-            raise HTTPException(502, "Mac 上的 ModelDesk 服务暂时不可用")
+            raise HTTPException(502, f"{machine_short()}上的 ModelDesk 服务暂时不可用")
         response_headers = {key: value for key, value in upstream.headers.items()
                             if key.lower() in {"content-type", "content-disposition", "content-length", "content-range", "accept-ranges", "etag", "content-encoding"}}
         async def stream():
@@ -490,7 +495,7 @@ class RemoteController:
     async def command(self, *args):
         binary = tailscale_binary()
         if not binary:
-            raise HTTPException(409, "请先在 Mac 和手机安装并登录 Tailscale")
+            raise HTTPException(409, f"请先在{machine_short()}和手机安装并登录 Tailscale")
         process = await asyncio.create_subprocess_exec(binary, *args,
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
         try:
@@ -542,7 +547,7 @@ class RemoteController:
             if not isolated:
                 self.auth.revoke()
                 self.set_enabled(False)
-                self.last_error = "Tailscale HTTPS 域名不再独占或配置无法核对；手机授权已撤销，请在 Mac 检查手机访问设置"
+                self.last_error = f"Tailscale HTTPS 域名不再独占或配置无法核对；手机授权已撤销，请在{machine_short()}检查手机访问设置"
                 if self.server:
                     self.server.should_exit = True
                 raise HTTPException(403, self.last_error)
@@ -551,7 +556,7 @@ class RemoteController:
         async with self.lock:
             status = await asyncio.to_thread(tailscale_status)
             if status["state"] != "Running" or not status["dns_name"]:
-                raise HTTPException(409, "请先在 Mac 打开 Tailscale 连接；手机登录同一账号")
+                raise HTTPException(409, f"请先在{machine_short()}打开 Tailscale 连接；手机登录同一账号")
             origin = checked_origin(f"https://{status['dns_name']}:{HTTPS_PORT}")
             config = await self.serve_config()
             ownership = self.slot(config, origin)

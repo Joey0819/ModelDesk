@@ -22,6 +22,7 @@ from fastapi.responses import Response
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from .harness.store import RunStore, checked_id
+from .platform_support import is_linux
 from .workbench import now, public_error
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -278,6 +279,7 @@ def native_stage(identifier, *, create=False):
 def import_native_files(task, result):
     """Read exact helper-selected basenames; never inspect the user's Downloads."""
     from .delivery_media import store as media_store
+    from .platform_support import machine_short
     assets, errors = [], []
     if result.get("file_request_id") != task["request_id"]:
         return assets, errors
@@ -287,7 +289,7 @@ def import_native_files(task, result):
     diagnostics = {
         'native_video_unavailable': 'Muse 原生附件显示 Video not found：视频资源不可用，文字回复不代表已交付。',
         'native_download_save_panel_unavailable': 'Muse 下载按钮未打开保存窗口，尚未取得附件。',
-        'native_download_focus_unconfirmed': '附件下载时 Muse 窗口焦点未确认，请保持 Mac 解锁并打开对应会话。',
+        'native_download_focus_unconfirmed': f'附件下载时 Muse 窗口焦点未确认，请保持{machine_short()}解锁并打开对应会话。',
         'native_gallery_preview_unconfirmed': 'Muse 图片预览未就绪，尚未取得原图。',
     }
     if result.get("download_errors"):
@@ -433,6 +435,8 @@ class MuseManager:
         if command not in {"probe", "submit", "observe", "check_draft", "resume_draft"}:
             raise ValueError("unsupported helper command")
         async with self.helper_lock:
+            if is_linux:
+                raise RuntimeError("Muse 原生桥接仅在 macOS 上可用，Linux 不支持此功能。")
             if not self.helper.is_file() or self.helper.is_symlink():
                 raise RuntimeError("Muse 原生桥接尚未构建，请重新构建或安装 ModelDesk。")
             process = await asyncio.create_subprocess_exec(
@@ -780,6 +784,8 @@ async def status():
 
 @router.post("/tasks", status_code=202, dependencies=[Depends(local_mutation)])
 async def create_task(body: MuseTaskRequest):
+    if is_linux:
+        raise HTTPException(422, "Muse 原生桥接仅在 macOS 上可用，Linux 平台不支持此功能。")
     return public_task(await manager.create(body))
 
 

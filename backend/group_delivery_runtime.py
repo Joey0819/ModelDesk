@@ -269,8 +269,9 @@ async def _run_runtime_step(job, member, prompt, *, native_allowed=False, revisi
                 result = await wait_for_result(job, member, prompt, result)
             return result
         if engine == "muse" and native_allowed is not True:
+            from .platform_support import machine_short
             return {"status": "blocked", "task_id": None, "engine": engine, "output": "", "sources": [],
-                    "error": "Muse 原生任务只能由本机入口授权执行；请在 Mac 上继续"}
+                    "error": f"Muse 原生任务只能由本机入口授权执行；请在{machine_short()}上继续"}
         limit = MAX_MUSE_PROMPT if engine == "muse" else MAX_PROMPT
         if not isinstance(prompt, str) or not prompt.strip() or len(prompt) > limit:
             raise ValueError(f"执行任务需包含 1–{limit} 字符的完整需求和引用材料")

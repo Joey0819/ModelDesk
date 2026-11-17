@@ -28,7 +28,63 @@ router = APIRouter(prefix='/api/skills', tags=['skills'])
 class SkillInput(BaseModel):
     model_config = ConfigDict(extra='forbid')
     name: str = Field(min_length=1, max_length=80)
+    description: str = Field(default='', max_length=400)
     instructions: str = Field(min_length=1, max_length=50000)
+
+
+def parse_frontmatter(text):
+    """Parse YAML frontmatter from SKILL.md text. Hand-written parser, no yaml dependency.
+
+    Only triggers when text starts exactly with '---\\n'. Supports single-line 'key: value' pairs.
+    Values wrapped in single/double quotes are unquoted; literal true/false become booleans.
+    On any parse error or missing end delimiter, degrades safely: entire text as body, empty meta.
+    Returns (meta_dict, body_text). Raises HTTPException(422) if body is empty after stripping.
+    """
+    if not text.startswith('---\n'):
+        if not text.strip():
+            raise HTTPException(422, '技能指令为空')
+        return {}, text
+    # Find closing delimiter: next line that is exactly '---' or '...'
+    lines = text.split('\n')
+    end_idx = None
+    for i in range(1, len(lines)):
+        if lines[i] == '---' or lines[i] == '...':
+            end_idx = i
+            break
+    if end_idx is None:
+        # No closing delimiter found: degrade to treating entire text as body
+        if not text.strip():
+            raise HTTPException(422, '技能指令为空')
+        return {}, text
+    # Parse frontmatter block (lines between opening and closing delimiters)
+    meta = {}
+    fm_block_lines = lines[1:end_idx]
+    fm_raw = '\n'.join(fm_block_lines)
+    try:
+        for line in fm_block_lines:
+            if not line.strip() or ':' not in line:
+                continue
+            key, _, val = line.partition(':')
+            key = key.strip()
+            val = val.strip()
+            if not key:
+                continue
+            # Unquote single/double quoted values
+            if len(val) >= 2 and ((val[0] == '"' and val[-1] == '"') or (val[0] == "'" and val[-1] == "'")):
+                val = val[1:-1]
+            elif val == 'true':
+                val = True
+            elif val == 'false':
+                val = False
+            meta[key] = val
+    except Exception:
+        # Any parse error: degrade gracefully
+        pass
+    # Body is everything after the closing delimiter
+    body = '\n'.join(lines[end_idx + 1:])
+    if not body.strip():
+        raise HTTPException(422, '技能指令为空')
+    return meta, body, fm_raw
 
 
 def identifier(value):
@@ -52,15 +108,15 @@ def get_skill(value):
         raise HTTPException(409, 'Skill 内容校验失败，请重新安装') from None
 
 
-def put_skill(value, name, instructions, *, source='local', revision=None, renderer=None):
+def put_skill(value, name, instructions, *, description='', source='local', revision=None, renderer=None):
     identifier(value)
-    if secret_text(instructions) or secret_text(name):
+    if secret_text(instructions) or secret_text(name) or secret_text(description):
         raise HTTPException(422, 'Skill 不得包含密钥或凭据')
     folder = DIRECTORY / value
     if DIRECTORY.is_symlink() or folder.is_symlink():
         raise HTTPException(409, 'Skill 路径无效')
     folder.mkdir(parents=True, exist_ok=True, mode=0o700)
-    item = dict(id=value, name=name, instructions=instructions, source=source, revision=revision,
+    item = dict(id=value, name=name, instructions=instructions, description=description, source=source, revision=revision,
                 renderer=renderer, sha256=hashlib.sha256(instructions.encode()).hexdigest())
     # UUID-only RunStore is intentionally not used for named packages.
     target = folder / 'manifest.json'
@@ -74,7 +130,11 @@ def put_skill(value, name, instructions, *, source='local', revision=None, rende
 
 
 def public_skill(item):
-    return {key: value for key, value in item.items() if key != 'instructions'} | {
+    result = {key: value for key, value in item.items() if key != 'instructions'}
+    # Older manifests may lack 'description'; .get ensures backward compatibility.
+    if 'description' not in result:
+        result['description'] = ''
+    return result | {
         'execution': '动画创作：Codex 编写画面，平台渲染 MP4' if item.get('renderer') else '角色指令；代码 Agent 保持现有工具权限',
         'characters': len(item['instructions'])}
 
@@ -157,8 +217,26 @@ async def list_skills():
 
 @router.post('/import', dependencies=[Depends(require_local_admin)])
 async def import_skill(body: SkillInput):
-    value = 'custom-' + hashlib.sha256((body.name + body.instructions).encode()).hexdigest()[:16]
-    return put_skill(value, body.name, body.instructions)
+    # Parse frontmatter from uploaded instructions text
+    result = parse_frontmatter(body.instructions)
+    meta, instructions_body = result[0], result[1]
+    fm_raw = result[2] if len(result) > 2 else ''
+    # Secret check must cover body, name, description AND raw frontmatter block
+    # (prevents hiding credentials in stripped header)
+    if secret_text(fm_raw):
+        raise HTTPException(422, 'Skill 不得包含密钥或凭据')
+    # Name priority: request body (non-empty) > frontmatter name > fallback
+    final_name = body.name.strip() if body.name.strip() else str(meta.get('name', '')).strip()
+    if not final_name:
+        raise HTTPException(422, '技能名称不能为空')
+    # Description priority: request body (non-empty) > frontmatter description > ''
+    final_desc = body.description.strip() if body.description.strip() else str(meta.get('description', '')).strip()
+    final_desc = final_desc[:400]  # Enforce max length
+    # Stable id hash input: uses final resolved name + body for idempotent custom ids.
+    # Comment: We hash the resolved name (not raw body name) so re-importing the same
+    # skill with identical content produces the same id regardless of frontmatter presence.
+    value = 'custom-' + hashlib.sha256((final_name + instructions_body).encode()).hexdigest()[:16]
+    return put_skill(value, final_name, instructions_body, description=final_desc)
 
 
 @router.post('/lemo-opuscar/install', dependencies=[Depends(require_local_admin)])

@@ -164,3 +164,14 @@ Frontend: Display with tabs + validation UI
 ```
 
 The entire flow is async/parallel where possible to minimize latency.
+
+## Rule Enforcement / 规则执行表
+
+新增规矩必须同时加执行者；没有执行者的规矩会以重复犯错的形式回来。抑制注释（eslint-disable / @ts-ignore / # noqa 等）只允许在规则本身有错、过苛或纯风格问题时使用，且必须带 `reason=<非空文本>` 与 `expires=YYYY-MM-DD`；到期未处理视为新违规，CI 会红。
+
+| 规则 id | 拦什么 | 执行者 |
+|---------|--------|--------|
+| R1 | platform-copy：字符串字面量硬编码 Mac/macOS；棘轮机制，baseline 只拦新增 | scripts/lint_rules.py（含 .github/workflows/rules.yml） |
+| R2 | bare-suppression：抑制注释缺 reason/expires 或已过期；零容忍 | scripts/lint_rules.py（含 .github/workflows/rules.yml） |
+| R3 | return-arity：同函数返回元组长度不一致；零容忍 | scripts/lint_rules.py（含 .github/workflows/rules.yml） |
+| R4 | rule-table 自检：CLAUDE.md 规则表与 linter REGISTRY 双向一致性 | scripts/lint_rules.py（含 .github/workflows/rules.yml） |

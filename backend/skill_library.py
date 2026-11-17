@@ -83,7 +83,9 @@ def parse_frontmatter(text):
             if not key:
                 continue
             # Unquote single/double quoted values
-            if len(val) >= 2 and ((val[0] == '"' and val[-1] == '"') or (val[0] == "'" and val[-1] == "'")):
+            if len(val) >= 2 and val[0] == '"' and val[-1] == '"':
+                val = val[1:-1].replace('\\"', '"').replace('\\\\', '\\')
+            elif len(val) >= 2 and val[0] == "'" and val[-1] == "'":
                 val = val[1:-1]
             elif val == 'true':
                 val = True
@@ -303,7 +305,8 @@ def install_pstack():
 @router.post('/pstack/install', dependencies=[Depends(require_local_admin)])
 async def install_pstack_endpoint():
     try:
-        return await asyncio.to_thread(install_pstack)
+        installed = await asyncio.to_thread(install_pstack)
+        return {'name': 'pstack 方法论精选', 'installed': installed}
     except (OSError, subprocess.SubprocessError):
         raise HTTPException(502, '下载 pstack 技能失败，现有安装保持可用；请检查 GitHub 连接后重试') from None
 

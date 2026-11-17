@@ -1,9 +1,10 @@
 """Frontmatter parsing, pstack install, and import priority tests for skill_library."""
+import asyncio
 import json
 from pathlib import Path
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from fastapi import HTTPException
 
@@ -56,6 +57,11 @@ class FrontmatterParseTests(unittest.TestCase):
         meta, body, _ = skill_library.parse_frontmatter(text)
         self.assertEqual(meta['name'], 'dot-close')
         self.assertIn('Body after dots', body)
+
+    def test_double_quoted_backslash_unescape(self):
+        text = '---\ndescription: "Use for \\"interrogate\\", x"\n---\nBody'
+        meta, _, _ = skill_library.parse_frontmatter(text)
+        self.assertEqual(meta['description'], 'Use for "interrogate", x')
 
 
 class ImportPriorityTests(unittest.TestCase):
@@ -146,6 +152,18 @@ class OldManifestCompatibilityTests(unittest.TestCase):
         # public_skill should not crash and should have empty description
         pub = skill_library.public_skill(data)
         self.assertEqual(pub.get('description', ''), '')
+
+
+class InstallPstackEndpointTests(unittest.IsolatedAsyncioTestCase):
+    """Verify install_pstack_endpoint returns dict with name and installed list."""
+
+    async def test_endpoint_returns_dict_with_installed_list(self):
+        fake_results = [{'id': 'pstack-tdd', 'name': 'TDD 缺陷修复'}]
+        with patch.object(skill_library, 'install_pstack', return_value=fake_results):
+            result = await skill_library.install_pstack_endpoint()
+        self.assertIsInstance(result, dict)
+        self.assertEqual(result['name'], 'pstack 方法论精选')
+        self.assertEqual(result['installed'], fake_results)
 
 
 class PstackInstallFilesTests(unittest.TestCase):

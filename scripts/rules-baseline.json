@@ -1,0 +1,210 @@
+{
+  "_comment": "历史遗留清单：仅拦新增。修复一处即从 baseline 删一条；除非人工批准否则不要新增条目。",
+  "entries": [
+    {
+      "rule": "R1",
+      "file": "backend/autonomy.py",
+      "fingerprint": "后台正在执行；可以离开此页面，Mac 和 ModelDesk 服务需要保持运行"
+    },
+    {
+      "rule": "R1",
+      "file": "backend/feishu.py",
+      "fingerprint": "完成或需要处理时会回传到本条消息；Mac 和 ModelDesk 服务需保持运行。"
+    },
+    {
+      "rule": "R1",
+      "file": "backend/feishu.py",
+      "fingerprint": "飞书凭据和聊天授权只能在这台 Mac 管理"
+    },
+    {
+      "rule": "R1",
+      "file": "backend/group_delivery_runtime.py",
+      "fingerprint": "Muse 原生任务只能由本机入口授权执行；请在 Mac 上继续"
+    },
+    {
+      "rule": "R1",
+      "file": "backend/model_connections.py",
+      "fingerprint": "模型连接只能在这台 Mac 的 ModelDesk 中管理"
+    },
+    {
+      "rule": "R1",
+      "file": "backend/muse_bridge.py",
+      "fingerprint": "macOS 未在等待时间内将 Muse 切到可操作前台，任务未发送。请手动打开 Muse 主窗口后再检查。"
+    },
+    {
+      "rule": "R1",
+      "file": "backend/muse_bridge.py",
+      "fingerprint": "附件下载时 Muse 窗口焦点未确认，请保持 Mac 解锁并打开对应会话。"
+    },
+    {
+      "rule": "R1",
+      "file": "backend/remote_access.py",
+      "fingerprint": "/Applications/Tailscale.app/Contents/MacOS/Tailscale"
+    },
+    {
+      "rule": "R1",
+      "file": "backend/remote_access.py",
+      "fingerprint": "Mac 上的 ModelDesk 服务暂时不可用"
+    },
+    {
+      "rule": "R1",
+      "file": "backend/remote_access.py",
+      "fingerprint": "Tailscale HTTPS 域名不再独占或配置无法核对；手机授权已撤销，请在 Mac 检查手机访问设置"
+    },
+    {
+      "rule": "R1",
+      "file": "backend/remote_access.py",
+      "fingerprint": "原生 SDK 脚本只能在 Mac 上运行；手机可以查看执行结果"
+    },
+    {
+      "rule": "R1",
+      "file": "backend/remote_access.py",
+      "fingerprint": "手机配对和设备管理只能在这台 Mac 操作"
+    },
+    {
+      "rule": "R1",
+      "file": "backend/remote_access.py",
+      "fingerprint": "此操作需要在 Mac 的 ModelDesk 中完成"
+    },
+    {
+      "rule": "R1",
+      "file": "backend/remote_access.py",
+      "fingerprint": "请先在 Mac 启用手机访问入口"
+    },
+    {
+      "rule": "R1",
+      "file": "backend/remote_access.py",
+      "fingerprint": "请先在 Mac 和手机安装并登录 Tailscale"
+    },
+    {
+      "rule": "R1",
+      "file": "backend/remote_access.py",
+      "fingerprint": "请先在 Mac 打开 Tailscale 连接；手机登录同一账号"
+    },
+    {
+      "rule": "R1",
+      "file": "backend/remote_access.py",
+      "fingerprint": "请先在这台 Mac 生成配对码并连接手机"
+    },
+    {
+      "rule": "R1",
+      "file": "backend/remote_access.py",
+      "fingerprint": "配对码无效或已过期，请在 Mac 重新生成"
+    },
+    {
+      "rule": "R1",
+      "file": "frontend/src/components/AgentSettings.jsx",
+      "fingerprint": "请在 Mac 操作"
+    },
+    {
+      "rule": "R1",
+      "file": "frontend/src/components/DeliveryOutputOptions.jsx",
+      "fingerprint": "Muse（Mac 本机）"
+    },
+    {
+      "rule": "R1",
+      "file": "frontend/src/components/FeishuConnection.jsx",
+      "fingerprint": "请在 Mac 设置"
+    },
+    {
+      "rule": "R1",
+      "file": "frontend/src/components/GroupAgentTasks.jsx",
+      "fingerprint": "请在 Mac 检查 Codex 或 Claude Code 的安装、支持能力与登录状态，然后重新连接。沿用各自 CLI 已有登录。"
+    },
+    {
+      "rule": "R1",
+      "file": "frontend/src/components/GroupAgentTasks.jsx",
+      "fingerprint": "请检查成员模型的本地网关连接，或在 Mac 登录可用的 CLI 执行引擎。"
+    },
+    {
+      "rule": "R1",
+      "file": "frontend/src/components/GroupWorkspace.jsx",
+      "fingerprint": "Mac 本机桥接"
+    },
+    {
+      "rule": "R1",
+      "file": "frontend/src/components/GroupWorkspace.jsx",
+      "fingerprint": "Muse 原生窗口操作需要在 Mac 端派发。"
+    },
+    {
+      "rule": "R1",
+      "file": "frontend/src/components/GroupWorkspace.jsx",
+      "fingerprint": "后台托管已启动。你可以离开本页面，在顶部\u201c后台任务\u201d查看进度、成果和待处理通知。Mac 需保持唤醒并联网。"
+    },
+    {
+      "rule": "R1",
+      "file": "frontend/src/components/ModelCatalogProvider.jsx",
+      "fingerprint": "请先在 Mac 上把此模型加入连接。"
+    },
+    {
+      "rule": "R1",
+      "file": "frontend/src/components/PlatformLibraries.jsx",
+      "fingerprint": "需在 Mac 上运行"
+    },
+    {
+      "rule": "R1",
+      "file": "frontend/src/components/ReadinessPanel.jsx",
+      "fingerprint": "可以关闭工作台窗口。Mac 需保持唤醒和联网。"
+    },
+    {
+      "rule": "R1",
+      "file": "frontend/src/components/RemoteAccessGate.jsx",
+      "fingerprint": "输入 Mac 上显示的配对码"
+    },
+    {
+      "rule": "R1",
+      "file": "frontend/src/components/RemoteAccessGate.jsx",
+      "fingerprint": "连接凭证已过期或已被 Mac 撤销，请重新配对。未发送的草稿仍保留在当前设备。"
+    },
+    {
+      "rule": "R1",
+      "file": "frontend/src/components/RemoteAccessPanel.jsx",
+      "fingerprint": "Mac 入口尚未启用"
+    },
+    {
+      "rule": "R1",
+      "file": "frontend/src/components/RemoteAccessPanel.jsx",
+      "fingerprint": "Mac 入口已配置"
+    },
+    {
+      "rule": "R1",
+      "file": "frontend/src/components/RemoteAccessPanel.jsx",
+      "fingerprint": "正在检查 Mac 配置"
+    },
+    {
+      "rule": "R1",
+      "file": "frontend/src/components/RemoteAccessPanel.jsx",
+      "fingerprint": "请先在 Mac 和手机安装 Tailscale，并登录同一账号。"
+    },
+    {
+      "rule": "R1",
+      "file": "frontend/src/components/RemoteAccessPanel.jsx",
+      "fingerprint": "请先在 Mac 打开 Tailscale 并连接，同时让手机连接同一网络。"
+    },
+    {
+      "rule": "R1",
+      "file": "frontend/src/feishu-api.js",
+      "fingerprint": "飞书连接服务暂时无法访问，请检查 Mac 上的 ModelDesk 服务。"
+    },
+    {
+      "rule": "R1",
+      "file": "frontend/src/muse-state.js",
+      "fingerprint": "Muse 已安装，但 macOS 尚未允许本机桥接读取和操作窗口。请为 muse-bridge 开启辅助功能权限，再检查连接。"
+    },
+    {
+      "rule": "R1",
+      "file": "frontend/src/muse-state.js",
+      "fingerprint": "请先安装并打开 Muse Mac。"
+    },
+    {
+      "rule": "R1",
+      "file": "frontend/src/muse-state.js",
+      "fingerprint": "通过已登录的 Muse Mac 窗口发送并读取回复。"
+    },
+    {
+      "rule": "R1",
+      "file": "frontend/src/remote-api.js",
+      "fingerprint": "远程连接暂时无法访问，请确认 Mac 在线且手机已连接同一 Tailscale 网络。"
+    }
+  ]
+}

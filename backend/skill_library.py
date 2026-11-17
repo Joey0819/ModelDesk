@@ -22,6 +22,19 @@ ROOT = Path(__file__).resolve().parents[1]
 DIRECTORY = ROOT / 'data/skills'
 LEMO_COMMIT = '508848acb2b4930c4041fef4d594120da1525bff'
 LEMO_URL = 'https://github.com/lemomo-ai/lemo-opuscar'
+PSTACK_URL = 'https://github.com/cursor/plugins'
+PSTACK_COMMIT = 'e1cc03121a0e71129a4fb730d7c5528a0a3e43c8'
+# Curated pstack methodology skills: (source_folder_name, chinese_display_name)
+PSTACK_SKILLS = {
+    'tdd': ('pstack-tdd', 'TDD 缺陷修复'),
+    'blast-radius': ('pstack-blast-radius', '改动影响面分析'),
+    'interrogate': ('pstack-interrogate', '需求追问'),
+    'unslop': ('pstack-unslop', '去 AI 味写作'),
+    'technical-writing': ('pstack-technical-writing', '技术写作'),
+    'figure-it-out': ('pstack-figure-it-out', '先弄清再动手'),
+    'principle-fix-root-causes': ('pstack-fix-root-causes', '修根因不是修症状'),
+    'principle-prove-it-works': ('pstack-prove-it-works', '先证明能跑通'),
+}
 router = APIRouter(prefix='/api/skills', tags=['skills'])
 
 
@@ -211,8 +224,12 @@ async def list_skills():
         render_ready = await asyncio.to_thread(ready)
     except (ImportError, OSError, RuntimeError):
         render_ready = False
-    return {'renderer_ready': render_ready, 'installed': installed, 'recommended': [{'id': 'lemo-opuscar', 'name': 'Lemo-Opuscar 动画导演', 'source': LEMO_URL, 'revision': LEMO_COMMIT}],
-            'policy': '安装只读取指令。绑定到角色后生效；不会自动安装依赖、运行 hooks 或获取新的系统权限。'}
+    recommended = [
+        {'id': 'lemo-opuscar', 'name': 'Lemo-Opuscar 动画导演', 'source': LEMO_URL, 'revision': LEMO_COMMIT},
+        {'id': 'pstack', 'name': 'pstack 方法论精选', 'description': '从 cursor/plugins 精选的 8 个方法论技能，固定 commit 版本，只导入指令文本', 'source': PSTACK_URL, 'revision': PSTACK_COMMIT},
+    ]
+    return {'renderer_ready': render_ready, 'installed': installed, 'recommended': recommended,
+            'policy': '安装只读取指令文本，不执行任何脚本、hooks 或安装程序。绑定到角色后生效；不会自动安装依赖、运行 hooks 或获取新的系统权限。'}
 
 
 @router.post('/import', dependencies=[Depends(require_local_admin)])
@@ -237,6 +254,58 @@ async def import_skill(body: SkillInput):
     # skill with identical content produces the same id regardless of frontmatter presence.
     value = 'custom-' + hashlib.sha256((final_name + instructions_body).encode()).hexdigest()[:16]
     return put_skill(value, final_name, instructions_body, description=final_desc)
+
+
+def install_pstack_files(folder):
+    """Install curated pstack skills from a local checkout folder.
+
+    Only reads SKILL.md files; never executes scripts or copies references/.
+    Symlink checks on every path component for safety.
+    """
+    results = []
+    for source_name, (skill_id, display_name) in PSTACK_SKILLS.items():
+        skill_dir = folder / 'pstack' / 'skills' / source_name
+        # Symlink check on intermediate directories and target
+        if (folder / 'pstack').is_symlink() or (folder / 'pstack' / 'skills').is_symlink() or skill_dir.is_symlink():
+            raise HTTPException(409, 'Skill 路径无效')
+        skill_md = skill_dir / 'SKILL.md'
+        if skill_md.is_symlink():
+            raise HTTPException(409, 'Skill 路径无效')
+        raw_text = skill_md.read_text()
+        # Parse frontmatter using commit 1's parser
+        result = parse_frontmatter(raw_text)
+        meta, body = result[0], result[1]
+        fm_raw = result[2] if len(result) > 2 else ''
+        # Secret check covers body, name, description, and raw frontmatter
+        if secret_text(body) or secret_text(display_name) or secret_text(fm_raw):
+            raise HTTPException(422, 'Skill 不得包含密钥或凭据')
+        desc = str(meta.get('description', '')).strip()[:400]
+        if secret_text(desc):
+            raise HTTPException(422, 'Skill 不得包含密钥或凭据')
+        source_url = f'{PSTACK_URL}/tree/main/pstack/skills/{source_name}'
+        results.append(put_skill(skill_id, display_name, body, description=desc,
+                                 source=source_url, revision=PSTACK_COMMIT))
+    return results
+
+
+def install_pstack():
+    """Clone pstack repo at fixed commit and install curated skills. Mirrors install_lemo safety posture."""
+    with tempfile.TemporaryDirectory(prefix='modeldesk-pstack-') as tmp:
+        folder = Path(tmp) / 'source'
+        folder.mkdir()
+        subprocess.run(['git', '-C', str(folder), 'init', '--quiet'], check=True, timeout=15, capture_output=True)
+        subprocess.run(['git', '-C', str(folder), 'remote', 'add', 'origin', PSTACK_URL + '.git'], check=True, timeout=15, capture_output=True)
+        subprocess.run(['git', '-C', str(folder), 'fetch', '--quiet', '--depth', '1', 'origin', PSTACK_COMMIT], check=True, timeout=120, capture_output=True)
+        subprocess.run(['git', '-C', str(folder), '-c', 'core.hooksPath=/dev/null', 'checkout', '--quiet', '--detach', PSTACK_COMMIT], check=True, timeout=45, capture_output=True)
+        return install_pstack_files(folder)
+
+
+@router.post('/pstack/install', dependencies=[Depends(require_local_admin)])
+async def install_pstack_endpoint():
+    try:
+        return await asyncio.to_thread(install_pstack)
+    except (OSError, subprocess.SubprocessError):
+        raise HTTPException(502, '下载 pstack 技能失败，现有安装保持可用；请检查 GitHub 连接后重试') from None
 
 
 @router.post('/lemo-opuscar/install', dependencies=[Depends(require_local_admin)])

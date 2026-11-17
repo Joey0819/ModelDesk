@@ -5,4 +5,4 @@ async function call(path = '', body) {
   if (!response.ok) throw new Error(typeof result.detail === 'string' ? result.detail : 'Skill 操作失败，请重试。');
   return result;
 }
-export const skillsApi = { list: () => call(), installLemo: () => call('/lemo-opuscar/install', {}), import: (body) => call('/import', body) };
+export const skillsApi = { list: () => call(), installLemo: () => call('/lemo-opuscar/install', {}), installPstack: () => call('/pstack/install', {}), import: (body) => call('/import', body) };

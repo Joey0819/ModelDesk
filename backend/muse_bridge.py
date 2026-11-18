@@ -21,6 +21,8 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import Response
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from .dispatch_receipts import (direct_task_receipt, has_dispatch_receipt, replay_direct_task,
+                                start_agent_worker, unverified_dispatch)
 from .harness.store import RunStore, checked_id
 from .platform_support import is_linux
 from .workbench import now, public_error
@@ -96,6 +98,7 @@ class MuseTaskRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     project_id: uuid.UUID | None = None
     room_id: uuid.UUID | None = None
+    client_request_id: uuid.UUID | None = None
     member_id: str | None = Field(default=None, pattern=r"^[A-Za-z][A-Za-z0-9_-]{0,39}$")
     prompt: str = Field(min_length=1, max_length=22000)
     timeout_seconds: int = Field(default=600, ge=30, le=1800)
@@ -245,6 +248,8 @@ def public_task(task):
         return value
 
     result = clean(task)
+    if "client_request_id" in result and not has_dispatch_receipt("muse", task):
+        result.pop("client_request_id")
     result['media_delivery'] = {'images': sum(a.get('kind') == 'image' for a in task.get('_native_media', [])),
         'videos': sum(a.get('kind') == 'video' for a in task.get('_native_media', [])), 'errors': task.get('_native_media_errors', [])}
     return result
@@ -528,10 +533,25 @@ class MuseManager:
 
     async def create(self, request, *, parent_job_id=None, reference_assets=None, skill_snapshot=None):
         parent_link = {"parent_job_id": checked_id(parent_job_id)} if parent_job_id is not None else {}
-        body = request.model_dump(mode="json")
+        body = request.model_dump(mode="json", exclude={"client_request_id"})
         if body["project_id"]:
             from .projects import store as projects
             projects.get(body["project_id"])
+        if request.client_request_id is not None:
+            if parent_job_id is not None:
+                raise HTTPException(422, "发送回执仅用于直接派发的 Muse 任务")
+            identifier, digest = direct_task_receipt("muse", request)
+            previous = replay_direct_task("muse", self.records, identifier, digest)
+            if previous is not None:
+                if previous["project_id"] != body["project_id"] or previous["room_id"] != body["room_id"] or previous.get("parent_job_id") is not None:
+                    raise unverified_dispatch("无法核对已有 Muse 派发记录，请在 Muse 查看原任务。")
+                return preserve_source_boundary(previous)
+            checkpoint = self.store.directory / (identifier + ".json")
+            if checkpoint.is_symlink() or checkpoint.exists():
+                raise unverified_dispatch("无法核对已有 Muse 派发记录，请在 Muse 查看原任务。")
+            body.update(client_request_id=str(request.client_request_id), _dispatch_request_sha256=digest)
+        else:
+            identifier = str(uuid.uuid4())
         member, revision = self.member_scope(body)
         from .native_skills import freeze_native_skills
         frozen = freeze_native_skills(member, skill_snapshot)
@@ -542,7 +562,7 @@ class MuseManager:
             skill_model = team.get('coordinator_model') or next((m.get('model') for m in team['members'] if m.get('kind', 'model') == 'model'), None)
         if sum(task.get("monitoring", False) for task in self.records.values()) >= 8:
             raise HTTPException(429, "Muse 最多排队八个任务，请等待当前任务完成")
-        identifier, timestamp = str(uuid.uuid4()), now()
+        timestamp = now()
         task = {**body, **parent_link, "schema_version": 1, "id": identifier, "request_id": identifier, "status": "queued", "thread_url": None,
                 "response": "", "messages": [], "sent": False, "uncertain": False, "remote_state": "not_sent", "error": None,
                 "created_at": timestamp, "updated_at": timestamp, "submitted_at": None, "finished_at": None, "events": [],
@@ -567,10 +587,8 @@ class MuseManager:
                 names.append(asset['name'])
             task['_reference_names'] = names
             task['reference_images'] = [{'id': value['id'], 'sha256': value['sha256']} for value in reference_assets]
-        self.records[identifier] = task
-        self.save(task, "queued")
-        self.tasks[identifier] = asyncio.create_task(self.execute(task))
-        return copy.deepcopy(task)
+        return start_agent_worker(task, self.records, self.tasks, self.execute,
+                                  lambda: self.save(task, "queued"))
 
     async def execute(self, task, *, observe_only=False, resume_draft=False):
         try:

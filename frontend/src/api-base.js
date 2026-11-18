@@ -19,3 +19,14 @@ export async function apiFetch(url, options) {
   if (REMOTE_CLIENT && response.status === 401) globalThis.dispatchEvent?.(new Event('modeldesk-session-expired'));
   return response;
 }
+
+export async function apiResponseError(response, fallback) {
+  let detail;
+  try { detail = (await response.json()).detail; } catch { /* Preserve the HTTP status. */ }
+  if (Array.isArray(detail)) detail = detail.map((item) => item.msg).join('；');
+  const message = typeof detail === 'string' ? detail : detail?.message;
+  return Object.assign(new Error(typeof message === 'string' && message ? message : fallback), {
+    status: response.status,
+    code: typeof detail?.code === 'string' ? detail.code : undefined,
+  });
+}

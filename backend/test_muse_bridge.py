@@ -1,10 +1,12 @@
 """Native bridge state and HTTP boundaries without touching a user's window."""
 import asyncio
 import copy
+import inspect
 import io
 import json
 import os
 import platform
+import sys
 import tempfile
 import unittest
 import uuid
@@ -265,9 +267,16 @@ class MuseTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(self.manager.tasks)
 
     async def test_cancel_before_dispatch_never_sends(self):
+        request = self.request(client_request_id=uuid.uuid4())
         with patch.object(self.manager, "helper_call", self.driver()) as driver:
-            task = await self.manager.create(self.request())
+            task = await self.manager.create(request)
+            worker = self.manager.tasks[task["id"]]
+            self.assertEqual(inspect.getcoroutinestate(worker.get_coro()), inspect.CORO_CREATED)
             result = await self.manager.cancel(task["id"])
+            replay = await self.manager.create(request)
+        self.assertTrue(worker.cancelled())
+        self.assertFalse(self.manager.tasks)
+        self.assertEqual(replay["status"], "stopped_monitoring")
         self.assertEqual(result["remote_state"], "not_sent")
         self.assertFalse(result["uncertain"])
         self.assertFalse(driver.called)
@@ -551,6 +560,213 @@ class MuseTests(unittest.IsolatedAsyncioTestCase):
             async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app, client=("203.0.113.20", 3000)), base_url="http://localhost") as remote:
                 response = await remote.post("/api/muse/tasks", json=body, headers=origin)
                 self.assertEqual(response.status_code, 403)
+
+    async def test_direct_http_receipt_deduplicates_concurrent_creates_and_rejects_changed_intent(self):
+        app = FastAPI()
+        app.include_router(muse.router)
+        origin = {"Origin": "http://localhost:5173"}
+        receipt = str(uuid.uuid4())
+        request = self.request(client_request_id=receipt)
+        body = request.model_dump(mode="json")
+        helper = self.root / "fixture-muse"
+        helper.write_text(f"#!{sys.executable}\n" + """import json
+import sys
+from pathlib import Path
+
+command = sys.argv[1]
+with Path(__file__).with_suffix(".log").open("a", encoding="utf-8") as log:
+    log.write(command + "\\n")
+payload = json.load(sys.stdin)
+if command == "probe":
+    result = {"ok": True, "installed": True, "permission": True, "composer_ready": True}
+elif command == "submit":
+    identifier = payload["request_id"]
+    assert f"[MODELDESK_DONE:{identifier}]" in payload["prompt"]
+    result = {"ok": True, "sent": True, "request_id": identifier, "thread_url": "https://muse.ai/thread/" + identifier}
+else:
+    assert command == "observe"
+    identifier = payload["request_id"]
+    result = {"ok": True, "busy": False, "waiting_user": False, "request_id": identifier, "thread_url": payload["thread_url"],
+              "messages": [{"role": "assistant", "text": f"Fixture reply [MODELDESK_DONE:{identifier}]"}]}
+print(json.dumps(result))
+""", encoding="utf-8")
+        helper.chmod(0o700)
+        self.manager.helper = helper
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app, client=("127.0.0.1", 3000)), base_url="http://localhost") as client:
+            with patch.object(muse, "manager", self.manager):
+                first, second = await asyncio.gather(*(client.post("/api/muse/tasks", json=body, headers=origin) for _ in range(2)))
+                self.assertEqual((first.status_code, second.status_code), (202, 202))
+                task_id = first.json()["id"]
+                self.assertEqual(second.json()["id"], task_id)
+                self.assertEqual(first.json()["client_request_id"], receipt)
+                self.assertNotIn("_dispatch_request_sha256", first.json())
+                self.assertEqual((await self.settle(first.json()))["status"], "complete")
+            restored = MuseManager(self.manager.store.directory)
+            restored.recover()
+            with patch.object(muse, "manager", restored), patch.object(restored, "helper_call", new_callable=AsyncMock) as restarted_helper:
+                again = await client.post("/api/muse/tasks", json={**body, "prompt": "  " + body["prompt"]}, headers=origin)
+                self.assertEqual(again.status_code, 202, again.text)
+                self.assertEqual((again.json()["id"], again.json()["status"]), (task_id, "complete"))
+                for changed in [{"prompt": "Different task"}, {"timeout_seconds": body["timeout_seconds"] + 1}]:
+                    conflict = await client.post("/api/muse/tasks", json={**body, **changed}, headers=origin)
+                    self.assertEqual(conflict.status_code, 409, conflict.text)
+                denied = await client.post("/api/muse/tasks", json=body, headers={"Origin": "https://other.example"})
+                self.assertEqual(denied.status_code, 403)
+                restarted_helper.assert_not_called()
+                self.assertFalse(restored.tasks)
+        self.assertEqual(helper.with_suffix(".log").read_text(encoding="utf-8").splitlines(), ["probe", "submit", "observe"])
+
+    async def test_direct_receipt_replays_interrupted_send_as_uncertain_without_resubmitting(self):
+        receipt = self.request(client_request_id=uuid.uuid4())
+        dispatch_started = asyncio.Event()
+
+        async def blocked_helper(command, payload=None):
+            if command == "probe":
+                return {"ok": True, "installed": True, "permission": True}
+            self.assertEqual(command, "submit")
+            dispatch_started.set()
+            await asyncio.Event().wait()
+
+        with patch.object(self.manager, "helper_call", side_effect=blocked_helper) as helper:
+            accepted = await self.manager.create(receipt)
+            await asyncio.wait_for(dispatch_started.wait(), 2)
+            in_flight = await self.manager.create(receipt)
+            self.assertEqual((in_flight["id"], in_flight["status"]), (accepted["id"], "dispatching"))
+            checkpoint = json.loads((self.manager.store.directory / f"{accepted['id']}.json").read_text())
+            self.assertIsNone(checkpoint["sent"])
+            self.assertTrue(checkpoint["uncertain"])
+            await self.manager.shutdown()
+        self.assertEqual([call.args[0] for call in helper.await_args_list], ["probe", "submit"])
+
+        # Restore the exact checkpoint that would survive a process crash.
+        self.manager.store.save(checkpoint)
+        restored = MuseManager(self.manager.store.directory)
+        restored.recover()
+        with patch.object(restored, "helper_call", new_callable=AsyncMock) as restarted_helper:
+            replay = await restored.create(receipt)
+            restarted_helper.assert_not_called()
+        self.assertEqual((replay["id"], replay["status"]), (accepted["id"], "interrupted"))
+        self.assertEqual(replay["remote_state"], "unknown")
+        self.assertTrue(replay["uncertain"])
+        self.assertIsNone(replay["sent"])
+        self.assertIsNone(replay["completion_evidence"])
+        self.assertFalse(restored.tasks)
+
+    async def test_direct_receipt_is_scoped_and_legacy_and_parent_dispatch_stay_distinct(self):
+        from backend import groups
+
+        project, first_room, second_room, other_project = [str(uuid.uuid4()) for _ in range(4)]
+        scope = {first_room: project, second_room: project}
+
+        def get_room(room_id, project_id):
+            if scope[room_id] != project_id:
+                raise HTTPException(403, "项目群不属于当前项目")
+            return {"project_id": project_id}
+
+        receipt = uuid.uuid4()
+        with patch("backend.projects.store.get"), patch.object(groups.store, "get", side_effect=get_room), patch.object(self.manager, "helper_call", self.driver()) as helper:
+            first = await self.manager.create(self.request(project_id=project, room_id=first_room, client_request_id=receipt))
+            second = await self.manager.create(self.request(project_id=project, room_id=second_room, client_request_id=receipt))
+            with self.assertRaises(HTTPException) as changed:
+                await self.manager.create(self.request(project_id=project, room_id=first_room, member_id="different", client_request_id=receipt))
+            self.assertEqual(changed.exception.status_code, 409)
+            with self.assertRaises(HTTPException) as denied:
+                await self.manager.create(self.request(project_id=other_project, room_id=first_room, client_request_id=receipt))
+            self.assertEqual(denied.exception.status_code, 403)
+            parent = str(uuid.uuid4())
+            legacy = await self.manager.create(self.request())
+            child = await self.manager.create(self.request(), parent_job_id=parent)
+            self.assertEqual(child["parent_job_id"], parent)
+            self.assertNotIn("client_request_id", legacy)
+            self.assertNotIn("client_request_id", child)
+            self.assertEqual(len({item["id"] for item in [first, second, legacy, child]}), 4)
+            for task in [first, second, legacy, child]:
+                await self.settle(task)
+        self.assertEqual([call.args[0] for call in helper.await_args_list].count("submit"), 4)
+
+    async def test_direct_receipt_cannot_dispatch_if_checkpoint_save_fails(self):
+        request = self.request(client_request_id=uuid.uuid4())
+        loop = asyncio.get_running_loop()
+        original_factory = loop.get_task_factory()
+        reserved = []
+
+        def eager_worker(loop, coroutine, **kwargs):
+            worker = asyncio.eager_task_factory(loop, coroutine, **kwargs)
+            reserved.append(worker)
+            return worker
+
+        with patch.object(self.manager, "helper_call", self.driver()) as helper:
+            loop.set_task_factory(eager_worker)
+            try:
+                with patch.object(self.manager.store, "save", side_effect=OSError("simulated disk failure")):
+                    with self.assertRaises(OSError):
+                        await self.manager.create(request)
+            finally:
+                loop.set_task_factory(original_factory)
+            self.assertEqual(len(reserved), 1)
+            await asyncio.gather(*reserved, return_exceptions=True)
+            self.assertTrue(reserved[0].cancelled())
+            helper.assert_not_called()
+        self.assertFalse(self.manager.records)
+        self.assertFalse(self.manager.tasks)
+        self.assertEqual(list(self.manager.store.directory.glob("*.json")), [])
+
+    async def test_direct_receipt_can_retry_after_task_factory_rejects_worker(self):
+        request = self.request(client_request_id=uuid.uuid4())
+        loop = asyncio.get_running_loop()
+        original_factory = loop.get_task_factory()
+        rejected = []
+
+        def reject_worker(_, coroutine, **kwargs):
+            rejected.append(coroutine)
+            raise RuntimeError("fixture scheduling failure")
+
+        helper = self.driver()
+        with patch.object(self.manager, "helper_call", helper):
+            loop.set_task_factory(reject_worker)
+            try:
+                with self.assertRaisesRegex(RuntimeError, "fixture scheduling failure"):
+                    await self.manager.create(request)
+            finally:
+                loop.set_task_factory(original_factory)
+            self.assertEqual(len(rejected), 1)
+            try:
+                self.assertEqual(inspect.getcoroutinestate(rejected[0]), inspect.CORO_CLOSED)
+            finally:
+                rejected[0].close()
+            self.assertFalse(self.manager.records)
+            self.assertFalse(self.manager.tasks)
+            self.assertEqual(list(self.manager.store.directory.glob("*.json")), [])
+            helper.assert_not_called()
+
+            accepted = await self.manager.create(request)
+            completed = await self.settle(accepted)
+            replay = await self.manager.create(request)
+            self.assertEqual((replay["id"], replay["status"]), (completed["id"], "complete"))
+        self.assertEqual([call.args[0] for call in helper.await_args_list].count("submit"), 1)
+
+    async def test_unreadable_direct_checkpoint_cannot_be_replaced_with_a_new_send(self):
+        request = self.request(client_request_id=uuid.uuid4())
+        with patch.object(self.manager, "helper_call", self.driver()):
+            accepted = await self.settle(await self.manager.create(request))
+        path = self.manager.store.directory / f"{accepted['id']}.json"
+        path.write_text("unreadable", encoding="utf-8")
+        restored = MuseManager(self.manager.store.directory)
+        restored.recover()
+        with self.assertRaises(HTTPException) as conflict:
+            await restored.create(request)
+        self.assertEqual(conflict.exception.status_code, 409)
+        self.assertEqual(conflict.exception.detail["code"], "dispatch_receipt_unverified")
+        self.assertEqual(path.read_text(encoding="utf-8"), "unreadable")
+        accepted.pop("_dispatch_request_sha256")
+        path.write_text(json.dumps(accepted))
+        restored.recover()
+        self.assertEqual(restored.list()[0]["id"], accepted["id"])
+        self.assertNotIn("client_request_id", restored.list()[0])
+        with self.assertRaises(HTTPException) as incomplete:
+            await restored.create(request)
+        self.assertEqual(incomplete.exception.detail["code"], "dispatch_receipt_unverified")
+        self.assertFalse(restored.tasks)
 
     async def test_http_tasks_and_exports_never_return_native_download_grants(self):
         app = FastAPI()

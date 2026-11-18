@@ -23,6 +23,12 @@ from backend.harness.teams import TeamStore
 
 CAPABILITIES = {"engines": [{"id": engine, "label": engine, "available": True, "authenticated": True,
                             "isolation": "test_process"} for engine in ["codex", "claude"]]}
+LOCAL_HEADERS = {"Origin": "http://localhost:5173"}
+FIXTURE_WORKER = [sys.executable, "-c", """
+import json
+print(json.dumps({'type': 'item.completed', 'item': {'type': 'agent_message', 'text': 'Fixture complete'}}))
+print(json.dumps({'type': 'result', 'result': 'Fixture complete'}))
+"""]
 
 
 class WorkerTests(unittest.IsolatedAsyncioTestCase):
@@ -68,6 +74,184 @@ print(json.dumps({'type':'turn.completed'}))
             item = await self.manager.create(request or self.request())
             await self.manager.tasks[item["id"]]
         return self.manager.get(item["id"], self.project["id"], self.room["id"])
+
+    async def test_receipt_coalesces_concurrent_http_dispatches_and_replays_after_restart(self):
+        api = FastAPI()
+        api.include_router(tasks.router)
+        body = self.request(client_request_id=uuid.uuid4()).model_dump(mode="json", exclude_none=True)
+        other = self.rooms.create(groups.RoomRequest(title="other", project_id=self.project["id"], team_id=self.team["id"]), self.teams)
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=api), base_url="http://local", headers=LOCAL_HEADERS) as client:
+            with (patch.object(tasks, "manager", self.manager), patch.object(tasks, "worker_command", return_value=FIXTURE_WORKER) as worker,
+                  patch.object(tasks, "engine_status", AsyncMock(return_value=CAPABILITIES)) as probe):
+                original, retry = await asyncio.gather(*(client.post("/api/group-tasks", json=body) for _ in range(2)))
+                self.assertEqual(original.status_code, 202, original.text)
+                self.assertEqual(retry.status_code, 202, retry.text)
+                task_id = original.json()["id"]
+                self.assertEqual(retry.json()["id"], task_id)
+                self.assertEqual(retry.json()["client_request_id"], body["client_request_id"])
+                self.assertNotIn("_dispatch_request_sha256", original.json())
+                self.assertEqual(probe.await_count, 1)
+                if work := self.manager.tasks.get(task_id):
+                    await work
+                self.assertEqual(worker.call_count, 1)
+                self.assertEqual(self.manager.get(task_id, body["project_id"], body["room_id"])["status"], "complete")
+                self.assertEqual(len(self.manager.records), 1)
+
+                claude_body = {**body, "engine": "claude", "client_request_id": str(uuid.uuid4())}
+                independent, retries_claude = await asyncio.gather(*(client.post("/api/group-tasks", json=claude_body) for _ in range(2)))
+                another_room = await client.post("/api/group-tasks", json={**body, "room_id": other["id"]})
+                self.assertEqual(independent.status_code, 202, independent.text)
+                self.assertEqual(retries_claude.status_code, 202, retries_claude.text)
+                self.assertEqual(independent.json()["id"], retries_claude.json()["id"])
+                self.assertEqual(another_room.status_code, 202, another_room.text)
+                self.assertEqual(len({task_id, independent.json()["id"], another_room.json()["id"]}), 3)
+                await asyncio.gather(*list(self.manager.tasks.values()))
+                self.assertEqual(worker.call_count, 3)
+                self.assertEqual(self.manager.records[independent.json()["id"]]["status"], "complete")
+
+            (self.repo / "hello.py").write_text('print("uncommitted edit")\n')
+            restored = tasks.TaskManager(self.root / "tasks")
+            restored.recover()
+            with (patch.object(tasks, "manager", restored), patch.object(tasks, "worker_command") as worker,
+                  patch.object(tasks, "engine_status", AsyncMock(side_effect=AssertionError("replay probed the engine")))):
+                recovered = await client.post("/api/group-tasks", json=body)
+                self.assertEqual(recovered.status_code, 202, recovered.text)
+                self.assertEqual(recovered.json()["id"], task_id)
+                self.assertEqual(recovered.json()["status"], "complete")
+                self.assertIn("Fixture complete", recovered.json()["output"])
+                conflicting = await client.post("/api/group-tasks", json={**body, "prompt": "Different task"})
+                self.assertEqual(conflicting.status_code, 409, conflicting.text)
+                foreign = await client.post("/api/group-tasks", json={**body, "project_id": str(uuid.uuid4())})
+                self.assertEqual(foreign.status_code, 403, foreign.text)
+                disallowed = await client.post("/api/group-tasks", json=body, headers={"Origin": "https://untrusted.example"})
+                self.assertEqual(disallowed.status_code, 403, disallowed.text)
+                scope = {key: body[key] for key in ("project_id", "room_id")}
+                history = await client.get("/api/group-tasks", params=scope)
+                self.assertEqual(history.status_code, 200, history.text)
+                saved = next(task for task in history.json() if task["id"] == task_id)
+                self.assertEqual(saved["client_request_id"], body["client_request_id"])
+                self.assertNotIn("_dispatch_request_sha256", saved)
+                detail = await client.get(f"/api/group-tasks/{task_id}", params=scope)
+                export = await client.get(f"/api/group-tasks/{task_id}/export", params={**scope, "format": "json"})
+                self.assertEqual(detail.status_code, 200, detail.text)
+                self.assertEqual(export.status_code, 200, export.text)
+                self.assertNotIn("_dispatch_request_sha256", detail.json())
+                self.assertNotIn("_dispatch_request_sha256", export.json())
+                self.assertEqual(restored.tasks, {})
+                worker.assert_not_called()
+
+    async def test_http_dispatch_can_retry_after_schedule_or_checkpoint_failure(self):
+        api = FastAPI()
+        api.include_router(tasks.router)
+        body = self.request(client_request_id=uuid.uuid4()).model_dump(mode="json", exclude_none=True)
+        transport = httpx.ASGITransport(app=api, raise_app_exceptions=False)
+        async with httpx.AsyncClient(transport=transport, base_url="http://local", headers=LOCAL_HEADERS) as client:
+            with patch.object(tasks, "manager", self.manager), patch.object(tasks, "worker_command", return_value=FIXTURE_WORKER) as worker:
+                for target, attribute in [(tasks.asyncio, "create_task"), (self.manager.store, "save")]:
+                    with patch.object(target, attribute, side_effect=OSError("injected admission failure")):
+                        failed = await client.post("/api/group-tasks", json=body)
+                    self.assertEqual(failed.status_code, 500, failed.text)
+                    self.assertEqual(self.manager.records, {})
+                    self.assertEqual(self.manager.tasks, {})
+                    self.assertEqual(list(self.manager.directory.glob("*.json")), [])
+                    worker.assert_not_called()
+                retry = await client.post("/api/group-tasks", json=body)
+                self.assertEqual(retry.status_code, 202, retry.text)
+                self.assertEqual(retry.json()["client_request_id"], body["client_request_id"])
+                await self.manager.tasks[retry.json()["id"]]
+                self.assertEqual(worker.call_count, 1)
+
+    async def test_recovered_queued_receipt_is_interrupted_and_never_scheduled_again(self):
+        request = self.request(client_request_id=uuid.uuid4())
+        # Keep the durable queued checkpoint without letting the fixture's
+        # worker start, as if the service stopped immediately after admission.
+        with patch.object(self.manager, "execute", AsyncMock()) as execute:
+            admitted = await self.manager.create(request)
+            await self.manager.shutdown()
+            execute.assert_not_awaited()
+        restored = tasks.TaskManager(self.root / "tasks")
+        restored.recover()
+        with patch.object(tasks, "engine_status", AsyncMock(side_effect=AssertionError("recovery probed the engine"))):
+            replay = await restored.create(request)
+        self.assertEqual(replay["id"], admitted["id"])
+        self.assertEqual(replay["status"], "interrupted")
+        self.assertEqual(restored.tasks, {})
+
+    async def test_existing_unreadable_receipt_checkpoint_blocks_http_redispatch(self):
+        request = self.request(client_request_id=uuid.uuid4())
+        admitted = await self.run_task(request)
+        checkpoint = self.manager.directory / (admitted["id"] + ".json")
+        corrupt = b'{"status":"complete", "torn":'
+        checkpoint.write_bytes(corrupt)
+        restored = tasks.TaskManager(self.root / "tasks")
+        restored.recover()
+        self.assertEqual(restored.records, {})
+
+        api = FastAPI()
+        api.include_router(tasks.router)
+        try:
+            with (patch.object(tasks, "manager", restored), patch.object(restored, "execute", AsyncMock()) as worker,
+                  patch.object(tasks, "engine_status", AsyncMock(return_value=CAPABILITIES)) as probe):
+                async with httpx.AsyncClient(transport=httpx.ASGITransport(app=api), base_url="http://local", headers=LOCAL_HEADERS) as client:
+                    body = request.model_dump(mode="json")
+                    retry = await client.post("/api/group-tasks", json=body)
+                    self.assertEqual(retry.status_code, 409, retry.text)
+                    self.assertEqual(retry.json()["detail"]["code"], "dispatch_receipt_unverified")
+                    self.assertEqual(checkpoint.read_bytes(), corrupt)
+                    checkpoint.unlink()
+                    missing_target = self.root / "unavailable-checkpoint.json"
+                    checkpoint.symlink_to(missing_target)
+                    retry = await client.post("/api/group-tasks", json=body)
+                    self.assertEqual(retry.status_code, 409, retry.text)
+                    self.assertTrue(checkpoint.is_symlink())
+                    self.assertEqual(checkpoint.readlink(), missing_target)
+                    checkpoint.unlink()
+                    incomplete = dict(admitted)
+                    incomplete.pop("_dispatch_request_sha256")
+                    checkpoint.write_text(json.dumps(incomplete))
+                    restored.recover()
+                    history = await client.get("/api/group-tasks", params={"project_id": body["project_id"], "room_id": body["room_id"]})
+                    self.assertNotIn("client_request_id", history.json()[0])
+                    retry = await client.post("/api/group-tasks", json=body)
+                    self.assertEqual(retry.json()["detail"]["code"], "dispatch_receipt_unverified")
+                probe.assert_not_awaited()
+                worker.assert_not_awaited()
+                self.assertEqual(set(restored.records), {admitted["id"]})
+                self.assertEqual(restored.tasks, {})
+        finally:
+            await restored.shutdown()
+
+    async def test_http_retry_after_checkpoint_write_error_leaves_durable_evidence(self):
+        request = self.request(client_request_id=uuid.uuid4())
+        save = self.manager.store.save
+
+        def save_then_fail(item):
+            save(item)
+            raise OSError("injected failure after checkpoint was written")
+
+        api = FastAPI()
+        api.include_router(tasks.router)
+        transport = httpx.ASGITransport(app=api, raise_app_exceptions=False)
+        async with httpx.AsyncClient(transport=transport, base_url="http://local", headers=LOCAL_HEADERS) as client:
+            body = request.model_dump(mode="json")
+            with patch.object(tasks, "manager", self.manager), patch.object(self.manager, "execute", AsyncMock()) as worker:
+                with patch.object(self.manager.store, "save", side_effect=save_then_fail):
+                    failed = await client.post("/api/group-tasks", json=body)
+                self.assertEqual(failed.status_code, 500, failed.text)
+                checkpoint, = self.manager.directory.glob("*.json")
+                before = checkpoint.read_bytes()
+                retry = await client.post("/api/group-tasks", json=body)
+                self.assertEqual(retry.status_code, 409, retry.text)
+                self.assertEqual(checkpoint.read_bytes(), before)
+                worker.assert_not_awaited()
+            restored = tasks.TaskManager(self.manager.directory)
+            restored.recover()
+            with patch.object(tasks, "manager", restored):
+                recovered = await client.post("/api/group-tasks", json=body)
+                self.assertEqual(recovered.status_code, 202, recovered.text)
+                self.assertEqual(recovered.json()["id"], checkpoint.stem)
+                self.assertEqual(recovered.json()["status"], "interrupted")
+                self.assertEqual(restored.tasks, {})
 
     async def test_real_subprocess_frozen_patch_leaves_source_clean(self):
         item = await self.run_task()
@@ -187,7 +371,8 @@ print(json.dumps({'type':'turn.completed'}))
 
     async def test_saved_member_model_reviews_exact_patch_without_cli(self):
         source = await self.run_task()
-        request = tasks.TaskRequest(project_id=self.project["id"], room_id=self.room["id"], member_id="reviewer", engine="member_model", kind="review", source_task_id=source["id"], prompt="Review independently")
+        request = tasks.TaskRequest(project_id=self.project["id"], room_id=self.room["id"], member_id="reviewer", engine="member_model", kind="review",
+                                    source_task_id=source["id"], prompt="Review independently", client_request_id=uuid.uuid4())
         capability = {"engines": [{"id": "member_model", "label": "成员模型", "available": True, "authenticated": True, "isolation": "no_tools_readonly_model", "models": ["claude-test"]}]}
         captured = []
         async def handle(http_request):
@@ -195,10 +380,12 @@ print(json.dumps({'type':'turn.completed'}))
             return httpx.Response(200, json={"choices": [{"message": {"content": "PASS. The change is straightforward; tests were not run."}, "finish_reason": "stop"}]})
         original_client = httpx.AsyncClient
         with patch.object(tasks, "engine_status", AsyncMock(return_value=capability)), patch.object(tasks, "worker_command") as cli, patch.object(tasks.httpx, "AsyncClient", side_effect=lambda **kwargs: original_client(transport=httpx.MockTransport(handle), **kwargs)):
-            review = await self.manager.create(request)
+            review, replay = await asyncio.gather(self.manager.create(request), self.manager.create(request))
+            self.assertEqual(replay["id"], review["id"])
             await self.manager.tasks[review["id"]]
         result = self.manager.get(review["id"], self.project["id"])
         self.assertEqual(result["status"], "complete", result["error"])
+        self.assertEqual(len(captured), 1)
         self.assertEqual(result["engine_model"], "claude-test")
         self.assertEqual(captured[0]["model"], "claude-test")
         self.assertIn(source["diff_sha256"], captured[0]["messages"][1]["content"])
@@ -206,6 +393,10 @@ print(json.dumps({'type':'turn.completed'}))
         self.assertNotIn("tools", captured[0])
         cli.assert_not_called()
         self.assertEqual(result["review_of_patch_sha256"], source["diff_sha256"])
+        (self.manager.task_directory(source["id"]) / "changes.patch").unlink()
+        replay = await self.manager.create(request)
+        self.assertEqual(replay["id"], review["id"])
+        self.assertEqual(replay["status"], "complete")
 
     async def test_member_review_rejects_truncated_response(self):
         source = await self.run_task()

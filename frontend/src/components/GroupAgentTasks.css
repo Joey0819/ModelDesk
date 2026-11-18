@@ -91,6 +91,8 @@
 }
 .group-task-reference pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 230px; overflow: auto; font-size: 11px; line-height: 1.7; color: var(--muted); padding: 12px; background: var(--shell-wash); border-radius: 5px; }
 .group-approval-card h3 { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
+.group-agent-dispatch-feedback { width: min(calc(100% - 28px), 920px); margin: 0 auto; flex: 0 0 auto; }
+.group-agent-dispatch-feedback .error-banner, .group-agent-dispatch-feedback .group-harness-banner { margin: 0 0 8px; }
 .group-agent-composer-toggle { display: none; }
 .group-engine-explanation { margin-top: 9px; font-size: 10px; color: var(--muted); }
 .group-engine-explanation > summary { cursor: pointer; }

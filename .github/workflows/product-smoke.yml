@@ -126,6 +126,8 @@ jobs:
           node frontend/tests/browser/check-navigation.mjs
           node frontend/tests/browser/check-platform-catalogs.mjs
           node frontend/tests/browser/check-conversation-actions.mjs
+          node frontend/tests/browser/check-group-dispatch.mjs
+          node frontend/tests/browser/check-muse-panel-dispatch.mjs
 
       - name: Test and package the Linux desktop
         run: |

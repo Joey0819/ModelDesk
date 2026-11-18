@@ -6,6 +6,7 @@ import { canUseMuseReply } from './muse-state.js';
 export const groupScopeKey = (projectId) => `modeldesk.groups.v1:${projectId || 'unassigned'}`;
 export const groupDraftKey = (projectId, roomId) => `${groupScopeKey(projectId)}:${roomId}:draft`;
 export const groupSubmissionKey = (projectId, roomId) => `${groupScopeKey(projectId)}:${roomId}:submission`;
+export const groupDispatchKey = (projectId, roomId, channel) => `${groupScopeKey(projectId)}:${roomId || 'unassigned'}:dispatch:${channel}`;
 export const groupActive = (job) => ['running', 'queued'].includes(job?.status);
 export const groupDeliveryMode = (job) => job?.group_delivery_mode === 'auto' || job?.result?.delivery ? 'auto' : 'discussion';
 export const GROUP_OUTPUT_FORMATS = ['auto', 'text', 'illustrated', 'video'];
@@ -75,14 +76,44 @@ export function groupSubmissionMatches(pending, body, harnessMode) {
   return pending?.harnessMode === harnessMode && JSON.stringify(pending?.body) === JSON.stringify(body);
 }
 
-export function createGroupSubmission(body, harnessMode) {
+function newGroupRequestId() {
   // getRandomValues also works for remote clients opened over local HTTP.
   const bytes = globalThis.crypto.getRandomValues(new Uint8Array(16));
   bytes[6] = (bytes[6] & 15) | 64;
   bytes[8] = (bytes[8] & 63) | 128;
   const hex = Array.from(bytes, (value) => value.toString(16).padStart(2, '0')).join('');
-  const id = [hex.slice(0, 8), hex.slice(8, 12), hex.slice(12, 16), hex.slice(16, 20), hex.slice(20)].join('-');
-  return { id, body, harnessMode };
+  return [hex.slice(0, 8), hex.slice(8, 12), hex.slice(12, 16), hex.slice(16, 20), hex.slice(20)].join('-');
+}
+
+export function createGroupSubmission(body, harnessMode) {
+  return { id: newGroupRequestId(), body, harnessMode };
+}
+
+export function createGroupDispatch({ target, body, intent }) {
+  return { id: newGroupRequestId(), target, body, intent };
+}
+
+const GROUP_DISPATCH_TARGETS = { composer: ['group_task', 'muse'], form: ['group_task'], 'muse-panel': ['muse'] };
+
+export function readGroupDispatch(storage, projectId, roomId, channel) {
+  try {
+    const pending = JSON.parse(storage.getItem(groupDispatchKey(projectId, roomId, channel)) || 'null');
+    if (/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(pending?.id)
+      && GROUP_DISPATCH_TARGETS[channel]?.includes(pending.target)
+      && (pending.body?.room_id || null) === (roomId || null) && (pending.body?.project_id || null) === (projectId || null)
+      && typeof pending.body.prompt === 'string' && pending.body.prompt.trim() && pending.intent) return pending;
+  } catch { /* Ignore an invalid saved attempt. */ }
+  return null;
+}
+
+export function groupDispatchReceiptMatches(pending, task) {
+  return Boolean(pending && task?.id && task.client_request_id === pending.id
+    && (task.room_id || null) === (pending.body.room_id || null) && (task.project_id || null) === (pending.body.project_id || null));
+}
+
+export function groupDispatchIntentMatches(pending, intent) {
+  return JSON.stringify(pending?.intent) === JSON.stringify(intent);
+
 }
 export function scopedRooms(rooms, projectId) {
   return (Array.isArray(rooms) ? rooms : []).filter((room) => (room.project_id || null) === (projectId || null)).sort((a, b) => String(b.updated_at || '').localeCompare(String(a.updated_at || '')));

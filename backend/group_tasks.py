@@ -19,6 +19,7 @@ import sys
 import time
 from typing import Literal
 import uuid
+from weakref import WeakValueDictionary
 
 import httpx
 import psutil
@@ -29,6 +30,8 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from . import groups, projects
 from .attachments import secret_text
+from .dispatch_receipts import (direct_task_receipt, has_dispatch_receipt, replay_direct_task,
+                                start_agent_worker, unverified_dispatch)
 from .harness.store import RunStore, checked_id
 from .muse_bridge import local_mutation
 from .workbench import now, public_error
@@ -49,6 +52,7 @@ router = APIRouter(prefix="/api/group-tasks", tags=["group-tasks"])
 
 class TaskRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
+    client_request_id: uuid.UUID | None = None
     project_id: uuid.UUID
     room_id: uuid.UUID
     member_id: str = Field(min_length=1, max_length=40)
@@ -364,6 +368,7 @@ class TaskManager:
         self.directory = Path(directory or ROOT / "data/group-tasks")
         self.store = RunStore(self.directory)
         self.records, self.tasks, self.processes = {}, {}, {}
+        self.submission_locks = WeakValueDictionary()
         self.process_trees, self.process_monitors = {}, {}
         self.slots = asyncio.Semaphore(2)
         # Last kanban status mirrored per task; save() also records events, and
@@ -500,8 +505,31 @@ class TaskManager:
         return encoded[:11000], hashlib.sha256(encoded.encode()).hexdigest()
 
     async def create(self, request, *, parent_job_id=None, skill_snapshot=None, reference_assets=None):
+        body = request.model_dump(mode="json", exclude={"client_request_id"})
+        options = {"parent_job_id": parent_job_id, "skill_snapshot": skill_snapshot, "reference_assets": reference_assets}
+        if request.client_request_id is None:
+            return await self._admit(body, **options)
+        if parent_job_id is not None:
+            raise HTTPException(422, "发送回执仅用于手动派发的独立任务")
+
+        receipt = str(request.client_request_id)
+        identifier, digest = direct_task_receipt("group_agent", request)
+        lock = self.submission_locks.setdefault(identifier, asyncio.Lock())
+        async with lock:
+            previous = replay_direct_task("group_agent", self.records, identifier, digest)
+            if previous is not None:
+                if (previous.get("project_id") != body["project_id"] or previous.get("room_id") != body["room_id"]
+                        or previous.get("parent_job_id") is not None or previous.get("client_request_id") != receipt):
+                    raise unverified_dispatch("无法核对这次派发与项目群的关联。请查看原任务。")
+                return previous
+            checkpoint = self.store.directory / (identifier + ".json")
+            if checkpoint.is_symlink() or checkpoint.exists():
+                raise unverified_dispatch("原任务文件已保留，暂时无法核对。请在代码 Agent 中查看原任务。")
+            submission = {"id": identifier, "client_request_id": receipt, "_dispatch_request_sha256": digest}
+            return await self._admit(body, submission=submission, **options)
+
+    async def _admit(self, body, *, parent_job_id, skill_snapshot, reference_assets, submission=None):
         parent_link = {"parent_job_id": checked_id(parent_job_id)} if parent_job_id is not None else {}
-        body = request.model_dump(mode="json")
         room = groups.store.get(body["room_id"], body["project_id"])
         if body["source_run_id"]:
             if body["kind"] != "code" or parent_link:
@@ -549,7 +577,7 @@ class TaskManager:
             raise HTTPException(409, "所选成员模型当前不在网关可用模型中，请检查登录")
         if groups.store.get(body["room_id"], body["project_id"])["team_revision"] != room["team_revision"]:
             raise HTTPException(409, "群成员在派发期间发生变化，请确认新成员后重新派发")
-        item = {**body, **parent_link, "id": str(uuid.uuid4()), "schema_version": 1, "member": copy.deepcopy(member), "status": "queued", "created_at": now(),
+        item = {**body, **parent_link, **(submission or {"id": str(uuid.uuid4())}), "schema_version": 1, "member": copy.deepcopy(member), "status": "queued", "created_at": now(),
                 "updated_at": now(), "finished_at": None, "events": [], "output": "", "error": None, "exit_code": None,
                 "commands": [], "command_count": 0,
                 "base_sha": head, "base_snapshot_sha256": None, "diff": "", "diff_sha256": None, "patch_sha256": None, "changed_files": [], "diff_stats": "",
@@ -583,10 +611,8 @@ class TaskManager:
             item['project_context_sha256'] = hashlib.sha256(item['project_context'].encode()).hexdigest()
         else:
             item["project_context"], item["project_context_sha256"] = self.freeze_context(room, project)
-        self.records[item["id"]] = item
-        self.save(item, "queued", "已排队，执行前冻结独立项目快照")
-        self.tasks[item["id"]] = asyncio.create_task(self.execute(item))
-        return copy.deepcopy(item)
+        return start_agent_worker(item, self.records, self.tasks, self.execute,
+                                  lambda: self.save(item, "queued", "已排队，执行前冻结独立项目快照"))
 
     def prepare(self, item):
         directory = self.task_directory(item["id"])
@@ -898,9 +924,10 @@ class TaskManager:
         if task and not task.done():
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
-        elif item["status"] in ACTIVE:
+        if item["status"] in ACTIVE:
             item.update(status="cancelled", error="排队任务已取消", finished_at=now())
             self.save(item, "cancelled")
+            self.tasks.pop(identifier, None)
         return self.get(identifier, project_id, room_id)
 
     async def shutdown(self):
@@ -916,6 +943,13 @@ def manifest_digest(manifest):
 manager = TaskManager()
 
 
+def public_task(item):
+    result = {key: value for key, value in item.items() if key != "_dispatch_request_sha256"}
+    if "client_request_id" in result and not has_dispatch_receipt("group_agent", item):
+        result.pop("client_request_id")
+    return result
+
+
 @router.get("/engines")
 async def engines():
     return await engine_status()
@@ -923,30 +957,30 @@ async def engines():
 
 @router.get("")
 async def list_tasks(project_id: str, room_id: str):
-    return manager.list(checked_id(project_id), checked_id(room_id))
+    return [public_task(item) for item in manager.list(checked_id(project_id), checked_id(room_id))]
 
 
 @router.post("", status_code=202, dependencies=[Depends(local_mutation)])
 async def create_task(request: TaskRequest):
-    return await manager.create(request)
+    return public_task(await manager.create(request))
 
 
 @router.get("/{identifier}")
 async def get_task(identifier: str, project_id: str, room_id: str):
     groups.store.get(room_id, project_id)
-    return manager.get(identifier, project_id, room_id)
+    return public_task(manager.get(identifier, project_id, room_id))
 
 
 @router.post("/{identifier}/cancel", dependencies=[Depends(local_mutation)])
 async def cancel_task(identifier: str, project_id: str, room_id: str):
     groups.store.get(room_id, project_id)
-    return await manager.cancel(identifier, project_id, room_id)
+    return public_task(await manager.cancel(identifier, project_id, room_id))
 
 
 @router.get("/{identifier}/export")
 async def export_task(identifier: str, project_id: str, room_id: str, format: Literal["md", "json"] = "md"):
     groups.store.get(room_id, project_id)
-    item = manager.get(identifier, project_id, room_id)
+    item = public_task(manager.get(identifier, project_id, room_id))
     if format == "json":
         content = json.dumps(item, ensure_ascii=False, indent=2)
         media = "application/json"

@@ -1,10 +1,10 @@
-import { API_BASE, apiFetch } from './api-base';
+import { API_BASE, apiFetch, apiResponseError } from './api-base';
 import { taskScope } from './group-task-state';
 async function request(path, method = 'GET', body) {
   let response;
   try { response = await apiFetch(`${API_BASE}/api/${path}`, { method, ...(body === undefined ? {} : { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }) }); }
   catch { throw new Error('Agent 服务无法连接，请检查工作台连接。'); }
-  if (!response.ok) { let detail; try { detail = (await response.json()).detail; } catch { /* Preserve HTTP status. */ } if (Array.isArray(detail)) detail = detail.map((item) => item.msg).join('；'); throw new Error(typeof detail === 'string' ? detail : `请求失败（${response.status}）`); }
+  if (!response.ok) throw await apiResponseError(response, `请求失败（${response.status}）`);
   return response.json();
 }
 export const groupTaskApi = {

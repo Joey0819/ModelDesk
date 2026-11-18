@@ -23,6 +23,8 @@ PLAYWRIGHT_MODULE="$(.venv/bin/python -c 'from pathlib import Path; import playw
 node frontend/tests/browser/check-navigation.mjs
 node frontend/tests/browser/check-platform-catalogs.mjs
 node frontend/tests/browser/check-conversation-actions.mjs
+node frontend/tests/browser/check-group-dispatch.mjs
+node frontend/tests/browser/check-muse-panel-dispatch.mjs
 ```
 
 Set `CHROMIUM_EXECUTABLE` to use a specific Chromium executable. Set
@@ -32,3 +34,5 @@ in an empty session and returning from the phone task board. Linux product
 smoke runs this check on every push and pull request.
 
 The catalog check delays two MCP servers and verifies that retries preserve a draft and that results return to the correct server. The conversation check opens account controls and downloads Markdown and JSON at laptop and phone widths.
+
+The dispatch checks simulate a lost reply after an Agent accepts work. They cover the group chat, code review form and Muse panel. Reloading or returning from a different project or room must recover the same task and preserve any edits. All submissions in these browser checks go to an isolated test adapter.

@@ -34,6 +34,7 @@ import {
   extractGroupDeliverable,
   groupActive,
   groupDeliveryMode,
+  groupDispatchIntentMatches,
   groupDraftKey,
   groupMemberColor,
   groupMessages,
@@ -51,6 +52,7 @@ import { contextErrors } from '../platform-settings';
 import { attachmentIssues } from '../attachment-files';
 import { useProjects } from '../project-context';
 import useGroupRoom from '../hooks/useGroupRoom';
+import useGroupDispatch from '../hooks/useGroupDispatch';
 import { Icon, Markdown, AgentOutput, ResultProvenance } from './WorkbenchResults';
 import { CopyTextButton } from './ConversationActions';
 import MissionTeamPicker from './MissionTeamPicker';
@@ -317,8 +319,8 @@ function GroupRoom({ roomId, projectId, initialJob, header, status, models, cont
   const [openedPatch, setOpenedPatch] = useState(null);
   const [patchError, setPatchError] = useState('');
   const [museHistoryError, setMuseHistoryError] = useState('');
-  const [runtimeDispatching, setRuntimeDispatching] = useState(false);
-  const dispatchingRuntime = useRef(false);
+  const [appliedRuntimeReceipt, setAppliedRuntimeReceipt] = useState(null);
+  const appliedRuntimeReceiptRef = useRef(null);
   const [engines, setEngines] = useState([]);
   const [museProbe, setMuseProbe] = useState(null);
   const [harnessNotice, setHarnessNotice] = useState('');
@@ -355,6 +357,9 @@ function GroupRoom({ roomId, projectId, initialJob, header, status, models, cont
       } catch { /* Keep existing agent tasks on transient error. */ }
     }
   }, [projectId, roomId]);
+
+  const runtimeDispatch = useGroupDispatch({ projectId, roomId, channel: 'composer', agentTasks, museTasks, onRefresh: refreshMuseAndAgents });
+  const { pending: runtimePending, accepted: runtimeAccepted, busy: runtimeDispatching, error: runtimeError, warning: runtimeWarning, acknowledge: acknowledgeRuntime } = runtimeDispatch;
 
   useEffect(() => {
     let disposed = false;
@@ -513,8 +518,9 @@ function GroupRoom({ roomId, projectId, initialJob, header, status, models, cont
     if ((context.project_id || null) === (projectId || null)) {
       localStorage.setItem(groupDraftKey(projectId, roomId), JSON.stringify({ prompt, recipientIds, harnessMode, deliveryMode, backgroundMode, ...outputOptions, ...documentOptions, contextTurns, contextMode, context }));
       if (appliedReceipt) acknowledge(appliedReceipt);
+      if (appliedRuntimeReceipt) acknowledgeRuntime(appliedRuntimeReceipt);
     }
-  }, [prompt, recipientIds, harnessMode, deliveryMode, backgroundMode, outputOptions, documentOptions, contextTurns, contextMode, context, projectId, roomId, appliedReceipt, acknowledge]);
+  }, [prompt, recipientIds, harnessMode, deliveryMode, backgroundMode, outputOptions, documentOptions, contextTurns, contextMode, context, projectId, roomId, appliedReceipt, acknowledge, appliedRuntimeReceipt, acknowledgeRuntime]);
   useEffect(() => {
     if (initialResultRevealRef.current && initialJob && workMode === 'discussion') {
       initialResultRevealRef.current = false;
@@ -539,29 +545,6 @@ function GroupRoom({ roomId, projectId, initialJob, header, status, models, cont
     setHarnessNotice('已准备 Muse 任务草稿。检查内容后，点击“派发 Muse”才会操作原生应用。');
   }, [members, room]);
 
-  const dispatchRuntime = async (text) => {
-    if (!runtimeMember || dispatchingRuntime.current) return null;
-    dispatchingRuntime.current = true;
-    setRuntimeDispatching(true);
-    try {
-      const finalPrompt = buildGroupRuntimePrompt(text, jobs, room, agentTasks, museTasks, contextTurns);
-      const request = groupRuntimeRequest({ member: runtimeMember, projectId, roomId, prompt: finalPrompt });
-      if (request.target === 'muse') {
-        const created = await museApi.create(request.body);
-        setMuseTasks((previous) => mergeMuseTasks(previous, [created], projectId, roomId));
-        setHarnessNotice(`已交给 ${runtimeMember.name} 的原生 Muse 桥接；实际状态将在本群同步。`);
-      } else {
-        const created = await groupTaskApi.create(request.body);
-        setAgentTasks((previous) => [...previous.filter((task) => task.id !== created.id), created]);
-        setHarnessNotice(`已由 ${runtimeMember.name} 启动 ${groupMemberKindLabel(runtimeMember)} 独立任务，可在“代码 Agent”检查改动与审批。`);
-      }
-      nearBottom.current = true;
-      await refreshMuseAndAgents();
-      return true;
-    } catch (failure) { setHarnessNotice(`派发失败：${failure.message}`); return false; }
-    finally { dispatchingRuntime.current = false; setRuntimeDispatching(false); }
-  };
-
   const handOffToAgent = useCallback((specText, preferredMemberId, sourceRunId) => {
     const currentDraft = readTaskDraft(localStorage, projectId, roomId);
     const targetMember = deliveryMembers.find((item) => ['codex', 'claude'].includes(groupMemberKind(item)) && item.id !== preferredMemberId) || deliveryMembers.find((item) => groupMemberKind(item) !== 'muse' && item.id !== preferredMemberId);
@@ -581,18 +564,21 @@ function GroupRoom({ roomId, projectId, initialJob, header, status, models, cont
     if (!pending) return;
     const matched = jobs.find((item) => item.id === pending.jobId);
     if (!matched || groupActive(matched)) return;
-    pendingHarnessJobRef.current = null;
-    if (matched.status !== 'complete') return;
-    if (matched.result?.partial_failure || !extractGroupDeliverable(matched, room)) { setHarnessNotice('本轮存在失败、不完整输出或没有可用结论，已保留原始记录。请检查成员发言后自行准备任务，不自动生成执行草稿。'); return; }
-    if (prompt.trim()) { setHarnessNotice('讨论已完成，当前输入草稿已保留。可在成员发言下点击“准备 Muse 任务”或“交由代码 Agent”。'); return; }
-    if (pending.mode === 'discuss_muse') {
-      prepareMuseDraft(pending.userPrompt, matched);
-    } else if (pending.mode === 'discuss_agent') {
+    let disposed = false;
+    queueMicrotask(() => {
+      if (disposed || pendingHarnessJobRef.current !== pending) return;
+      pendingHarnessJobRef.current = null;
+      if (matched.status !== 'complete') return;
       const deliverable = extractGroupDeliverable(matched, room);
-      if (deliverable) {
+      if (matched.result?.partial_failure || !deliverable) { setHarnessNotice('本轮存在失败、不完整输出或没有可用结论，已保留原始记录。请检查成员发言后自行准备任务，不自动生成执行草稿。'); return; }
+      if (prompt.trim()) { setHarnessNotice('讨论已完成，当前输入草稿已保留。可在成员发言下点击“准备 Muse 任务”或“交由代码 Agent”。'); return; }
+      if (pending.mode === 'discuss_muse') {
+        prepareMuseDraft(pending.userPrompt, matched);
+      } else if (pending.mode === 'discuss_agent') {
         handOffToAgent(`根据群聊讨论结论执行以下任务：\n${pending.userPrompt}\n\n群内成员方案总结：\n${deliverable}`, undefined, matched.id);
       }
-    }
+    });
+    return () => { disposed = true; };
   }, [jobs, prepareMuseDraft, handOffToAgent, room, prompt]);
 
   const errors = [
@@ -607,8 +593,13 @@ function GroupRoom({ roomId, projectId, initialJob, header, status, models, cont
     ...(!runtimeMember && !status ? ['正在读取模型连接状态。'] : []),
     ...(room && !loading && !runtimeMember && !selectedMembers.length && !(deliveryMode === 'auto' && deliveryMembers.some((member) => ['image', 'mcp'].includes(groupMemberKind(member)) && (!recipientIds.length || recipientIds.includes(member.id)))) && !(coordinatorModel && !recipientIds.length) ? ['本群还没有 LLM 成员，请添加模型成员，或明确选择一位运行时 Agent。'] : []),
   ];
-  const canSend = Boolean(room && !submission && prompt.trim() && (runtimeMember ? runtimeReady : !errors.length) && !loading && !busy && !runtimeDispatching && !activeJob && !attachmentPending && !transfers);
+  const canSend = Boolean(room && !submission && !runtimePending && prompt.trim() && (runtimeMember ? runtimeReady : !errors.length) && !loading && !busy && !runtimeDispatching && !activeJob && !attachmentPending && !transfers);
   const canRetry = Boolean(room && submission && !accepted && !busy);
+  const canRetryRuntime = Boolean(room && runtimePending && !runtimeAccepted && !runtimeDispatching);
+  const pendingRuntimeName = members.find((member) => member.id === runtimePending?.body.member_id)?.name;
+  const runtimeIntent = useMemo(() => runtimeMember && prompt.trim() && (runtimeKind === 'muse' || projectId)
+    ? { ...groupRuntimeRequest({ member: runtimeMember, projectId, roomId, prompt }), contextTurns }
+    : null, [runtimeMember, runtimeKind, projectId, roomId, prompt, contextTurns]);
   const activeHarness = GROUP_HARNESS_MODES.find((item) => item.id === harnessMode) || GROUP_HARNESS_MODES[0];
   const messageBody = useMemo(() => groupMessageRequest({
     prompt, recipientIds, context, contextTurns, contextMode,
@@ -618,45 +609,67 @@ function GroupRoom({ roomId, projectId, initialJob, header, status, models, cont
 
   useEffect(() => {
     if (!accepted || !submission || appliedReceiptRef.current === submission.id || (context.project_id || null) !== (projectId || null)) return;
-    appliedReceiptRef.current = submission.id;
-    const { body, harnessMode: sentHarness } = submission;
-    const sameDraft = groupSubmissionMatches(submission, messageBody, harnessMode);
-    if (sameDraft) {
-      setPrompt((current) => current.trim() === body.prompt ? '' : current);
-      setContextMode('continue');
-      onContextChange((current) => ({
-        ...current,
-        attachment_ids: current.attachment_ids.filter((id) => !body.attachment_ids?.includes(id)),
-        ...(current.muse_task_id === body.muse_task_id ? { muse_task_id: null, muse_task_label: '', muse_harness_response: '' } : {}),
-      }));
-    }
-    if (body.delivery_mode === 'auto') globalThis.dispatchEvent?.(new Event('modeldesk-autonomy-changed'));
-    if (!sameDraft) {
-      setHarnessNotice('上次发送已确认，可在群聊记录查看。当前草稿已保留。');
-    } else if (groupActive(accepted) && body.delivery_mode === 'auto') {
-      setHarnessNotice(body.background_mode ? `后台任务已收到，可在“后台任务”查看。${machine.short}需保持唤醒并联网。` : '任务已收到，可在本轮查看进度。');
-    } else if (body.delivery_mode === 'discussion' && ['discuss_muse', 'discuss_agent'].includes(sentHarness) && (groupActive(accepted) || accepted.status === 'complete')) {
-      pendingHarnessJobRef.current = { jobId: accepted.id, mode: sentHarness, userPrompt: body.prompt };
-      setHarnessNotice(sentHarness === 'discuss_muse' ? '群聊已收到消息。讨论结束后会准备 Muse 草稿，由你确认派发。' : '群聊已收到消息。讨论结束后会准备代码 Agent 草稿，由你确认派发。');
-    } else {
-      setHarnessNotice('发送已确认，可在群聊记录查看。');
-    }
-    nearBottom.current = true;
-    setShowLatest(false);
-    setAppliedReceipt(submission.id);
+    let disposed = false;
+    queueMicrotask(() => {
+      if (disposed) return;
+      appliedReceiptRef.current = submission.id;
+      const { body, harnessMode: sentHarness } = submission;
+      const sameDraft = groupSubmissionMatches(submission, messageBody, harnessMode);
+      if (sameDraft) {
+        setPrompt((current) => current.trim() === body.prompt ? '' : current);
+        setContextMode('continue');
+        onContextChange((current) => ({
+          ...current,
+          attachment_ids: current.attachment_ids.filter((id) => !body.attachment_ids?.includes(id)),
+          ...(current.muse_task_id === body.muse_task_id ? { muse_task_id: null, muse_task_label: '', muse_harness_response: '' } : {}),
+        }));
+      }
+      if (body.delivery_mode === 'auto') globalThis.dispatchEvent?.(new Event('modeldesk-autonomy-changed'));
+      if (!sameDraft) {
+        setHarnessNotice('上次发送已确认，可在群聊记录查看。当前草稿已保留。');
+      } else if (groupActive(accepted) && body.delivery_mode === 'auto') {
+        setHarnessNotice(body.background_mode ? `后台任务已收到，可在“后台任务”查看。${machine.short}需保持唤醒并联网。` : '任务已收到，可在本轮查看进度。');
+      } else if (body.delivery_mode === 'discussion' && ['discuss_muse', 'discuss_agent'].includes(sentHarness) && (groupActive(accepted) || accepted.status === 'complete')) {
+        pendingHarnessJobRef.current = { jobId: accepted.id, mode: sentHarness, userPrompt: body.prompt };
+        setHarnessNotice(sentHarness === 'discuss_muse' ? '群聊已收到消息。讨论结束后会准备 Muse 草稿，由你确认派发。' : '群聊已收到消息。讨论结束后会准备代码 Agent 草稿，由你确认派发。');
+      } else {
+        setHarnessNotice('发送已确认，可在群聊记录查看。');
+      }
+      nearBottom.current = true;
+      setShowLatest(false);
+      setAppliedReceipt(submission.id);
+    });
+    return () => { disposed = true; };
   }, [accepted, submission, context.project_id, projectId, messageBody, harnessMode, onContextChange, machine.short]);
+
+  useEffect(() => {
+    if (!room || !runtimeAccepted || !runtimePending || appliedRuntimeReceiptRef.current === runtimePending.id || (context.project_id || null) !== (projectId || null)) return;
+    let disposed = false;
+    queueMicrotask(() => {
+      if (disposed) return;
+      appliedRuntimeReceiptRef.current = runtimePending.id;
+      const sameDraft = groupDispatchIntentMatches(runtimePending, runtimeIntent);
+      if (sameDraft) setPrompt('');
+      if (runtimePending.target === 'muse') {
+        setMuseTasks((previous) => mergeMuseTasks(previous, [runtimeAccepted], projectId, roomId));
+      } else {
+        setAgentTasks((previous) => [...previous.filter((task) => task.id !== runtimeAccepted.id), runtimeAccepted]);
+      }
+      setHarnessNotice(sameDraft ? '派发已确认，可在本群查看任务记录。' : '上次派发已确认，当前草稿已保留。');
+      nearBottom.current = true;
+      setShowLatest(false);
+      setAppliedRuntimeReceipt(runtimePending.id);
+    });
+    return () => { disposed = true; };
+  }, [room, runtimeAccepted, runtimePending, runtimeIntent, context.project_id, projectId, roomId]);
 
   const send = async (event) => {
     event.preventDefault();
     if (!canSend) return;
-    const sentPrompt = prompt.trim();
     setHarnessNotice('');
-    if (runtimeMember) {
-      const created = await dispatchRuntime(sentPrompt);
-      if (created) {
-        setPrompt((current) => current.trim() === sentPrompt ? '' : current);
-        setShowLatest(false);
-      }
+    if (runtimeIntent) {
+      const request = groupRuntimeRequest({ member: runtimeMember, projectId, roomId, prompt: buildGroupRuntimePrompt(prompt, jobs, room, agentTasks, museTasks, contextTurns) });
+      await runtimeDispatch.send({ ...request, intent: runtimeIntent });
       return;
     }
     await roomState.send(messageBody, harnessMode);
@@ -948,9 +961,10 @@ function GroupRoom({ roomId, projectId, initialJob, header, status, models, cont
             {activeJob ? <button className="stop-button" type="button" disabled={busy} onClick={roomState.cancel}><Icon name="stop" size={15} />停止本轮</button> : <button className="primary-button" type="submit" disabled={!canSend}><Icon name="send" size={15} />{busy || runtimeDispatching ? '正在提交' : runtimeMember ? `派发 ${runtimeKind === 'muse' ? 'Muse' : runtimeKind === 'codex' ? 'Codex' : 'Claude Code'}` : deliveryMode === 'auto' ? '开始完成任务' : '发送消息'}</button>}
           </div>
         </form>
-        {(submissionError || canRetry) && <div className="error-banner" role={submissionError ? 'alert' : 'status'}>
-          <span>{submissionError || '上次发送仍待确认。'}</span>
+        {(submissionError || canRetry || runtimeError || runtimeWarning || canRetryRuntime) && <div className="error-banner" role={submissionError || runtimeError || runtimeWarning ? 'alert' : 'status'}>
+          <span>{runtimeWarning ? `${runtimeWarning} 其他任务可在另一个群聊或单项协作继续。` : canRetryRuntime ? `上次${pendingRuntimeName ? `交给 ${pendingRuntimeName} 的任务` : '派发'}仍待确认。重试会沿用原任务。` : runtimeError || submissionError || '上次发送仍待确认。'}</span>
           {canRetry && <button className="subtle-button" type="button" onClick={() => roomState.send()}>重试上次发送</button>}
+          {canRetryRuntime && <button className="subtle-button" type="button" onClick={() => runtimeDispatch.send()}>{runtimeWarning ? '重新检查上次派发' : '重试上次派发'}</button>}
         </div>}
         {(!runtimeMember && (errors.length > 0 || attachmentPending || transfers > 0)) && <p className="mission-form-note">{attachmentPending || transfers > 0 ? '请等待资料准备完成。' : errors[0]}</p>}
         {runtimeMember && <p className="group-runtime-boundary">{runtimeKind === 'muse' ? (hostIsMacos(status) ? (REMOTE_CLIENT ? 'Muse 原生窗口操作需要在 Mac 端派发。' : runtimeReadiness.ready ? '将操作本机 Muse。回复与文件仅在桥接实际读取后显示；附件不会自动传入原生应用。' : `${runtimeReadiness.label}：${runtimeReadiness.detail} 请打开 Muse 面板检查连接。`) : 'Muse 原生窗口操作仅在 Mac 上可用；当前主机不是 Mac，无法派发 Muse 任务。') : !projectId ? '代码 Agent 需要选择本地 Git 项目。' : !runtimeReady ? (runtimeEngine?.error || '请在“Agent 与连接”检查本机执行器安装与登录状态。') : '将在隔离 Git 工作区执行，改动需要独立审阅和你的合入审批。附件不会自动传入执行器。'} <button type="button" className="subtle-button" onClick={refreshRuntimeStatus}>重新检查执行器</button></p>}

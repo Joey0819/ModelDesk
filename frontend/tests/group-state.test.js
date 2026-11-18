@@ -17,6 +17,11 @@ import {
   extractGroupDeliverable,
   groupScopeKey,
   groupDraftKey,
+  groupDispatchKey,
+  createGroupDispatch,
+  readGroupDispatch,
+  groupDispatchReceiptMatches,
+  groupDispatchIntentMatches,
   groupSubmissionKey,
   createGroupSubmission,
   groupSubmissionMatches,
@@ -43,6 +48,42 @@ import { applyEvent } from '../src/workbench-state.js';
 const members = [{ id: 'writer', name: 'Writer', model: 'model-a', role: 'Draft the proposal' }, { id: 'reviewer', name: 'Reviewer', model: 'model-b', role: 'Check the evidence' }];
 const room = { id: 'room-a', project_id: 'project-a', team_snapshot: { name: 'Team', members } };
 const job = { id: 'job-a', project_id: 'project-a', group_room_id: 'room-a', group_team_snapshot: room.team_snapshot, prompt: 'Discuss our project', models: members.map((member) => member.model), status: 'complete', created_at: '2026-10-13T01:00:00Z', updated_at: '2026-10-13T01:01:00Z', result: { messages: [{ model: 'model-a', round: 1, content: 'Actual answer' }] } };
+
+test('an unfinished runtime dispatch restores only its own scope and accepts the matching task receipt', () => {
+  const body = { project_id: 'project-a', room_id: 'room-a', member_id: 'muse', prompt: 'original with frozen context' };
+  const intent = { target: 'muse', prompt: 'original' };
+  const attempt = createGroupDispatch({ target: 'muse', body, intent });
+  const key = groupDispatchKey('project-a', 'room-a', 'composer');
+  const storage = { getItem: (requested) => requested === key ? JSON.stringify(attempt) : null };
+  const receipt = { id: 'task-a', client_request_id: attempt.id, project_id: 'project-a', room_id: 'room-a' };
+  assert.deepEqual(readGroupDispatch(storage, 'project-a', 'room-a', 'composer'), attempt);
+  assert.equal(readGroupDispatch(storage, 'project-a', 'room-b', 'composer'), null);
+  assert.equal(readGroupDispatch(storage, 'project-b', 'room-a', 'composer'), null);
+  assert.equal(readGroupDispatch(storage, 'project-a', 'room-a', 'form'), null);
+  assert.equal(readGroupDispatch({ getItem: () => JSON.stringify(attempt) }, 'project-b', 'room-a', 'composer'), null);
+  assert.equal(groupDispatchReceiptMatches(attempt, receipt), true);
+  assert.equal(groupDispatchReceiptMatches(attempt, { ...receipt, room_id: 'room-b' }), false);
+  assert.equal(groupDispatchReceiptMatches(attempt, { ...receipt, client_request_id: 'previous-request' }), false);
+  assert.equal(groupDispatchIntentMatches(attempt, intent), true);
+  assert.equal(groupDispatchIntentMatches(attempt, { ...intent, prompt: 'edited' }), false);
+});
+
+test('standalone Muse attempts preserve optional project and room isolation', () => {
+  const globalKey = groupDispatchKey(null, null, 'muse-panel');
+  const projectKey = groupDispatchKey('project-a', null, 'muse-panel');
+  assert.equal(globalKey, groupDispatchKey(undefined, undefined, 'muse-panel'));
+  assert.notEqual(globalKey, projectKey);
+  assert.notEqual(projectKey, groupDispatchKey('project-a', 'room-a', 'muse-panel'));
+  const intent = { prompt: 'original' };
+  const body = { project_id: 'project-a', room_id: null, prompt: 'original' };
+  const pending = createGroupDispatch({ target: 'muse', body, intent });
+  const storage = { getItem: (key) => key === projectKey ? JSON.stringify(pending) : null };
+  assert.deepEqual(readGroupDispatch(storage, 'project-a', undefined, 'muse-panel'), pending);
+  assert.equal(readGroupDispatch(storage, null, null, 'muse-panel'), null);
+  assert.equal(readGroupDispatch({ getItem: () => JSON.stringify({ ...pending, target: 'group_task' }) }, 'project-a', null, 'muse-panel'), null);
+  assert.equal(groupDispatchReceiptMatches(pending, { id: 'muse-a', project_id: 'project-a', client_request_id: pending.id }), true);
+  assert.equal(groupDispatchReceiptMatches(pending, { id: 'muse-a', project_id: 'project-a', room_id: 'room-a', client_request_id: pending.id }), false);
+});
 
 test('group rooms and drafts remain isolated by project and room', () => {
   const values = { [groupScopeKey('project-a')]: JSON.stringify({ roomId: 'room-a' }), [groupDraftKey('project-a', 'room-a')]: JSON.stringify({ prompt: 'private draft', recipientIds: ['reviewer'], includeMuse: true, harnessMode: 'discuss_muse', contextTurns: 8, context: { attachment_ids: ['image-a'], project_id: 'wrong' } }) };

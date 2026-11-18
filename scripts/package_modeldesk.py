@@ -20,7 +20,8 @@ def main():
         raise SystemExit("Node.js/npm is required to rebuild ModelDesk")
     for folder in ["frontend", "desktop"]:
         subprocess.run([npm, "--prefix", folder, "run", "build" if folder == "frontend" else "package"], cwd=ROOT, env=environment, check=True)
-    bundle = ROOT.parent / "llm-tools/releases/ModelDesk.app"
+    workspace = Path(environment.get("MODEL_DESK_WORKSPACE") or ROOT.parent / "llm-tools")
+    bundle = workspace / "releases/ModelDesk.app"
     info = plistlib.loads((bundle / "Contents/Info.plist").read_bytes())
     assert info["CFBundleIdentifier"] == "local.modeldesk.workbench"
     assert (bundle / "Contents/MacOS/ModelDesk").is_file()

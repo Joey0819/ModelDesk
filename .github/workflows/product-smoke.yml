@@ -95,9 +95,10 @@ jobs:
             exit 1
           fi
 
-      - name: Test Feishu, Skills, To-do Sync, and Fleet
+      - name: Test document delivery, Feishu, Skills, task board and Fleet
         run: |
           .venv/bin/python -m unittest -v \
+            backend.test_document_delivery \
             backend.test_feishu \
             backend.test_feishu_bootstrap \
             backend.test_skill_frontmatter \

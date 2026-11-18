@@ -128,6 +128,74 @@ class DocumentDeliveryTests(unittest.IsolatedAsyncioTestCase):
         manifest_path.write_text(json.dumps(manifest))
         self.assertFalse(document_delivery.document_checks(self.job, delivery)[0]["met"])
 
+    async def test_review_receives_real_documents_and_still_rejects_missing_editorial_requirements(self):
+        from backend import coordination, group_delivery
+
+        for editorial_gap in (False, True):
+            with self.subTest(editorial_gap=editorial_gap):
+                room = str(uuid.uuid4())
+                job = {"id": str(uuid.uuid4()), "project_id": None, "conversation_id": room, "group_room_id": room,
+                       "mode": "group", "models": ["writer-model", "reviewer-model"], "status": "running", "events": [],
+                       "prompt": "撰写说明，写明总耗时，交付可下载的 Word 和 HTML。",
+                       "group_harness_version": 1, "group_delivery_mode": "auto", "group_broadcast": True,
+                       "group_runtime_allowed": True, "group_native_allowed": True, "group_output_format": "text",
+                       "group_document_formats": ["docx", "html"], "group_document_layout": "report",
+                       "group_recipient_member_ids": ["writer", "reviewer"], "group_team_snapshot": {"members": [
+                           {"id": "writer", "kind": "model", "name": "作者", "model": "writer-model", "role": "写作"},
+                           {"id": "reviewer", "kind": "model", "name": "审稿", "model": "reviewer-model", "role": "核查"}]}}
+                manager = workbench.JobManager(Path(self.temp.name) / "harness-jobs")
+                manager.jobs[job["id"]] = job
+                manager.wakeups[job["id"]] = asyncio.Event()
+                artifact = "# 交付说明\n\n" + ("阶段耗时已经记录。" if editorial_gap else "总耗时 41 秒。")
+                artifact_sha = hashlib.sha256(artifact.encode()).hexdigest()
+                reviewer_facts = []
+
+                async def provider(job, model, system, prompt, **kwargs):
+                    if "你是项目统筹者" in system:
+                        return json.dumps({"title": "正式交付", "requirements": [
+                            {"id": "duration", "kind": "text", "description": "写明总耗时"},
+                            {"id": "download_set", "kind": "text", "description": "可下载的 Word 和 HTML"},
+                        ], "steps": [{"id": "draft", "member_id": "writer", "instruction": "写出正文",
+                                       "expected_output": "完整正文", "depends_on": []}]}), False
+                    if "最终交付编辑" in system:
+                        missing = ["正文未写总耗时"] if editorial_gap else []
+                        if "最终审查已解决编辑待查项" not in prompt:
+                            missing.append("Word 和 HTML 待导出")
+                        return json.dumps({"title": "交付说明", "content": artifact, "missing_outputs": missing}), False
+                    if "你是交付审查者" in system:
+                        payload = json.loads(prompt.split("\n验收依据：\n", 1)[1].split("\n本次 checks", 1)[0])
+                        facts = payload["document_packaging"]
+                        reviewer_facts.append(facts)
+                        verified = {item["format"] for item in facts.get("receipts", [])
+                                    if item["verified"] and item["content_sha256"] == artifact_sha}
+                        docs_verified = verified == {"docx", "html"}
+                        return json.dumps({"goal_met": docs_verified and not editorial_gap, "missing_requirements": [],
+                                           "checks": [
+                                               {"requirement_id": "duration", "met": not editorial_gap, "evidence_status": "verified",
+                                                "reason": "正文未写总耗时" if editorial_gap else "已核对 41 秒"},
+                                               {"requirement_id": "download_set", "met": docs_verified, "evidence_status": "verified",
+                                                "reason": "实际回读了两个文件" if docs_verified else "尚未取得实际文件"},
+                                           ], "revision_instructions": ""}), False
+                    return artifact, False
+
+                with patch.object(group_delivery, "model_output", side_effect=provider):
+                    result = await coordination.run(manager, copy.deepcopy(job))
+                delivery = result["delivery"]
+                self.assertEqual(delivery["content"], artifact)
+                self.assertEqual(delivery["status"], "partial" if editorial_gap else "complete")
+                self.assertEqual(result["partial_failure"], editorial_gap)
+                self.assertEqual(len(reviewer_facts), 1 if editorial_gap else 2)
+                self.assertEqual(delivery["reviews"][-1]["document_packaging"], reviewer_facts[-1])
+                self.assertEqual(set(item["format"] for item in delivery["documents"]), {"docx", "html"})
+                self.assertTrue(all(item["met"] for item in document_delivery.document_checks(job, delivery)))
+                for entry in delivery["documents"]:
+                    self.assertEqual(entry["partial"], editorial_gap)
+                if editorial_gap:
+                    self.assertIn("正文未写总耗时", delivery["limitations"])
+                else:
+                    self.assertEqual(delivery["limitations"], [])
+                    self.assertEqual([version["content"] for version in delivery["versions"]], [artifact, artifact])
+
     async def test_actual_harness_document_failure_is_partial_in_saved_task_and_successful_file(self):
         from backend import coordination, group_delivery
         room = str(uuid.uuid4())
@@ -153,6 +221,9 @@ class DocumentDeliveryTests(unittest.IsolatedAsyncioTestCase):
             if "你是交付审查者" in system:
                 self.assertIn("# 实际完成正文", prompt)
                 self.assertNotIn("<!doctype", prompt)
+                payload = json.loads(prompt.split("\n验收依据：\n", 1)[1].split("\n本次 checks", 1)[0])
+                receipts = payload["document_packaging"]["receipts"]
+                self.assertEqual([(item["format"], item["verified"]) for item in receipts], [("docx", True), ("html", False)])
                 return json.dumps({"goal_met": True, "missing_requirements": [], "checks": [{"requirement_id": "body", "met": True, "evidence_status": "verified", "reason": "正文完整"}], "revision_instructions": ""}), False
             calls.append("execute")
             return "完整初稿", False

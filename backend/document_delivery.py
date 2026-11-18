@@ -1,4 +1,4 @@
-"""Durable, scoped document outputs created by the platform after collaboration.
+"""Durable, scoped document outputs created by the platform from assembled content.
 
 The renderer receives an observed artifact, not model-authored paths or binary
 files. A manifest binds each download to its owner, content and actual bytes.
@@ -117,7 +117,7 @@ store = DocumentStore()
 
 
 async def prepare_delivery_documents(job, delivery):
-    """Package the final version without replaying any model or native task."""
+    """Package an assembled version without replaying any model or native task."""
     from .document_exports import render_document
     from .workbench import public_error
     spec = delivery.get("task_spec", {}).get("documents", {"formats": [], "layout": "report"})
@@ -156,7 +156,32 @@ async def prepare_delivery_documents(job, delivery):
                 raise
             except Exception as error:
                 delivery["document_errors"].append({"format": previous["format"], "message": public_error(error)})
-    return document_checks(job, delivery)
+    return await asyncio.to_thread(document_checks, job, delivery)
+
+
+def document_review_evidence(delivery, checks):
+    """Tell the reviewer exactly what the platform generated and read back."""
+    spec = delivery.get("task_spec", {}).get("documents", {})
+    entries = {entry["format"]: entry for entry in delivery.get("documents", [])}
+    receipts = []
+    for check in checks:
+        format = check["requirement_id"].removeprefix("document-")
+        item = {"format": format, "verified": check["met"], "reason": check["reason"]}
+        if check["met"]:
+            item.update({key: entries[format][key] for key in ("size", "sha256", "pages", "content_sha256")})
+        receipts.append(item)
+    return {"formats": spec.get("formats", []), "layout": spec.get("layout"), "receipts": receipts}
+
+
+async def finalize_review_documents(job, delivery, candidate):
+    # Exported status and limitations are included in the file. Keep the
+    # reviewed bytes when they agree, or repack the same source with final notes.
+    if candidate is not None and all(candidate.get(key) == delivery.get(key)
+                                     for key in ("status", "limitations", "title", "content")):
+        delivery["documents"] = candidate["documents"]
+        delivery["document_errors"] = candidate["document_errors"]
+        return await asyncio.to_thread(document_checks, job, delivery)
+    return await prepare_delivery_documents(job, delivery)
 
 
 def document_checks(job, delivery):

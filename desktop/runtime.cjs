@@ -2,24 +2,35 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 
-// Where the workspace lives, independent of how the app was launched.
-//
-// A packaged macOS build runs from
-//   <workspace>/releases/ModelDesk.app/Contents/Resources/app.asar/desktop
-// so the parent of __dirname is the archive, not the workspace. Inside a bundle
-// the workspace is the directory that holds releases/. In a source checkout it
-// stays the parent of desktop/.
-function defaultWorkspace(start = __dirname) {
+function defaultWorkspace(start = __dirname, platform = process.platform) {
   const resolved = path.resolve(start);
-  const bundle = resolved.match(/^(.*)\.app[\\/]Contents[\\/]Resources(?:[\\/]|$)/);
-  if (bundle) {
-    const installedRoot = path.dirname(path.dirname(`${bundle[1]}.app`));
-    if (path.isAbsolute(installedRoot)) return installedRoot;
+  const bundle = platform === 'darwin' && resolved.match(/^(.*\.app)\/Contents\/Resources(?:\/(app\.asar|app))?(?:\/|$)/);
+  if (!bundle) {
+    const checkout = path.dirname(resolved);
+    if (platform !== 'darwin') return checkout;
+
+    const sibling = path.resolve(checkout, '..', 'llm-tools');
+    return [checkout, sibling].find(root => fs.existsSync(path.join(root, 'scripts', 'services.py'))) || checkout;
   }
-  return path.resolve(resolved, '..');
+
+  const [, app, archive = 'app.asar'] = bundle;
+  const parent = path.dirname(app);
+  if (path.basename(parent) === 'releases') return path.dirname(parent);
+
+  // A copy in /Applications still belongs to the workspace recorded in the signed bundle.
+  try {
+    const manifest = path.join(app, 'Contents', 'Resources', archive, 'package.json');
+    const { modelDeskWorkspace } = JSON.parse(fs.readFileSync(manifest, 'utf8'));
+    if (typeof modelDeskWorkspace === 'string' && path.isAbsolute(modelDeskWorkspace)) {
+      return path.resolve(modelDeskWorkspace);
+    }
+  } catch {
+    return null;
+  }
+  return null;
 }
 
-const DEFAULT_WORKSPACE = process.env.MODEL_DESK_WORKSPACE || defaultWorkspace();
+const DEFAULT_WORKSPACE = defaultWorkspace();
 const UI_URL = 'http://localhost:5173/';
 const HEALTH_URLS = [
   'http://127.0.0.1:8317/v1/models',
@@ -37,6 +48,7 @@ function healthURLsFor(platform = process.platform) {
 
 function workspaceRoot(environment = process.env) {
   const candidate = environment.MODEL_DESK_WORKSPACE || DEFAULT_WORKSPACE;
+  if (!candidate) throw new Error('workspace-not-configured');
   if (!path.isAbsolute(candidate)) throw new Error('workspace-must-be-absolute');
   return path.resolve(candidate);
 }

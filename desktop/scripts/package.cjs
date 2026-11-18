@@ -11,6 +11,9 @@ async function main() {
     return await packageLinux(root);
   }
   if (process.platform !== 'darwin' || process.arch !== 'arm64') throw new Error('This package target requires an Apple Silicon Mac or --linux flag on x64 Linux.');
+  const configuredWorkspace = process.env.MODEL_DESK_WORKSPACE || path.resolve(root, '..', '..', 'llm-tools');
+  if (!path.isAbsolute(configuredWorkspace)) throw new Error('MODEL_DESK_WORKSPACE must be an absolute path.');
+  const installedRoot = path.resolve(configuredWorkspace);
   const packageJSON = JSON.parse(await fs.readFile(path.join(root, 'package.json'), 'utf8'));
   const staging = path.join(root, 'dist', 'app-source');
   await fs.rm(staging, { recursive: true, force: true });
@@ -26,6 +29,7 @@ async function main() {
     description: packageJSON.description,
     private: true,
     main: packageJSON.main,
+    modelDeskWorkspace: installedRoot,
   }, null, 2));
   const { packager } = await import('@electron/packager');
   const checksums = JSON.parse(await fs.readFile(path.join(root, 'node_modules', 'electron', 'checksums.json'), 'utf8'));
@@ -62,8 +66,6 @@ async function main() {
     electronZipDir: verifiedZipDirectory,
   });
   const sourceBundle = path.join(bundles[0], 'ModelDesk.app');
-  const installedRoot = process.env.MODEL_DESK_WORKSPACE || path.resolve(root, '..', '..', 'llm-tools');
-  if (!path.isAbsolute(installedRoot)) throw new Error('MODEL_DESK_WORKSPACE must be an absolute path.');
   const destination = path.join(installedRoot, 'releases', 'ModelDesk.app');
   await fs.mkdir(path.dirname(destination), { recursive: true });
   const stagingBundle = path.join(root, 'dist', 'install', 'ModelDesk.app');

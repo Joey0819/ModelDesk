@@ -2,8 +2,10 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { pathToFileURL } = require('node:url');
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 const crypto = require('node:crypto');
+const { runInNewContext } = require('node:vm');
 const { workspaceRoot, defaultWorkspace, serviceEnvironment, isWorkbenchURL, isOriginalFrameURL, isExportURL, exportFormat, isExternalURL, isStatusURL, isTrustedWorkbenchIPC } = require('../runtime.cjs');
 
 test('media originals and portable bundles use canonical scoped export routes', () => {
@@ -158,15 +160,54 @@ test('launch resolves absolute workspace and deterministic GUI executable paths'
   assert.equal(environment.MODEL_DESK_WORKSPACE, '/Users/example/llm-tools');
 });
 
-test('a packaged bundle resolves the workspace that owns releases/', () => {
-  // Source checkout: parent of desktop/.
+test('a launch from source or the releases directory resolves its owning workspace', () => {
   assert.equal(defaultWorkspace('/w/modeldesk/desktop'), '/w/modeldesk');
-  // Packaged .app: the parent of __dirname is app.asar, so the workspace is
-  // the directory holding releases/. Returning Resources/ silently broke the
-  // backend auto-start path.
-  assert.equal(defaultWorkspace('/w/llm-tools/releases/ModelDesk.app/Contents/Resources/app.asar/desktop'), '/w/llm-tools');
-  assert.equal(defaultWorkspace('/w/llm-tools/releases/ModelDesk.app/Contents/Resources/app/desktop'), '/w/llm-tools');
-  assert.equal(workspaceRoot({ MODEL_DESK_WORKSPACE: '/w/custom' }), '/w/custom');
+  const resources = '/w/llm-tools/releases/ModelDesk.app/Contents/Resources';
+  assert.equal(defaultWorkspace(`${resources}/app.asar`, 'darwin'), '/w/llm-tools');
+  assert.equal(defaultWorkspace(`${resources}/app.asar/desktop`, 'darwin'), '/w/llm-tools');
+  assert.equal(defaultWorkspace(`${resources}/app/desktop`, 'darwin'), '/w/llm-tools');
+  assert.equal(defaultWorkspace('/w/ModelDesk-linux-x64/resources/app.asar', 'linux'), '/w/ModelDesk-linux-x64/resources');
+});
+
+test('macOS source launch finds a sibling service workspace and keeps an existing local controller', t => {
+  const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'modeldesk-workspaces-'));
+  t.after(() => fs.rmSync(parent, { recursive: true, force: true }));
+  const checkout = path.join(parent, 'llm-council');
+  const desktop = path.join(checkout, 'desktop');
+  const sibling = path.join(parent, 'llm-tools');
+  assert.equal(defaultWorkspace(desktop, 'darwin'), checkout);
+
+  fs.mkdirSync(path.join(sibling, 'scripts'), { recursive: true });
+  fs.writeFileSync(path.join(sibling, 'scripts', 'services.py'), '');
+  assert.equal(defaultWorkspace(desktop, 'darwin'), sibling);
+  assert.equal(defaultWorkspace(desktop, 'linux'), checkout);
+
+  fs.mkdirSync(path.join(checkout, 'scripts'), { recursive: true });
+  fs.writeFileSync(path.join(checkout, 'scripts', 'services.py'), '');
+  assert.equal(defaultWorkspace(desktop, 'darwin'), checkout);
+});
+
+test('a launch from /Applications without an environment override uses the packaged workspace', () => {
+  const launchDirectory = '/Applications/ModelDesk.app/Contents/Resources/app.asar';
+  const module = { exports: {} };
+  const source = fs.readFileSync(require.resolve('../runtime.cjs'), 'utf8');
+  let manifestReads = 0;
+  runInNewContext(source, {
+    module,
+    __dirname: launchDirectory,
+    process: { env: {}, platform: 'darwin' },
+    require: (name) => name === 'node:fs' ? {
+      readFileSync(file, encoding) {
+        assert.equal(file, `${launchDirectory}/package.json`);
+        assert.equal(encoding, 'utf8');
+        manifestReads++;
+        return JSON.stringify({ modelDeskWorkspace: '/w/ModelDesk Workspace/llm-tools' });
+      },
+    } : require(name),
+  });
+  assert.equal(manifestReads, 1);
+  assert.equal(module.exports.workspaceRoot(), '/w/ModelDesk Workspace/llm-tools');
+  assert.equal(module.exports.workspaceRoot({ MODEL_DESK_WORKSPACE: '/w/custom' }), '/w/custom');
 });
 
 test('the internal error page script is covered by its exact CSP hash', () => {

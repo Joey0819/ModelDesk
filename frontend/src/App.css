@@ -312,7 +312,8 @@
 .small-spinner { width: 13px; height: 13px; border: 1.5px solid #dce2f2; border-top-color: #6e80c9; border-radius: 50%; display: inline-block; flex-shrink: 0; animation: rotate 1s linear infinite; }
 .activity-dot { width: 6px; height: 6px; display: inline-block; border-radius: 50%; background: #8191d2; animation: breathe 1.5s ease-in-out infinite; flex-shrink: 0; }
 .output-error { font-size: 11px; background: #fcf4f3; color: #af665d; border: 1px solid #efdcd9; border-radius: 6px; padding: 12px 15px; overflow-wrap: anywhere; margin-bottom: 15px; }
-.error-banner { display: flex; align-items: center; justify-content: space-between; gap: 12px; background: #fff1ed; color: #aa6759; border: 1px solid #ecd5cd; border-radius: 7px; padding: 9px 13px; font-size: 11px; margin-bottom: 16px; }
+.error-banner { display: flex; align-items: center; justify-content: space-between; gap: 12px; background: #fff1ed; color: #864639; border: 1px solid #ecd5cd; border-radius: 7px; padding: 9px 13px; font-size: 11px; margin-bottom: 16px; }
+.error-banner > .subtle-button { flex-shrink: 0; white-space: nowrap; }
 .connection-warning { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; background: #fff9ef; border: 1px solid #ede3cc; color: #a58658; padding: 12px 15px; border-radius: 7px; font-size: 11px; margin-bottom: 17px; }
 .connection-warning strong { font-weight: 550; }
 .connection-warning button { margin-left: auto; background: #fffdf8; }

@@ -154,6 +154,26 @@ try {
   assert.equal(await composer(page).inputValue(), '编辑后的 Claude 草稿');
   assert.equal(await page.getByRole('button', { name: '派发 Claude Code', exact: true }).isDisabled(), true);
   await shot(page, 'group-dispatch-pending');
+  await page.setViewportSize({ width: 390, height: 844 });
+  const phoneNotice = await retry(page).evaluate((button) => {
+    const luminance = (color) => {
+      const [r, g, b] = color.match(/\d+/g).map(Number).map((value) => {
+        const channel = value / 255;
+        return channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4;
+      });
+      return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    };
+    const notice = getComputedStyle(button.closest('.error-banner'));
+    const colors = [luminance(notice.color), luminance(notice.backgroundColor)].sort((a, b) => a - b);
+    const title = document.createRange();
+    title.selectNodeContents(button);
+    return { contrast: (colors[1] + 0.05) / (colors[0] + 0.05), lines: title.getClientRects().length, overflow: document.documentElement.scrollWidth - innerWidth };
+  });
+  assert.ok(phoneNotice.contrast >= 4.5);
+  assert.equal(phoneNotice.lines, 1);
+  assert.equal(phoneNotice.overflow, 0);
+  await shot(page, 'group-dispatch-pending-phone');
+  await page.setViewportSize({ width: 1370, height: 900 });
   await replay(page, first);
   await page.getByText('上次派发已确认，当前草稿已保留。', { exact: true }).waitFor();
   assert.equal(await composer(page).inputValue(), '编辑后的 Claude 草稿');

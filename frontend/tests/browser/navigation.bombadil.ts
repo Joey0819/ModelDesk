@@ -66,7 +66,8 @@ const navigation = extract(({ document, window }) => {
 
 export const useNavigation = actions(() => {
   const state = navigation.current;
-  if (!state) return [];
+  // The first paint can be the pairing screen while the fixture session is read.
+  if (!state) return ["Wait"];
   return state.fixtureProjectAvailable ? [...state.clicks, selectFixtureProject()] : state.clicks;
 });
 export const oneCurrentDestination = always(() => navigation.current?.correctDestination ?? true);

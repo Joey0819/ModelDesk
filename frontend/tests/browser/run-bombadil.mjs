@@ -20,8 +20,12 @@ try {
   if (fixture.writes.length) throw new Error(`Navigation attempted fixture writes: ${fixture.writes.join(', ')}`);
   if (status === 0) {
     const trace = await readFile(join(output, 'trace.jsonl'), 'utf8');
-    const explored = trace.trim().split('\n').filter((entry) => JSON.parse(entry).action).length;
+    const entries = trace.trim().split('\n').map((line) => JSON.parse(line));
+    const explored = entries.filter(({ action }) => action && action !== 'Wait').length;
     if (!explored) throw new Error('Bombadil did not execute any navigation actions');
+    if (!entries.at(-1).snapshots.some(({ name, value }) => name === 'navigation' && value)) {
+      throw new Error('The workspace was unavailable at the end of the navigation check');
+    }
     console.log(`Checked ${explored} navigation actions.`);
   }
   process.exitCode = status ?? 1;

@@ -16,31 +16,51 @@ import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
 
+import httpx
+from pydantic import ValidationError
+
 from .feishu_store import parse_setup_command
+from .harness.models import TeamMember, TeamRequest
 
 PLAN_TTL_MINUTES = 5
 SETUP_HOURLY_LIMIT = 3
 TEAM_DESCRIPTION = "由飞书自助开通创建的默认团队"
 
 
-def _default_roster_models():
-    """First two text models from the first enabled connection, in catalog order."""
-    from .model_connections import model_catalog as connection_models
+async def _default_roster_models():
+    """Prefer saved connections, then available models from the subscription gateway."""
+    from .config import COUNCIL_MODELS
     from .model_catalog import model_capability
+    from .model_connections import model_catalog as connection_models
+    from .workbench import subscription_catalog
     try:
-        catalog = [item["id"] for item in connection_models() if not item.get("testing")]
+        saved = [item["id"] for item in connection_models()
+                 if not item.get("testing") and item["capability"] == "text"]
     except (OSError, RuntimeError, ValueError):
+        saved = []
+    if saved:
+        return saved[:2]
+    try:
+        available = [model for model in await subscription_catalog() if model_capability(model) == "text"]
+    except (httpx.HTTPError, ValueError):
         return []
-    text = [model for model in catalog if model_capability(model) == "text"]
-    return text[:2]
+    preferred = [model for model in COUNCIL_MODELS if model in available]
+    return list(dict.fromkeys(preferred + available))[:2]
 
 
-def _roster(models):
-    from .harness.models import TeamMember
-    return [TeamMember.model_validate({"id": "lead", "name": "统筹", "model": models[0],
-                                       "role": "理解目标、拆解任务并汇总交付", "required": True}),
-            TeamMember.model_validate({"id": "worker", "name": "执行", "model": models[1],
-                                       "role": "执行具体研究与写作，给出可交付内容", "required": True})]
+def _team_request(name, models):
+    roles = [
+        ("lead", "统筹", "理解目标、拆解任务并汇总交付"),
+        ("worker", "执行", "执行具体研究与写作，给出可交付内容"),
+        ("reviewer", "审阅", "核查实际交付，指出错误并提出具体修订"),
+        ("researcher", "研究", "补充研究依据，将可核对的材料交给团队"),
+    ]
+    # Project groups support separate roles using one model connection.
+    assignments = models if len(models) != 1 else models * 2
+    members = [TeamMember(id=identifier, name=label, role=role, model=model, required=True)
+               for (identifier, label, role), model in zip(roles, assignments)]
+    team_name = name + " 团队" if len(name) <= 97 else name
+    return TeamRequest(name=team_name, description=TEAM_DESCRIPTION, members=members)
 
 
 class BootstrapError(Exception):
@@ -55,11 +75,11 @@ class Bootstrap:
 
     # ---- plan lifecycle -------------------------------------------------
 
-    def create_plan(self, config, record, name, models):
+    async def create_plan(self, config, record, name, models):
         if not models:
-            models = self.catalog()
-            if len(models) < 2:
-                raise BootstrapError("尚未配置可用的模型连接，无法自助开通。请先在本机 ModelDesk 的“模型连接”里启用至少一条连接。")
+            models = await self.catalog()
+            if not models:
+                raise BootstrapError("尚未找到可用的文字模型。请在本机 ModelDesk 启动订阅网关或启用模型连接。")
         if len(set(models)) != len(models):
             raise BootstrapError("模型列表中有重复项，请修改后重试。")
         if len(models) > 4:
@@ -67,6 +87,10 @@ class Bootstrap:
         from .model_catalog import model_capability
         if any(model_capability(model) != "text" for model in models):
             raise BootstrapError("仅支持文字推理模型，生图或非文本模型不能作为团队成员。")
+        try:
+            team = _team_request(name, models)
+        except ValidationError:
+            raise BootstrapError("项目名或成员模型无效，请检查名称和模型 ID 后重试。") from None
         app_id, chat_id, sender = config["app_id"], record["chat_id"], record["sender_id"]
         stamp = datetime.now(timezone.utc)
         code = f"{secrets.randbelow(10000):04d}"
@@ -87,7 +111,7 @@ class Bootstrap:
             db.execute("INSERT INTO plans VALUES (?,?,?,?,?,?,?,?,?)",
                        (identifier, app_id, chat_id, sender, code, json.dumps(payload, ensure_ascii=False),
                         stamp.isoformat(), (stamp + timedelta(minutes=PLAN_TTL_MINUTES)).isoformat(), None))
-        return {"code": code, "project_name": name, "models": models}
+        return {"code": code, "project_name": name, "team": team}
 
     def redeem_plan(self, config, record, code):
         app_id, chat_id, sender = config["app_id"], record["chat_id"], record["sender_id"]
@@ -110,7 +134,6 @@ class Bootstrap:
     def execute_plan(self, config, record, payload):
         """Create project → team → room → binding, rolling back on failure."""
         from .groups import RoomRequest, store as default_rooms
-        from .harness.models import TeamRequest
         from .harness.manager import manager as harness
         from .projects import ProjectRequest, store as default_projects
         rooms = self.room_store or default_rooms
@@ -120,13 +143,16 @@ class Bootstrap:
         created = {"project": None, "team": None, "room": None}
         try:
             request = ProjectRequest(name=name, description="由飞书自助开通创建", instructions="")
+            team_request = _team_request(name, models)
             project = projects.register(request.name, request.path, None, request.description, request.instructions)
             created["project"] = project
-            team = teams.put(TeamRequest(name=name + " 团队", description=TEAM_DESCRIPTION, project_id=project["id"], members=_roster(models)))
+            team_request.project_id = uuid.UUID(project["id"])
+            team = teams.put(team_request)
             created["team"] = team
             room = rooms.create(RoomRequest(title=name, project_id=project["id"], team_id=team["id"]), teams)
             created["room"] = room
-            binding = {"chat_id": record["chat_id"], "name": "飞书私聊 · " + name, "project_id": project["id"],
+            label = "飞书私聊 · " + name
+            binding = {"chat_id": record["chat_id"], "name": label if len(label) <= 100 else name, "project_id": project["id"],
                        "room_id": room["id"], "allowed_sender_ids": [payload["sender_id"]],
                        "allow_native": False, "natural_language_tasks": True}
             saved = self.store.save_binding(config, binding)
@@ -155,7 +181,7 @@ class Bootstrap:
 
     # ---- command routing -------------------------------------------------
 
-    def handle(self, record, config):
+    async def handle(self, record, config):
         """Handle an admitted bootstrap command; returns (reply_text, new_binding).
 
         new_binding is set when this call wrote a binding (confirm path), so
@@ -177,9 +203,11 @@ class Bootstrap:
         if action == "setup":
             if not argument:
                 return "请提供项目名称：/modeldesk setup 项目名（可选 with 模型1,模型2）", None
-            plan = self.create_plan(config, record, argument, models)
-            return ("即将创建（尚未执行）：\n· 项目：" + plan["project_name"] + "\n· 团队：" + plan["project_name"]
-                    + " 团队 · 成员模型：" + "、".join(plan["models"]) + "\n· 项目群：" + plan["project_name"]
+            plan = await self.create_plan(config, record, argument, models)
+            team = plan["team"]
+            assignments = "\n".join("  " + member.name + " → " + member.model for member in team.members)
+            return ("即将创建（尚未执行）：\n· 项目：" + plan["project_name"] + "\n· 团队：" + team.name
+                    + "\n" + assignments + "\n· 项目群：" + plan["project_name"]
                     + "\n· 绑定当前私聊会话（允许自然语言派发任务）\n确认请回复 /modeldesk confirm "
                     + plan["code"] + "（5 分钟内有效，一次性使用）。"), None
         if action == "confirm":
@@ -189,6 +217,6 @@ class Bootstrap:
             result = self.execute_plan(config, record, payload)
             project_id, room_id = result["project_id"], result["room_id"]
             return ("开通完成：\n· 项目：" + payload["project_name"] + "\n· 项目 ID：" + str(project_id)
-                    + "\n· 团队：" + payload["project_name"] + " 团队\n· 项目群 ID：" + str(room_id)
+                    + "\n· 项目群 ID：" + str(room_id)
                     + "\n· 当前会话已绑定并允许自然语言派发任务。\n现在可以直接发任务，例如：\n帮我完成一份竞品分析报告\n或使用指令：/modeldesk task 任务内容、/modeldesk status。"), result
         return None, None

@@ -1,10 +1,13 @@
 import { API_BASE, apiFetch } from './api-base';
 
-async function request(path = '', method = 'GET', body) {
+const TODO_PATH = '/api/todo';
+
+async function request(path, method = 'GET', body, signal) {
   let response;
   try {
-    response = await apiFetch(`${API_BASE}/api/todo${path}`, {
+    response = await apiFetch(`${API_BASE}${path}`, {
       method,
+      signal,
       ...(body === undefined ? {} : { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }),
     });
   } catch {
@@ -20,10 +23,11 @@ async function request(path = '', method = 'GET', body) {
 }
 
 export const todoApi = {
-  list: (archived = false) => request(archived ? '?archived=true' : ''),
-  create: (fields) => request('', 'POST', fields),
-  update: (id, fields) => request(`/${encodeURIComponent(id)}`, 'PUT', fields),
-  remove: (id) => request(`/${encodeURIComponent(id)}`, 'DELETE'),
+  list: (archived = false, signal) => request(archived ? `${TODO_PATH}?archived=true` : TODO_PATH, 'GET', undefined, signal),
+  create: (fields) => request(TODO_PATH, 'POST', fields),
+  update: (id, fields) => request(`${TODO_PATH}/${encodeURIComponent(id)}`, 'PUT', fields),
+  remove: (id) => request(`${TODO_PATH}/${encodeURIComponent(id)}`, 'DELETE'),
   reorder: (ids, status, positionStart = 0) =>
-    request('/reorder', 'POST', { ids, status, position_start: positionStart }),
+    request(`${TODO_PATH}/reorder`, 'POST', { ids, status, position_start: positionStart }),
+  reassignFleetTask: (id) => request(`/api/fleet/jobs/${encodeURIComponent(id)}/reassign`, 'POST'),
 };

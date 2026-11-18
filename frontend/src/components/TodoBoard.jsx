@@ -1,10 +1,12 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
+import { REMOTE_CLIENT } from '../api-base';
 import { todoApi } from '../todo-api';
-import { COLUMNS, groupByStatus, computeReorder, filterTasks, countByStatus, validateTask } from '../todo-state';
+import { COLUMNS, groupByStatus, computeReorder, filterTasks, countByStatus, validateTask, buildTaskPayload, isFleetReassignment, hasWorkbenchResult } from '../todo-state';
 import './TodoBoard.css';
 import './TodoBoardTheme.css';
 
 const PRIORITY_LABELS = { urgent: '紧急', high: '高', medium: '中', low: '低' };
+const REFRESH_INTERVAL_MS = 8000;
 
 function truncate(str, max) {
   if (!str) return '';
@@ -21,7 +23,7 @@ function isOverdue(dueDate) {
 
 const SOURCE_LABELS = { feishu: '飞书', workbench: '工作台', group: '协作任务', fleet: 'Fleet 节点' };
 
-function TodoCard({ task, onEdit, onDragStart }) {
+function TodoCard({ task, onEdit, onDragStart, onDragEnd, onOpenResult }) {
   const hasExternalSource = !!task.external_source;
   const isFleet = hasExternalSource && task.external_source.platform === 'fleet';
   // Prefer the label the source system reported: a workbench job dispatched
@@ -36,6 +38,7 @@ function TodoCard({ task, onEdit, onDragStart }) {
       data-task-id={task.id}
       draggable={true}
       onDragStart={(e) => onDragStart(e, task.id)}
+      onDragEnd={onDragEnd}
       onClick={() => onEdit(task)}
     >
       <div className={`todo-card-priority-bar priority-${task.priority}`} />
@@ -56,6 +59,11 @@ function TodoCard({ task, onEdit, onDragStart }) {
         <div className="todo-card-tags">
           {task.tags.map((tag, i) => <span key={i} className="todo-tag">{tag}</span>)}
         </div>
+      )}
+      {onOpenResult && hasWorkbenchResult(task) && (
+        <button type="button" className="subtle-button" onClick={(event) => { event.stopPropagation(); onOpenResult(task); }}>
+          {task.status === 'blocked' ? '查看记录' : '查看成果'}
+        </button>
       )}
     </div>
   );
@@ -81,19 +89,7 @@ function TaskModal({ task, onClose, onSave, onDelete, saving }) {
       setErrors(errs);
       return;
     }
-    // The server accepts an explicit field set only; task metadata such as id,
-    // created_at and updated_at must never be echoed back on save.
-    const payload = {
-      title: fields.title.trim(),
-      description: fields.description || '',
-      status: fields.status,
-      priority: fields.priority,
-      assignee: fields.assignee || '',
-      due_date: fields.due_date || null,
-      tags: fields.tags || [],
-      project_id: fields.project_id || null,
-    };
-    onSave(payload, isNew);
+    onSave(buildTaskPayload(fields, task), isNew);
   };
 
   return (
@@ -161,7 +157,7 @@ function TaskModal({ task, onClose, onSave, onDelete, saving }) {
   );
 }
 
-export default function TodoBoard() {
+export default function TodoBoard({ onOpenResult }) {
   const [tasks, setTasks] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -174,21 +170,53 @@ export default function TodoBoard() {
   const [saving, setSaving] = useState(false);
   const [dragOverColumn, setDragOverColumn] = useState(null);
   const dragIdRef = useRef(null);
+  const listRequest = useRef(null);
+  const dropPending = useRef(false);
 
-  const loadTasks = useCallback(async () => {
+  const loadTasks = useCallback(async ({ background = false } = {}) => {
+    if (background && (listRequest.current || dropPending.current)) return;
+    listRequest.current?.abort();
+    const request = new AbortController();
+    listRequest.current = request;
     try {
-      setLoading(true);
-      setError(null);
-      const data = await todoApi.list(showArchived);
-      setTasks(data);
+      if (!background) {
+        setLoading(true);
+        setError(null);
+      }
+      const data = await todoApi.list(showArchived, request.signal);
+      if (!request.signal.aborted) setTasks(data);
     } catch (err) {
-      setError(err.message);
+      if (!request.signal.aborted && !background) setError(err.message);
     } finally {
-      setLoading(false);
+      if (listRequest.current === request) {
+        listRequest.current = null;
+        if (!background && !request.signal.aborted) setLoading(false);
+      }
     }
   }, [showArchived]);
 
-  useEffect(() => { loadTasks(); }, [loadTasks]);
+  useEffect(() => {
+    loadTasks();
+    return () => { listRequest.current?.abort(); };
+  }, [loadTasks]);
+
+  useEffect(() => {
+    if (modalOpen || saving) return;
+    const refresh = () => {
+      if (!document.hidden && !dragIdRef.current) loadTasks({ background: true });
+    };
+    const timer = setInterval(refresh, REFRESH_INTERVAL_MS);
+    document.addEventListener('visibilitychange', refresh);
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener('visibilitychange', refresh);
+    };
+  }, [loadTasks, modalOpen, saving]);
+
+  const openResult = async (task) => {
+    setError(null);
+    try { await onOpenResult(task); } catch (err) { setError(err.message); }
+  };
 
   const filtered = filterTasks(tasks, { search, priority: priorityFilter, showDone, showArchived });
   const grouped = groupByStatus(filtered);
@@ -256,10 +284,19 @@ export default function TodoBoard() {
   const handleDragStart = (e, taskId) => {
     dragIdRef.current = taskId;
     e.dataTransfer.effectAllowed = 'move';
-    e.target.classList.add('dragging');
+    e.currentTarget.classList.add('dragging');
+  };
+
+  const handleDragEnd = (e) => {
+    dragIdRef.current = null;
+    setDragOverColumn(null);
+    e.currentTarget.classList.remove('dragging');
   };
 
   const handleDragOver = (e, columnId) => {
+    const draggedTask = tasks.find((task) => task.id === dragIdRef.current);
+    if (!draggedTask || (draggedTask.external_source && draggedTask.status !== columnId &&
+      (REMOTE_CLIENT || !isFleetReassignment(draggedTask, columnId)))) return;
     e.preventDefault();
     e.dataTransfer.dropEffect = 'move';
     setDragOverColumn(columnId);
@@ -273,26 +310,27 @@ export default function TodoBoard() {
     e.preventDefault();
     setDragOverColumn(null);
     const draggedId = dragIdRef.current;
-    if (!draggedId) return;
+    if (!draggedId || dropPending.current) return;
     dragIdRef.current = null;
 
-    // Guard: confirmation when cancelling an actively running synced task
-    const draggedTask = tasks.find((t) => t.id === draggedId);
-    if (draggedTask?.external_source && columnId === 'archived' && draggedTask.status === 'doing') {
-      if (!window.confirm('该任务正在后台执行中，移动到已归档将取消后台任务，是否确认取消？')) {
-        document.querySelectorAll('.todo-card.dragging').forEach((el) => el.classList.remove('dragging'));
-        return;
+    const draggedTask = tasks.find((task) => task.id === draggedId);
+    if (!REMOTE_CLIENT && isFleetReassignment(draggedTask, columnId)) {
+      dropPending.current = true;
+      try {
+        await todoApi.reassignFleetTask(draggedTask.external_source.task_id);
+        await loadTasks();
+      } catch (err) {
+        await loadTasks();
+        setError(err.message);
+      } finally {
+        dropPending.current = false;
       }
+      return;
     }
-
-    // Remove dragging class
-    document.querySelectorAll('.todo-card.dragging').forEach((el) => el.classList.remove('dragging'));
 
     // Find drop index within column
     const columnBody = e.currentTarget.querySelector('.todo-column-body');
-    // The dragged card is still in the DOM, and the .dragging class is cleared
-    // just above, so it must be excluded by identity: otherwise dragging
-    // downwards lands one slot too late.
+    // Exclude the dragged card from the drop index while it is still in the DOM.
     const cards = columnBody
       ? [...columnBody.querySelectorAll('.todo-card')].filter((el) => el.dataset.taskId !== draggedId)
       : [];
@@ -309,12 +347,16 @@ export default function TodoBoard() {
     if (!reorderPayload) return;
 
     // Optimistic update
+    dropPending.current = true;
+    listRequest.current?.abort();
     setTasks(newTasks);
     try {
       await todoApi.reorder(reorderPayload.ids, reorderPayload.status, reorderPayload.position_start);
     } catch (err) {
-      setError(err.message);
       await loadTasks();
+      setError(err.message);
+    } finally {
+      dropPending.current = false;
     }
   };
 
@@ -379,7 +421,7 @@ export default function TodoBoard() {
                 <div className="todo-empty">暂无任务</div>
               ) : (
                 (grouped[col.id] || []).map((task) => (
-                  <TodoCard key={task.id} task={task} onEdit={openEditTask} onDragStart={handleDragStart} />
+                  <TodoCard key={task.id} task={task} onEdit={openEditTask} onDragStart={handleDragStart} onDragEnd={handleDragEnd} onOpenResult={onOpenResult ? openResult : undefined} />
                 ))
               )}
             </div>
@@ -392,7 +434,7 @@ export default function TodoBoard() {
           task={editTask?.id ? editTask : null}
           onClose={() => { setModalOpen(false); setEditTask(null); }}
           onSave={handleSave}
-          onDelete={editTask?.id ? handleDelete : null}
+          onDelete={editTask?.id && !(REMOTE_CLIENT && editTask.external_source?.platform === 'fleet') ? handleDelete : null}
           saving={saving}
         />
       )}

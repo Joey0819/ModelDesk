@@ -1,0 +1,10 @@
+[Unit]
+Description=ModelDesk Workbench
+PartOf=modeldesk.service
+
+[Service]
+Type=simple
+WorkingDirectory=__PROJECT_DIR__/frontend/dist
+ExecStart=:"__QUOTED_PROJECT_DIR__/.venv/bin/python" -m http.server 5173 --bind 127.0.0.1
+Restart=on-failure
+RestartSec=5

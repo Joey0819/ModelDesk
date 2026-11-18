@@ -255,7 +255,7 @@ class FeishuController:
         try:
             # setup and confirm validate against this revision; executing a
             # plan rotates the revision via the binding write.
-            reply, binding = bootstrap.handle(record, config)
+            reply, binding = await bootstrap.handle(record, config)
             if reply is None:
                 self.store.update(record, state="delivered", reason="指令不在自助开通范围内，未执行")
                 return

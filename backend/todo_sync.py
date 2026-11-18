@@ -17,10 +17,39 @@ STATUS_MAP = {
     "error": "blocked",
     "interrupted": "blocked",
     "complete": "done",
+    "blocked": "blocked",
+    "review": "review",
     "cancelled": "archived",
 }
 
 VALID_PLATFORMS = {"workbench", "group", "feishu", "fleet"}
+
+
+def workbench_card_state(job: dict) -> tuple[str, str]:
+    """Use persisted automatic delivery outcomes after the runner finishes."""
+    status = job.get("status", "queued")
+    detail = f"模式：{job.get('mode', 'unknown')}\n任务编号：{job['id']}"
+    if status != "complete" or job.get("mode") != "group" or job.get("group_delivery_mode") != "auto":
+        return status, detail
+
+    result = job.get("result")
+    delivery = result.get("delivery") if isinstance(result, dict) else None
+    partial_detail = f"仅有部分交付，请查看现有成果和缺项。\n{detail}"
+    if not isinstance(delivery, dict):
+        if isinstance(result, dict) and result.get("partial_failure") is True:
+            return "review", partial_detail
+        return status, detail
+    validation = delivery.get("validation")
+    review = validation.get("status") if isinstance(validation, dict) else None
+    if delivery.get("status") == "blocked":
+        return "blocked", f"自动交付受阻，请查看运行记录。\n{detail}"
+    if review == "needs_revision":
+        return "review", f"自动交付未通过验收，请查看审查意见。\n{detail}"
+    if review == "unavailable":
+        return "review", f"自动交付尚未完成验收，请查看运行记录。\n{detail}"
+    if delivery.get("status") == "partial":
+        return "review", partial_detail
+    return status, detail
 
 
 def _validate_external_source(platform: str, task_id: str) -> dict:
@@ -147,11 +176,6 @@ def reverse_sync_task(platform: str, task_id: str, target_status: str, is_archiv
                     except Exception:
                         pass
                 return {"action": "cancelled", "platform": platform, "task_id": task_id}
-        elif target_status == "todo":
-            if platform == "fleet":
-                from .fleet import store as fleet_store
-                fleet_store.reassign_job(task_id)
-                return {"action": "reassigned", "platform": platform, "task_id": task_id}
     except Exception as exc:
         logger.warning("reverse_sync_task failed for %s/%s to status %s: %s", platform, task_id, target_status, exc)
         return {"action": "error", "error": str(exc)}

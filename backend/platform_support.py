@@ -59,7 +59,7 @@ def machine_label() -> str:
 
 def machine_short() -> str:
     """Short form for inline sentences where ``machine_label`` reads too long."""
-    return "这台 Mac" if is_macos else "这台电脑"
+    return "Mac" if is_macos else "这台电脑"
 
 
 def local_machine() -> str:

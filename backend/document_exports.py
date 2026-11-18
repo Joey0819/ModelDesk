@@ -92,13 +92,17 @@ def prepare_document(job, artifact_id, include_video=False):
         raise HTTPException(422, "文档正文超过 200000 字符或标题超过 1000 字符")
     if re.search(r"[\x00-\x08\x0b\x0c\x0e-\x1f\ud800-\udfff]", content + artifact["title"]):
         raise HTTPException(422, "文档包含不支持的控制字符，请先修正文档正文")
+    original_content = content
+    if artifact_id == "group:delivery":
+        from .report_content import report_markdown
+        content = report_markdown(job, (job.get("result") or {}).get("delivery") or {}, content)
     # Do not place an HTML/code artifact into an executable document context.
-    if artifact["code"]:
+    if artifact["code"] and content == original_content:
         fence = "`" * max(3, max((len(item) for item in re.findall(r"`+", content)), default=0) + 1)
         content = f"{fence}\n{content}\n{fence}"
     document = DocumentSource(str(job["id"]), artifact["title"], artifact["source"], content,
                               artifact["partial"], artifact.get("note", ""), [],
-                              source_sha256=hashlib.sha256(artifact["content"].encode()).hexdigest())
+                              source_sha256=hashlib.sha256(original_content.encode()).hexdigest())
     if artifact_id == "group:delivery":
         delivery = (job.get("result") or {}).get("delivery") or {}
         references = delivery.get("media") or []

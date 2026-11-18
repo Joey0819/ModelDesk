@@ -12,7 +12,7 @@ import httpx
 from fastapi import FastAPI, HTTPException
 
 from backend import feishu, groups, projects, workbench
-from backend.feishu_bootstrap import Bootstrap, BootstrapError
+from backend.feishu_bootstrap import Bootstrap, BootstrapError, _default_roster_models
 from backend.feishu_store import ConfigInput, FeishuStore, parse_setup_command
 from backend.groups import RoomStore
 from backend.harness.models import TeamRequest
@@ -53,7 +53,7 @@ class BootstrapTests(unittest.IsolatedAsyncioTestCase):
         self.projects = projects.ProjectStore(self.root / "projects")
         self.catalog = ["conn:m1", "conn:m2", "conn:m3"]
         self.bootstrap = Bootstrap(self.store, room_store=self.rooms, team_store=self.teams,
-                                   project_store=self.projects, catalog=lambda: self.catalog[:2])
+                                   project_store=self.projects, catalog=AsyncMock(side_effect=lambda: self.catalog[:2]))
         self.sdk = FakeSDK()
         self.controller = feishu.FeishuController(self.store, self.jobs, sdk_factory=lambda config: self.sdk)
         for owner, field, value in [(workbench, "manager", self.jobs), (groups, "store", self.rooms),
@@ -169,7 +169,38 @@ class BootstrapTests(unittest.IsolatedAsyncioTestCase):
         project = next(iter(self.projects.read_registry().values()))
         team = self.teams.list(project["id"])[0]
         self.assertEqual([member["model"] for member in team["members"]], ["conn:m3", "conn:m2"])
-        self.assertIn("conn:m3、conn:m2", self.sdk.calls[0][3])
+        self.assertIn("统筹 → conn:m3", self.sdk.calls[0][3])
+        self.assertIn("执行 → conn:m2", self.sdk.calls[0][3])
+
+    async def test_subscription_only_default_filters_images_and_prefers_configured_text_models(self):
+        with patch("backend.model_connections.model_catalog", return_value=[]), \
+             patch("backend.config.COUNCIL_MODELS", ["offline", "model-z"]), \
+             patch("backend.workbench.subscription_catalog", AsyncMock(return_value=["gpt-image-2", "model-a", "model-z"])):
+            self.assertEqual(await _default_roster_models(), ["model-z", "model-a"])
+
+    async def test_confirm_saves_every_previewed_assignment(self):
+        self.catalog = ["conn:only"]
+        for count, models in enumerate([[], ["a"], ["a", "b", "c"], ["a", "b", "c", "d"]]):
+            with self.subTest(models=models):
+                name = "项" * 100 if count == 0 else f"团队验收 {count}"
+                chat = f"oc_preview_{count}"
+                command = "/modeldesk setup " + name + (" with " + ",".join(models) if models else "")
+                self.received(chat_id=chat, text=command)
+                await self.tick()
+                preview = self.sdk.calls[-1][3]
+                code = preview.split("/modeldesk confirm ")[1][:4]
+                self.received(chat_id=chat, text="/modeldesk confirm " + code)
+                await self.tick()
+                self.assertIn("开通完成", self.sdk.calls[-1][3])
+                binding = next(item for item in self.store.config()["bindings"] if item["chat_id"] == chat)
+                room = self.rooms.get(binding["room_id"], binding["project_id"])
+                members = room["team_snapshot"]["members"]
+                expected = models or ["conn:only"]
+                self.assertEqual([member["model"] for member in members], expected * 2 if len(expected) == 1 else expected)
+                self.assertEqual([member["id"] for member in members], ["lead", "worker", "reviewer", "researcher"][:len(members)])
+                for member in members:
+                    self.assertTrue(member["required"])
+                    self.assertIn(member["name"] + " → " + member["model"], preview)
 
     async def test_confirm_code_expiry_and_reuse_are_rejected(self):
         self.received()

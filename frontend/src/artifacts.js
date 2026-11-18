@@ -100,12 +100,14 @@ export function deriveArtifacts(job, apiBase = API_BASE) {
   }
   if (job.mode === 'group' && (job.group_delivery_mode === 'auto' || result.delivery)) {
     const delivery = result.delivery || {};
+    const content = text(delivery.preview_content) || text(delivery.content);
     // Media can finish before synthesis, or survive a failed synthesis. Keep it
     // accessible without inventing prose or changing the task's completion state.
-    const mediaOnly = !text(delivery.content).trim();
+    const mediaOnly = !content.trim();
     const hasMedia = managedDeliveryMedia(job, apiBase).length > 0;
-    return [makeArtifact(job, 'group:delivery', delivery.title || (mediaOnly ? '已保存的图片与视频' : '完整交付结果'), text(delivery.content), {
+    return [makeArtifact(job, 'group:delivery', delivery.title || (mediaOnly ? '已保存的图片与视频' : '完整交付结果'), content, {
       allowEmpty: hasMedia, media_only: mediaOnly,
+      report_preview: Boolean(delivery.preview_content),
       model: delivery.model, source: '项目群自动交付', partial: delivery.status !== 'complete',
       media: Array.isArray(delivery.media) ? delivery.media : [],
       media_requirements: delivery.media_requirements || {},

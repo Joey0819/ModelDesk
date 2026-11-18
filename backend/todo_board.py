@@ -11,7 +11,7 @@ from typing import Literal, Optional
 
 logger = logging.getLogger(__name__)
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
 from .attachments import secret_text
@@ -414,6 +414,29 @@ def archive_external_task(external_source: dict) -> Optional[dict]:
         return target
 
 
+def repair_workbench_delivery_cards(jobs: dict) -> None:
+    """Correct older cards from the source records recovered at startup."""
+    from .todo_sync import workbench_card_state
+
+    with _lock:
+        data = _load_board()
+        tasks = copy.deepcopy(data["tasks"])
+        changed = False
+        for task in tasks:
+            source = task.get("external_source") or {}
+            if source.get("platform") != "workbench" or task.get("status") != "done":
+                continue
+            job = jobs.get(source.get("task_id"))
+            if job is None or job.get("status") != "complete":
+                continue
+            status, detail = workbench_card_state(job)
+            if status in {"review", "blocked"}:
+                task.update(status=status, description=detail, updated_at=_now_iso())
+                changed = True
+        if changed:
+            _save_board({**data, "tasks": tasks})
+
+
 # --- Endpoints ---
 
 
@@ -460,7 +483,7 @@ def create_task(body: TaskCreate):
 
 
 @router.put("/{task_id}")
-def update_task(task_id: str, body: TaskUpdate):
+def update_task(task_id: str, body: TaskUpdate, request: Request):
     with _lock:
         data = _load_board()
         tasks = copy.deepcopy(data.get("tasks", []))
@@ -472,32 +495,29 @@ def update_task(task_id: str, body: TaskUpdate):
         if target is None:
             raise HTTPException(status_code=404, detail="任务不存在")
         updates = body.model_dump(exclude_unset=True)
+        ext = target.get("external_source")
+        if ext:
+            # Older editors echo the status they opened with. Only the source
+            # can advance a mirrored card, including while an edit is open.
+            updates.pop("status", None)
         if not updates:
             return target
-        old_status = target.get("status")
         old_archived = target.get("archived")
+        if not old_archived and updates.get("archived"):
+            _require_source_archive_access(ext, request)
         for key, value in updates.items():
             target[key] = value
         target["updated_at"] = _now_iso()
         new_data = {"schema_version": SCHEMA_VERSION, "tasks": tasks}
         _save_board(new_data)
 
-        ext = target.get("external_source")
-        if ext and isinstance(ext, dict):
-            new_status = target.get("status")
-            new_archived = target.get("archived", False)
-            if new_status != old_status or new_archived != old_archived:
-                try:
-                    from .todo_sync import reverse_sync_task
-                    reverse_sync_task(ext.get("platform"), ext.get("task_id"), target_status=new_status, is_archived=new_archived)
-                except Exception as exc:
-                    logger.warning("reverse_sync_task failed: %s", exc)
-
-        return target
+    if isinstance(ext, dict) and not old_archived and target.get("archived"):
+        _archive_source(ext, target.get("status"))
+    return target
 
 
 @router.delete("/{task_id}")
-def delete_task(task_id: str):
+def delete_task(task_id: str, request: Request):
     """Soft delete: set archived=True."""
     with _lock:
         data = _load_board()
@@ -509,20 +529,34 @@ def delete_task(task_id: str):
                 break
         if target is None:
             raise HTTPException(status_code=404, detail="任务不存在")
+        ext = target.get("external_source")
+        _require_source_archive_access(ext, request)
         target["archived"] = True
         target["updated_at"] = _now_iso()
         new_data = {"schema_version": SCHEMA_VERSION, "tasks": tasks}
         _save_board(new_data)
 
-        ext = target.get("external_source")
-        if ext and isinstance(ext, dict):
-            try:
-                from .todo_sync import reverse_sync_task
-                reverse_sync_task(ext.get("platform"), ext.get("task_id"), target_status=target.get("status"), is_archived=True)
-            except Exception as exc:
-                logger.warning("reverse_sync_task failed on delete: %s", exc)
+    if isinstance(ext, dict):
+        _archive_source(ext, target.get("status"))
+    return target
 
-        return target
+
+def _require_source_archive_access(external_source: dict | None, request: Request) -> None:
+    if not external_source or external_source.get("platform") != "fleet":
+        return
+    from .fleet import fleet_admin_guard
+    from .platform_support import machine_label
+
+    if request.headers.get("x-modeldesk-remote"):
+        raise HTTPException(403, f"节点任务取消只能在{machine_label()}的 ModelDesk 中操作")
+    fleet_admin_guard(request)
+
+
+def _archive_source(external_source: dict, status: str):
+    # Fleet calls forward sync while holding its store lock, so reverse sync
+    # must run outside the board lock.
+    from .todo_sync import reverse_sync_task
+    reverse_sync_task(external_source.get("platform"), external_source.get("task_id"), target_status=status, is_archived=True)
 
 
 @router.post("/reorder")
@@ -532,30 +566,23 @@ def reorder_tasks(body: ReorderRequest):
         tasks = copy.deepcopy(data.get("tasks", []))
         # Build index
         task_map = {t["id"]: t for t in tasks}
-        # Verify all IDs exist
+        # A column payload may include a synced card whose source already
+        # moved it. Reject the stale reorder before changing any positions.
         for tid in body.ids:
-            if tid not in task_map:
+            task = task_map.get(tid)
+            if task is None:
                 raise HTTPException(status_code=422, detail=f"任务 {tid} 不存在")
+            if task.get("external_source") and task.get("status") != body.status:
+                raise HTTPException(status_code=409, detail="同步任务的状态由来源管理，请查看最新状态后重试。")
         # The board is one global board: cards from different project scopes
         # legitimately share a status column, and the UI drags the whole column
         # at once. Rejecting the mix made every drag in a mixed column fail, so
         # positions are assigned across scopes in the order the user saw.
         now = _now_iso()
-        changed_externals = []
         for idx, tid in enumerate(body.ids):
-            old_status = task_map[tid].get("status")
             task_map[tid]["status"] = body.status
             task_map[tid]["position"] = body.position_start + idx
             task_map[tid]["updated_at"] = now
-            ext = task_map[tid].get("external_source")
-            if ext and isinstance(ext, dict) and old_status != body.status:
-                changed_externals.append((ext.get("platform"), ext.get("task_id"), body.status))
         new_data = {"schema_version": SCHEMA_VERSION, "tasks": tasks}
         _save_board(new_data)
-        for platform, task_id, status in changed_externals:
-            try:
-                from .todo_sync import reverse_sync_task
-                reverse_sync_task(platform, task_id, target_status=status)
-            except Exception as exc:
-                logger.warning("reverse_sync_task in reorder failed: %s", exc)
         return {"ok": True, "reordered": len(body.ids)}

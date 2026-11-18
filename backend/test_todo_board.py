@@ -4,6 +4,7 @@ import json
 import tempfile
 import threading
 import unittest
+import uuid
 from pathlib import Path
 from unittest.mock import patch
 
@@ -138,6 +139,126 @@ class TodoBoardTests(unittest.IsolatedAsyncioTestCase):
             resp = await client.put("/api/todo/nonexistent-id", json={"title": "new"})
             self.assertEqual(resp.status_code, 404)
 
+    async def test_stale_card_edit_does_not_reassign_failed_fleet_job(self):
+        from backend import fleet
+
+        app = _make_app()
+        app.include_router(fleet.router)
+        store = fleet.FleetStore(Path(self._tmpdir.name) / "fleet")
+        self.enterContext(patch.object(fleet, "store", store))
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url="http://127.0.0.1:8001",
+            headers={"Origin": "http://localhost:5173"},
+        ) as client:
+            token = (await client.post("/api/fleet/enroll-tokens")).json()["token"]
+            enrolled = await client.post("/api/fleet/enroll", json={
+                "token": token, "node_id": "test-worker", "name": "Fixture worker",
+                "platform": "linux", "hostname": "fixture", "agent_version": "0.2.0",
+            })
+            self.assertEqual(enrolled.status_code, 200, enrolled.text)
+            node_headers = {"Authorization": f"Bearer {enrolled.json()['node_token']}"}
+            job = (await client.post("/api/fleet/jobs", json={"title": "Fleet fixture", "task_type": "generic"})).json()
+            route = f"/api/fleet/jobs/{job['job_id']}"
+            card = (await client.get("/api/todo")).json()[0]
+            self.assertEqual(card["status"], "todo")
+
+            poll = await client.post("/api/fleet/jobs/poll", json={}, headers=node_headers)
+            self.assertEqual(poll.json()["assigned_job"]["job_id"], job["job_id"])
+            report = await client.post(f"{route}/report", json={"status": "error", "error": "fixture failed"}, headers=node_headers)
+            self.assertEqual(report.status_code, 200, report.text)
+
+            saved = await client.put(f"/api/todo/{card['id']}", json={"priority": "urgent", "status": card["status"]})
+            self.assertEqual(saved.status_code, 200, saved.text)
+            self.assertEqual(saved.json()["status"], "blocked")
+            self.assertEqual(saved.json()["priority"], "urgent")
+            self.assertEqual((await client.get(route)).json()["status"], "error")
+
+            reassigned = await client.post(f"{route}/reassign")
+            self.assertEqual(reassigned.status_code, 200, reassigned.text)
+            self.assertEqual(reassigned.json()["status"], "queued")
+            refreshed = (await client.get("/api/todo")).json()[0]
+            self.assertEqual(refreshed["id"], card["id"])
+            self.assertEqual(refreshed["status"], "todo")
+            self.assertEqual(refreshed["priority"], "urgent")
+
+    async def test_terminal_automatic_delivery_uses_delivery_status_and_supports_job_lookup(self):
+        from backend import workbench
+        from backend.todo_sync import sync_task
+
+        app = _make_app()
+        app.include_router(workbench.router)
+        manager = workbench.JobManager(Path(self._tmpdir.name) / "workbench")
+        manager._todo_sync_enabled = True
+        self.enterContext(patch.object(workbench, "manager", manager))
+        project_id, room_id = str(uuid.uuid4()), str(uuid.uuid4())
+        jobs = {}
+        for label, mode, delivery, expected in [
+            ("Incomplete", "auto", {"status": "partial"}, "review"),
+            ("Needs revision", "auto", {"status": "partial", "validation": {"status": "needs_revision"}}, "review"),
+            ("Blocked", "auto", {"status": "blocked"}, "blocked"),
+            ("Delivered", "auto", {"status": "complete", "validation": {"status": "passed"}}, "done"),
+            ("Discussion", "discussion", None, "done"),
+        ]:
+            job = {
+                "id": str(uuid.uuid4()), "mode": "group", "prompt": label, "status": "running", "events": [],
+                "group_delivery_mode": mode, "project_id": project_id, "group_room_id": room_id,
+            }
+            jobs[label] = (job, expected)
+            manager.jobs[job["id"]] = job
+            manager.save(job)
+            job.update(status="complete", result={"delivery": delivery})
+            manager.save(job)
+
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+            listed = {task["title"]: task for task in (await client.get("/api/todo")).json()}
+            for label, (job, expected) in jobs.items():
+                with self.subTest(label=label):
+                    self.assertEqual(listed[label]["status"], expected)
+                    self.assertEqual(listed[label]["project_id"], project_id)
+                    job_id = listed[label]["external_source"]["task_id"]
+                    saved = (await client.get(f"/api/workbench/jobs/{job_id}")).json()
+                    self.assertEqual(saved["id"], job["id"])
+                    self.assertEqual(saved["group_room_id"], room_id)
+                    self.assertEqual(saved["result"], job["result"])
+            self.assertIn("部分交付", listed["Incomplete"]["description"])
+            self.assertIn("未通过验收", listed["Needs revision"]["description"])
+            self.assertIn("交付受阻", listed["Blocked"]["description"])
+
+            # Old cards were persisted as done by the generic status mapping.
+            job, _ = jobs["Incomplete"]
+            sync_task("workbench", job["id"], title="Incomplete", status="complete", project_id=project_id)
+            old = (await client.get("/api/todo")).json()
+            self.assertEqual(next(task for task in old if task["title"] == "Incomplete")["status"], "done")
+            manager.recover()
+            repaired = (await client.get("/api/todo")).json()
+            self.assertEqual(next(task for task in repaired if task["title"] == "Incomplete")["status"], "review")
+
+    async def test_only_local_admin_can_cancel_fleet_from_board(self):
+        from backend import fleet
+
+        store = fleet.FleetStore(Path(self._tmpdir.name) / "fleet")
+        self.enterContext(patch.object(fleet, "store", store))
+        job = store.enqueue_job(fleet.CreateJobRequest(title="Fleet fixture", task_type="generic"))
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=_make_app()), base_url="http://127.0.0.1:8001") as client:
+            card = (await client.get("/api/todo")).json()[0]
+            route = f"/api/todo/{card['id']}"
+            local = {"Origin": "http://localhost:5173"}
+            phone = {**local, "X-ModelDesk-Remote": "phone"}
+            denied = await client.put(route, json={"archived": True, "priority": "urgent"}, headers=phone)
+            self.assertEqual(denied.status_code, 403)
+            self.assertEqual((await client.delete(route, headers=phone)).status_code, 403)
+            self.assertEqual(store.get_job(job["job_id"])["status"], "queued")
+            visible = (await client.get("/api/todo")).json()[0]
+            self.assertEqual(visible["priority"], "medium")
+
+            manual = (await client.post("/api/todo", json={"title": "Manual"}, headers=phone)).json()
+            self.assertEqual((await client.delete(f"/api/todo/{manual['id']}", headers=phone)).status_code, 200)
+            cancelled = await client.delete(route, headers=local)
+            self.assertEqual(cancelled.status_code, 200, cancelled.text)
+            self.assertEqual(store.get_job(job["job_id"])["status"], "cancelled")
+
     # --- Soft delete ---
 
     async def test_soft_delete(self):
@@ -212,6 +333,28 @@ class TodoBoardTests(unittest.IsolatedAsyncioTestCase):
                 "position_start": 0,
             })
             self.assertEqual(resp.status_code, 422)
+
+    async def test_reorder_cannot_move_synced_task_to_a_stale_or_manual_status(self):
+        from backend.todo_sync import sync_task
+
+        sync_task("group", "task-id", title="Group fixture", status="complete")
+        async with await self._client() as client:
+            card = (await client.get("/api/todo")).json()[0]
+            manual = (await client.post("/api/todo", json={"title": "Manual"})).json()
+            rejected = await client.post("/api/todo/reorder", json={
+                "ids": [manual["id"], card["id"]], "status": "doing",
+            })
+            self.assertEqual(rejected.status_code, 409)
+            listed = {task["id"]: task for task in (await client.get("/api/todo")).json()}
+            self.assertEqual(listed[card["id"]]["status"], "done")
+            self.assertEqual(listed[manual["id"]]["status"], "todo")
+
+            accepted = await client.post("/api/todo/reorder", json={
+                "ids": [manual["id"], card["id"]], "status": "done", "position_start": 5,
+            })
+            self.assertEqual(accepted.status_code, 200, accepted.text)
+            listed = {task["id"]: task for task in (await client.get("/api/todo")).json()}
+            self.assertEqual(listed[card["id"]]["position"], 6)
 
     # --- Corrupted file tolerance ---
 

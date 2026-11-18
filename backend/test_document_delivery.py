@@ -143,13 +143,16 @@ class DocumentDeliveryTests(unittest.IsolatedAsyncioTestCase):
         manager.jobs[job["id"]] = job
         manager.wakeups[job["id"]] = asyncio.Event()
         calls = []
+        raw_html = '<!doctype html><html><body><h1>实际完成正文</h1><p>文章内容已经完成。</p></body></html>'
         async def provider(job, model, system, prompt, **kwargs):
             if "你是项目统筹者" in system:
                 return json.dumps({"title": "正式交付", "requirements": [{"id": "body", "kind": "text", "description": "完整文章"}],
                                    "steps": [{"id": "draft", "member_id": "writer", "instruction": "写出正文", "expected_output": "完整正文", "depends_on": []}]}), False
             if "最终交付编辑" in system:
-                return json.dumps({"title": "文章", "content": "# 实际完成正文\n\n文章内容已经完成。", "missing_outputs": []}), False
+                return json.dumps({"title": "文章", "content": raw_html, "missing_outputs": []}), False
             if "你是交付审查者" in system:
+                self.assertIn("# 实际完成正文", prompt)
+                self.assertNotIn("<!doctype", prompt)
                 return json.dumps({"goal_met": True, "missing_requirements": [], "checks": [{"requirement_id": "body", "met": True, "evidence_status": "verified", "reason": "正文完整"}], "revision_instructions": ""}), False
             calls.append("execute")
             return "完整初稿", False
@@ -167,6 +170,7 @@ class DocumentDeliveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(next(item["met"] for item in delivery["validation"]["mechanical_checks"] if item["requirement_id"] == "document-html"))
         persisted = json.loads((manager.directory / (job["id"] + ".json")).read_text())
         self.assertEqual(persisted["result"]["delivery"]["status"], "partial")
+        self.assertEqual(persisted["result"]["delivery"]["versions"][0]["source_html"], raw_html)
         entry, raw = self.store.read(job, delivery["documents"][0]["id"])
         self.assertTrue(entry["partial"])
         self.assertIn("部分输出", "\n".join(p.text for p in Document(io.BytesIO(raw)).paragraphs))

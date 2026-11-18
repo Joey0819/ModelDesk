@@ -118,6 +118,15 @@ test('HTML previews remain source text and exported partial content keeps its ev
   assert.match(markdown, /```html\n<html>/);
 });
 
+test('legacy report renders its safe preview, while the saved delivery stays original', () => {
+  const delivery = { title: '交付报告', status: 'complete', content: '<html><body><h1>报告</h1></body></html>', preview_content: '# 报告' };
+  const artifact = deriveArtifacts(job('group', { delivery }))[0];
+  assert.equal(artifact.format, 'markdown');
+  assert.equal(artifact.content, '# 报告');
+  assert.equal(artifact.report_preview, true);
+  assert.match(delivery.content, /^<html>/);
+});
+
 test('no result means no invented deliverable, including running and failed jobs', () => {
   assert.deepEqual(deriveArtifacts(null), []);
   assert.deepEqual(deriveArtifacts(job('chat', null, { status: 'running' })), []);

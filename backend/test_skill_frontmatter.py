@@ -1,12 +1,13 @@
 """Frontmatter parsing, pstack install, and import priority tests for skill_library."""
-import asyncio
+import hashlib
 import json
 from pathlib import Path
 import tempfile
 import unittest
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
-from fastapi import HTTPException
+import httpx
+from fastapi import FastAPI, HTTPException
 
 from backend import skill_library
 
@@ -64,61 +65,70 @@ class FrontmatterParseTests(unittest.TestCase):
         self.assertEqual(meta['description'], 'Use for "interrogate", x')
 
 
-class ImportPriorityTests(unittest.TestCase):
-    """Test import_skill name/description priority logic via put_skill monkeypatch."""
+class SkillImportTests(unittest.IsolatedAsyncioTestCase):
+    """Exercise the browser import route with manifests written to a temporary store."""
 
-    def setUp(self):
-        self.temp = tempfile.TemporaryDirectory()
-        self.dir_patch = patch.object(skill_library, 'DIRECTORY', Path(self.temp.name))
-        self.dir_patch.start()
+    async def asyncSetUp(self):
+        self.directory = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.enterContext(patch.object(skill_library, 'DIRECTORY', self.directory))
+        app = FastAPI()
+        app.include_router(skill_library.router)
+        self.client = await self.enterAsyncContext(httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app, client=('127.0.0.1', 1234)),
+            base_url='http://127.0.0.1:8001', headers={'Origin': 'http://localhost:5173'},
+        ))
 
-    def tearDown(self):
-        self.dir_patch.stop()
-        self.temp.cleanup()
+    async def test_frontmatter_wins_over_generic_filename_for_lf_and_crlf(self):
+        for newline in ('\n', '\r\n'):
+            with self.subTest(newline=repr(newline)):
+                body = newline.join(('# Instructions', '  Keep original spacing.  ', ''))
+                header = newline.join(('---', 'name: FmOnly', 'description: A test skill', '---', ''))
+                payload = {'filename': 'SKILL.md', 'instructions': header + body}
+                response = await self.client.post('/api/skills/import', json=payload)
+                self.assertEqual(response.status_code, 200, response.text)
+                public = response.json()
+                self.assertEqual((public['name'], public['description']), ('FmOnly', 'A test skill'))
+                self.assertEqual(public['source'], 'local')
+                self.assertIsNone(public['revision'])
+                self.assertNotIn('instructions', public)
+                self.assertEqual(skill_library.get_skill(public['id'])['instructions'], body)
+                self.assertEqual(public['sha256'], hashlib.sha256(body.encode()).hexdigest())
+                repeated = await self.client.post('/api/skills/import', json=payload | {'name': ''})
+                self.assertEqual(repeated.json()['id'], public['id'])
 
-    def test_request_name_overrides_frontmatter(self):
-        # Simulate: request has name="ReqName", frontmatter has name="FmName"
+    async def test_manual_name_and_description_override_frontmatter(self):
         text = '---\nname: FmName\ndescription: FM desc\n---\nInstructions body'
-        result = skill_library.parse_frontmatter(text)
-        meta, body = result[0], result[1]
-        req_name = 'ReqName'
-        req_desc = ''
-        final_name = req_name.strip() if req_name.strip() else str(meta.get('name', '')).strip()
-        final_desc = req_desc.strip() if req_desc.strip() else str(meta.get('description', '')).strip()
-        self.assertEqual(final_name, 'ReqName')
-        self.assertEqual(final_desc, 'FM desc')
+        response = await self.client.post('/api/skills/import', json={
+            'name': ' ReqName ', 'description': ' Request description ', 'filename': 'SKILL.md',
+            'instructions': text,
+        })
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()['name'], 'ReqName')
+        self.assertEqual(response.json()['description'], 'Request description')
 
-    def test_frontmatter_name_used_when_request_empty(self):
-        text = '---\nname: FmOnly\n---\nBody'
-        result = skill_library.parse_frontmatter(text)
-        meta, body = result[0], result[1]
-        req_name = ''
-        final_name = req_name.strip() if req_name.strip() else str(meta.get('name', '')).strip()
-        self.assertEqual(final_name, 'FmOnly')
+    async def test_filename_fallback_with_no_frontmatter_name(self):
+        text = '---\ndescription: ' + ('x' * 500) + '\n---\n# Plain skill'
+        response = await self.client.post('/api/skills/import', json={
+            'name': ' ', 'filename': r'C:\fixtures\Report drafting.MD', 'instructions': text,
+        })
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()['name'], 'Report drafting')
+        self.assertEqual(response.json()['description'], 'x' * 400)
 
-    def test_description_truncated_to_400(self):
-        long_desc = 'x' * 500
-        truncated = long_desc[:400]
-        self.assertEqual(len(truncated), 400)
+    async def test_secret_in_crlf_frontmatter_raw_rejected(self):
+        token = '-'.join(('sk', 'proj', 'abcdefghijklmnop1234567890'))
+        text = f'---\r\nname: Fixture\r\napi_key: {token}\r\n---\r\n# Clean instructions'
+        response = await self.client.post('/api/skills/import', json={'instructions': text})
+        self.assertEqual(response.status_code, 422)
+        self.assertEqual(response.json()['detail'], 'Skill 不得包含密钥或凭据')
+        self.assertEqual(list(self.directory.iterdir()), [])
 
-
-class SecretInFrontmatterTests(unittest.TestCase):
-    """Ensure secrets hidden in frontmatter raw block are rejected."""
-
-    def setUp(self):
-        self.temp = tempfile.TemporaryDirectory()
-        self.dir_patch = patch.object(skill_library, 'DIRECTORY', Path(self.temp.name))
-        self.dir_patch.start()
-
-    def tearDown(self):
-        self.dir_patch.stop()
-        self.temp.cleanup()
-
-    def test_secret_in_frontmatter_raw_rejected(self):
-        # Use OpenAI sk-proj- key pattern which is detected by SECRET_CONTENT regex
-        from backend.attachments import secret_text
-        fm_raw = 'api_key: sk-proj-abcdefghijklmnop1234567890'
-        self.assertTrue(secret_text(fm_raw))
+    async def test_import_still_requires_local_admin(self):
+        response = await self.client.post('/api/skills/import',
+                                          json={'name': 'Fixture', 'instructions': '# Instructions'},
+                                          headers={'Origin': 'https://fixture.invalid'})
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(list(self.directory.iterdir()), [])
 
 
 class OldManifestCompatibilityTests(unittest.TestCase):
@@ -143,7 +153,7 @@ class OldManifestCompatibilityTests(unittest.TestCase):
             'name': 'Old Skill',
             'instructions': 'Some instructions',
             'source': 'local',
-            'sha256': __import__('hashlib').sha256(b'Some instructions').hexdigest()
+            'sha256': hashlib.sha256(b'Some instructions').hexdigest()
         }
         (skill_dir / 'manifest.json').write_text(json.dumps(old_manifest))
         # get_skill should work

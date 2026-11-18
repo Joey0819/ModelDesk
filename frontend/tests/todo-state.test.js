@@ -1,6 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { COLUMNS, groupByStatus, computeReorder, filterTasks, countByStatus, validateTask } from '../src/todo-state.js';
+import {
+  COLUMNS, groupByStatus, computeReorder, filterTasks, countByStatus, validateTask,
+  buildTaskPayload, isFleetReassignment, hasWorkbenchResult, checkWorkbenchResult,
+} from '../src/todo-state.js';
 
 // --- groupByStatus ---
 
@@ -128,6 +131,44 @@ test('computeReorder returns null payload for nonexistent task', () => {
   const tasks = [{ id: 'a', status: 'todo', position: 0 }];
   const { reorderPayload } = computeReorder(tasks, 'nonexistent', 'todo', 0);
   assert.equal(reorderPayload, null);
+});
+
+test('mirrored cards can be reordered in their current column without changing status', () => {
+  const tasks = [{ id: 'agent', status: 'doing', external_source: { platform: 'group' } }];
+  assert.equal(computeReorder(tasks, 'agent', 'done', 0).reorderPayload, null);
+  assert.deepEqual(computeReorder(tasks, 'agent', 'doing', 0).reorderPayload.ids, ['agent']);
+});
+
+test('only dragging an active blocked Fleet card to todo requests reassignment', () => {
+  const card = { id: 'fleet', status: 'blocked', external_source: { platform: 'fleet' } };
+  assert.equal(isFleetReassignment(card, 'todo'), true);
+  assert.equal(isFleetReassignment(card, 'done'), false);
+  assert.equal(isFleetReassignment({ ...card, status: 'doing' }, 'todo'), false);
+  assert.equal(isFleetReassignment({ ...card, archived: true }, 'todo'), false);
+  assert.equal(isFleetReassignment({ ...card, external_source: { platform: 'group' } }, 'todo'), false);
+});
+
+test('mirrored card payload updates only the fields edited in the modal', () => {
+  const original = {
+    id: 'fleet', title: 'Queued', description: 'Queued detail', status: 'todo',
+    priority: 'medium', tags: ['Fleet'], external_source: { platform: 'fleet' },
+  };
+  assert.deepEqual(buildTaskPayload({ ...original, priority: 'urgent', status: 'doing' }, original), {
+    priority: 'urgent',
+  });
+  const manual = { id: 'manual', title: 'Write tests', status: 'todo' };
+  assert.deepEqual(buildTaskPayload({ ...manual, status: 'doing' }, manual), { status: 'doing' });
+});
+
+test('result navigation requires a terminal Workbench card and an exact saved job and project', () => {
+  const task = { project_id: 'project-a', status: 'review', external_source: { platform: 'workbench', task_id: 'job-a' } };
+  assert.equal(hasWorkbenchResult(task), true);
+  assert.equal(hasWorkbenchResult({ ...task, status: 'doing' }), false);
+  assert.equal(hasWorkbenchResult({ ...task, project_id: null }), false);
+  assert.equal(hasWorkbenchResult({ ...task, external_source: { platform: 'group', task_id: 'job-a' } }), false);
+  assert.doesNotThrow(() => checkWorkbenchResult(task, { id: 'job-a', project_id: 'project-a' }));
+  assert.throws(() => checkWorkbenchResult(task, { id: 'job-a', project_id: 'project-b' }), /项目不一致/);
+  assert.throws(() => checkWorkbenchResult(task, { id: 'job-b', project_id: 'project-a' }), /项目不一致/);
 });
 
 // --- countByStatus ---

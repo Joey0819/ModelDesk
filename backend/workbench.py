@@ -191,9 +191,8 @@ class JobManager:
         self.wakeups = {}
         self.processes = {}
         self.conversation_locks = {}
-        # Last kanban status mirrored per job. save() runs on every emitted
-        # event, and each sync rewrites the whole board file, so only mirror
-        # when the status the board displays actually changed.
+        # Last status and delivery summary mirrored per job. save() runs on
+        # every emitted event, so only rewrite the board when those change.
         self._todo_synced = {}
         # Only the production manager may write to the real kanban board.
         # Tests (and any other manager built on a scratch directory) must stay
@@ -204,33 +203,32 @@ class JobManager:
         from .execution_store import save_checkpoint
         save_checkpoint(self.directory, job["id"], job)
         # Sync to todo kanban (fire-and-forget, never raises)
-        status = job.get("status")
         if not getattr(self, "_todo_sync_enabled", True):
             return
         synced = getattr(self, "_todo_synced", None)
         if synced is None:
             synced = self._todo_synced = {}
-        if synced.get(job["id"]) != status:
-            synced[job["id"]] = status
-            try:
-                self._sync_to_todo(job)
-            except Exception:
-                pass  # Already handled inside _sync_to_todo
+        try:
+            from .todo_sync import workbench_card_state
+            card_state = workbench_card_state(job)
+            if synced.get(job["id"]) != card_state:
+                self._sync_to_todo(job, *card_state)
+                synced[job["id"]] = card_state
+        except Exception:
+            pass  # A board sync failure must not affect the source checkpoint.
 
-    def _sync_to_todo(self, job):
+    def _sync_to_todo(self, job, status, detail):
         """Mirror job state to the todo kanban board."""
         import logging as _logging
         _logger = _logging.getLogger(__name__)
         try:
             from .todo_sync import sync_task
-            status = job.get("status", "queued")
             title = (job.get("prompt") or "")[:200] or f"Job {job['id']}"
             ext_src = job.get("external_source")
             if ext_src and isinstance(ext_src, dict) and ext_src.get("platform") == "feishu":
                 source_label = "飞书"
             else:
                 source_label = "工作台"
-            detail = f"Mode: {job.get('mode', 'unknown')}\nID: {job['id']}"
             project_id = job.get("project_id")
             sync_task(
                 "workbench",
@@ -282,6 +280,13 @@ class JobManager:
             except (ValueError, KeyError, TypeError, OSError):
                 # A malformed local file must not prevent all other jobs loading.
                 continue
+        if self._todo_sync_enabled:
+            try:
+                from .todo_board import repair_workbench_delivery_cards
+                repair_workbench_delivery_cards(self.jobs)
+            except Exception:
+                import logging
+                logging.getLogger(__name__).exception("workbench: failed to repair todo delivery status")
 
     def emit(self, job, event_type, **data):
         # Engines may receive a derived review prompt; persist the public job,
@@ -1177,7 +1182,8 @@ async def list_jobs(project_id: str | None = None):
 
 @router.get("/jobs/{job_id}")
 async def get_job(job_id: str):
-    return copy.deepcopy(manager.get(job_id))
+    from .report_content import add_report_preview
+    return add_report_preview(copy.deepcopy(manager.get(job_id)))
 
 
 @router.get("/jobs/{job_id}/attachments/{asset_id}/content")

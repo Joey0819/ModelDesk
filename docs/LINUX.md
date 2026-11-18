@@ -1,179 +1,86 @@
 # ModelDesk Linux 部署指南
 
-本文档介绍在 Linux x64 系统上安装、运行和维护 ModelDesk 的完整流程。
+ModelDesk 的工作台、API 和 Electron 窗口支持 Linux x86_64（Beta）。工作台和 API 默认只监听本机回环地址。Muse 原生桥接依赖 macOS，使用模型、远程 Agent 或飞书时需要配置对应连接。
 
 ## 系统要求
 
-- **操作系统**: Linux x86_64（Ubuntu 22.04+、Debian 12+、Fedora 38+ 或同等发行版）
-- **Node.js**: 18.x 或更高版本
-- **Python**: 3.11+（推荐使用 `uv` 管理虚拟环境）
-- **可选**: nginx（反向代理）、systemd（服务管理）
+- Linux x86_64，如 Ubuntu 22.04+ 或 Debian 12+
+- Python 3.12+ 和 [uv](https://docs.astral.sh/uv/getting-started/installation/)。uv 可以安装项目需要的 Python 版本。
+- Frontend 需要 Node.js 20.19+（20.x）或 22.12+，Electron 打包需要 Node.js 22.12+。均需 npm。
+- 一键安装需要运行中的 systemd 用户会话。其他环境可以手动启动。
 
-## 已知限制
-
-| 功能 | macOS | Linux | 说明 |
-|------|-------|-------|------|
-| Muse 原生桥接 | ✅ | ❌ | 依赖 macOS Accessibility API，Linux 无等效实现 |
-| Tailscale 手机入口 | ✅ | ✅ | 需要单独安装 Tailscale CLI |
-| Electron 桌面客户端 | ✅ (arm64) | ✅ (x64) | Linux 打包使用 `npm run package:linux` |
-| Backend API | ✅ | ✅ | 完全兼容 |
-| 前端 Workbench | ✅ | ✅ | 完全兼容 |
-
-## 快速安装
-
-### 一键安装脚本
+## 从 GitHub 安装
 
 ```bash
-cd /home/noldus/modeldesk
+git clone https://github.com/Joey0819/ModelDesk.git
+cd ModelDesk
 bash scripts/install-linux.sh
 ```
 
-脚本会幂等地完成以下步骤：
+安装脚本按锁文件同步 Python 依赖，安装并构建前端，然后启动两个用户级服务。`modeldesk.service` 运行 API，`modeldesk-ui.service` 提供构建后的工作台页面。确认 API 和页面均能响应后，访问 **http://127.0.0.1:5173/**。
 
-1. 检测 `node`、`npm`、`uv`（或 pip fallback）
-2. 同步 Python 依赖（`uv sync` 或 `pip install`）
-3. 构建前端（`npm ci && npm run build`）
-4. 生成 systemd user unit 并启动服务
-5. 配置 nginx 反向代理（若已安装且有 sudo 权限）
+一键安装使用端口 8001 和 5173。如果已有服务占用这两个端口，例如旧安装使用的 nginx，请先选择由哪个服务提供该端口。用户服务配置写入 `${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/`，旧配置有变动时会备份。使用已有静态服务时，可按下面的手动步骤只启动 API。
 
-### 手动安装
-
-#### 1. Python 环境
+### 管理用户服务
 
 ```bash
-# 使用 uv（推荐）
-uv sync
-
-# 或使用 pip
-python3 -m venv .venv
-.venv/bin/pip install -e .
+systemctl --user status modeldesk.service modeldesk-ui.service
+journalctl --user -u modeldesk -u modeldesk-ui -f
+systemctl --user restart modeldesk.service
+systemctl --user stop modeldesk.service
+systemctl --user disable modeldesk.service
 ```
 
-#### 2. 前端
+工作台服务随 API 服务启动、停止和重启。重新运行安装脚本会更新依赖和页面。
+
+## 手动启动
+
+在仓库根目录准备依赖并构建前端。
 
 ```bash
-npm ci --prefix frontend
-npm run build --prefix frontend
+uv sync --locked
+npm --prefix frontend ci
+npm --prefix frontend run build
 ```
 
-#### 3. 启动后端
+在两个终端中分别启动 API 和工作台。两个命令都在仓库根目录运行。
 
 ```bash
-# 开发模式
-.venv/bin/uvicorn backend.main:app --host 127.0.0.1 --port 8001 --reload
+# 终端 1
+.venv/bin/python -m uvicorn backend.main:app --host 127.0.0.1 --port 8001
 
-# 生产模式（使用 systemd）
-systemctl --user start modeldesk
+# 终端 2
+.venv/bin/python -m http.server 5173 --bind 127.0.0.1 --directory frontend/dist
 ```
 
-## 运行方式
+- 工作台 http://127.0.0.1:5173/
+- API 健康检查 http://127.0.0.1:8001/
+- Agent 就绪检查 http://127.0.0.1:8001/api/readiness
 
-### systemd 服务管理
+前端开发可以将第二个命令换成 `npm --prefix frontend run dev -- --host 127.0.0.1 --port 5173 --strictPort`。手机访问使用工作台内的私有手机入口，需另行配置 Tailscale。
 
-```bash
-# 查看状态
-systemctl --user status modeldesk
+## Electron 桌面窗口
 
-# 查看日志
-journalctl --user -u modeldesk -f
-
-# 重启
-systemctl --user restart modeldesk
-
-# 停止
-systemctl --user stop modeldesk
-
-# 禁用开机自启
-systemctl --user disable modeldesk
-```
-
-### 直接运行
+先通过用户服务或手动命令启动工作台和 API，然后选择从源码打开窗口或打包。打包需在 Linux x86_64 上进行。
 
 ```bash
-.venv/bin/uvicorn backend.main:app --host 127.0.0.1 --port 8001
-```
+npm --prefix desktop ci
 
-### 访问地址
-
-- **API**: http://127.0.0.1:8001
-- **前端**: http://127.0.0.1:5173（开发模式）或通过 nginx 代理
-- **健康检查**: http://127.0.0.1:8001/api/readiness
-
-## Electron 桌面客户端
-
-```bash
-# 开发模式
+# 从源码打开桌面窗口
 npm --prefix desktop start
 
-# 打包 Linux x64
+# 构建 Linux x64 桌面包并启动
 npm --prefix desktop run package:linux
+./desktop/dist/package/ModelDesk-linux-x64/modeldesk
 ```
 
-打包产物位于 `desktop/dist/package/`。
-
-## 故障排查
-
-### 服务无法启动
-
-```bash
-# 查看详细错误
-journalctl --user -u modeldesk -n 50 --no-pager
-
-# 检查端口占用
-ss -tlnp | grep 8001
-
-# 验证 Python 环境
-.venv/bin/python -c "import backend; print('OK')"
-```
-
-### Muse 相关警告
-
-Linux 上 Muse 原生桥接不可用是预期行为。readiness 端点会返回：
-
-```json
-{
-  "id": "muse",
-  "state": "unavailable",
-  "reason": "Muse 原生桥接仅在 macOS 上可用，Linux 平台不支持此功能。"
-}
-```
-
-这不影响其他功能的正常使用。
-
-### Tailscale 未检测到
-
-确保 Tailscale CLI 在 PATH 中：
-
-```bash
-which tailscale || echo "未找到 tailscale"
-
-# Ubuntu/Debian
-sudo apt install tailscale
-
-# 通用
-curl -fsSL https://tailscale.com/install.sh | sh
-```
-
-### nginx 配置失败
-
-安装脚本在无法获取 sudo 时会打印手动指令。按提示执行即可。
-
-## 配置文件位置
-
-| 文件 | 路径 | 说明 |
-|------|------|------|
-| systemd unit | `~/.config/systemd/user/modeldesk.service` | 服务定义 |
-| nginx conf | `/etc/nginx/conf.d/modeldesk.conf` | 反向代理 |
-| 数据目录 | `./data/` | 会话、任务、媒体存储 |
-| 日志 | journald | 通过 `journalctl --user` 查看 |
+桌面包连接上述本机服务。安装依赖、启动服务、配置模型连接与登录在宿主机完成。
 
 ## 更新
 
-重新运行安装脚本即可更新：
-
 ```bash
-git pull origin feat/linux-support
+git pull --ff-only
 bash scripts/install-linux.sh
 ```
 
-脚本会自动备份并替换变更的配置文件。
+任务数据保存在仓库的 `data/` 目录。需要更新桌面包时重新执行打包命令。

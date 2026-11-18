@@ -284,6 +284,11 @@ async def _run_delivery(manager, job, result):
             if not content.lstrip().startswith(("{", "```json")):
                 delivery["content"] = content
             delivery["limitations"].append("交付完整性字段未通过校验；已保留实际回复，不能视为完整完成。")
+        from .report_content import report_markdown
+        body = report_markdown(original, delivery, delivery["content"])
+        if body != delivery["content"]:
+            delivery["source_html"] = delivery["content"]
+            delivery["content"] = body
         if contract["images"] or contract["videos"] or delivery["media"]:
             delivery["content"] = bind_media(delivery["content"], delivery["media"])
         delivery["content_sha256"] = hashlib.sha256(delivery["content"].encode()).hexdigest()

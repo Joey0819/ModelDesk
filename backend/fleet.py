@@ -34,6 +34,7 @@ MAX_ENROLL_FAILURES = 10
 ENROLL_FAILURE_WINDOW_SECONDS = 300
 MAX_NODES = 200
 PLATFORMS = {"linux", "darwin", "windows"}
+TERMINAL_JOB_STATUSES = {"complete", "error", "cancelled"}
 
 
 def now():
@@ -269,6 +270,10 @@ class FleetStore:
                 data = json.loads(raw)
                 if not isinstance(data, dict) or "jobs" not in data or not isinstance(data["jobs"], dict):
                     raise ValueError("missing jobs")
+                for job in data["jobs"].values():
+                    if isinstance(job, dict) and job.get("status") == "queued":
+                        # Older releases stored a replacement target as if it already owned the job.
+                        self._reset_job_for_queue(job, job.get("updated_at") or self._stamp(), job.get("assigned_node_id"))
                 self._jobs_cache = data["jobs"]
                 return copy.deepcopy(self._jobs_cache)
             except (OSError, ValueError, TypeError) as error:
@@ -531,6 +536,11 @@ class FleetStore:
                 raise HTTPException(404, "任务不存在")
             if job.get("assigned_node_id") != node["node_id"]:
                 raise HTTPException(403, "当前节点无权报告此任务")
+            current_status = job["status"]
+            if current_status in TERMINAL_JOB_STATUSES and body.status == current_status:
+                return {"job_id": job_id, "status": current_status}
+            if current_status not in {"running", "blocked"}:
+                raise HTTPException(409, "任务已结束或尚未认领，无法接受本次报告")
 
             now_iso = self._stamp()
             job["updated_at"] = now_iso
@@ -541,18 +551,19 @@ class FleetStore:
                 if len(job["logs"]) > 500:
                     job["logs"] = job["logs"][-500:]
 
-            if body.status in {"complete", "error", "cancelled"}:
+            if body.status in TERMINAL_JOB_STATUSES:
                 job["status"] = body.status
                 job["completed_at"] = now_iso
+                job["failure_reason"] = None
                 if body.result is not None:
                     job["result"] = copy.deepcopy(body.result)
                 if body.error is not None:
                     job["error"] = body.error
                 job["logs"].append(f"[{now_iso}] 任务结束，状态：{body.status}")
-                kanban_status = "complete" if body.status == "complete" else "error" if body.status == "error" else "cancelled"
-                _sync_to_kanban("fleet", job_id, job["title"], kanban_status, detail=body.error or "", source_label=f"节点 {node['name']}", project_id=job.get("project_id"))
 
             self._write_jobs(jobs)
+            if body.status in TERMINAL_JOB_STATUSES:
+                _sync_to_kanban("fleet", job_id, job["title"], body.status, detail=body.error or "", source_label=f"节点 {node['name']}", project_id=job.get("project_id"))
             return {"job_id": job_id, "status": job["status"]}
 
     def list_jobs(self, status=None, project_id=None, node_id=None):
@@ -596,6 +607,16 @@ class FleetStore:
             _sync_to_kanban("fleet", job_id, job["title"], "cancelled", detail="用户取消", source_label="Fleet 队列", project_id=job.get("project_id"))
             return copy.deepcopy(job)
 
+    @staticmethod
+    def _reset_job_for_queue(job, stamp, target_node_id):
+        if target_node_id:
+            job["constraints"] = (job.get("constraints") or {}) | {"target_node_id": target_node_id}
+        diagnostics = [value for value in (job.get("failure_reason"), job.get("error")) if value]
+        if diagnostics:
+            job["logs"].append(f"[{stamp}] 上次尝试诊断：{' · '.join(diagnostics)}")
+        job.update(status="queued", failure_reason=None, assigned_node_id=None, assigned_at=None,
+                   completed_at=None, progress=0.0, result=None, error=None, updated_at=stamp)
+
     def reassign_job(self, job_id, target_node_id=None):
         with self.lock:
             jobs = self._load_jobs()
@@ -605,11 +626,7 @@ class FleetStore:
             if job.get("status") not in {"blocked", "error"}:
                 raise HTTPException(400, "只有阻塞或失败的任务可以重新调度")
             now_iso = self._stamp()
-            job["status"] = "queued"
-            job["failure_reason"] = None
-            job["assigned_node_id"] = target_node_id
-            job["assigned_at"] = None
-            job["updated_at"] = now_iso
+            self._reset_job_for_queue(job, now_iso, target_node_id)
             job["logs"].append(f"[{now_iso}] 重新排队待调度" + (f"（指定节点 {target_node_id}）" if target_node_id else ""))
             self._write_jobs(jobs)
             _sync_to_kanban("fleet", job_id, job["title"], "queued", detail="重新排队", source_label="Fleet 队列", project_id=job.get("project_id"))

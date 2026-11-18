@@ -197,7 +197,7 @@ export default function ArtifactPanel({ job, onClose }) {
           <button className="artifact-icon-button" type="button" title="放大预览" aria-label="放大预览" onClick={() => dialog.current?.showModal()}><Icon name="expand" size={15} /></button>
         </div>
       </div>
-      {documentFiles.length > 0 && <div className="artifact-prepared-documents" aria-label="已生成的交付文件"><span>交付文件</span>{documentFiles.map((file) => <a key={file.id} href={file.url} download={file.filename}><Icon name="file" size={14} /><strong>{DOCUMENT_FORMATS.find((item) => item.id === file.format)?.label}</strong><small>{DOCUMENT_LAYOUTS.find((item) => item.id === file.layout)?.label}</small><Icon name="export" size={13} /></a>)}</div>}
+      {documentFiles.length > 0 && <div className="artifact-prepared-documents" aria-label="已生成的交付文件"><span>{selected?.report_preview ? '原始交付文件' : '交付文件'}</span>{documentFiles.map((file) => <a key={file.id} href={file.url} download={file.filename}><Icon name="file" size={14} /><strong>{DOCUMENT_FORMATS.find((item) => item.id === file.format)?.label}</strong><small>{DOCUMENT_LAYOUTS.find((item) => item.id === file.layout)?.label}</small><Icon name="export" size={13} /></a>)}</div>}
       {viewMode === 'diff' && diffCandidates.length > 0 && (
         <div className="artifact-diff-Selector">
           <label>

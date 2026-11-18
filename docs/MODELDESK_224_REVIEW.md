@@ -1,0 +1,28 @@
+# ModelDesk product and engineering review
+
+18 November 2026 · Desktop 2.24.0
+
+## What the upgrades enable
+
+ModelDesk has a useful, demonstrable workflow for a developer delegating a bounded repository change. A project keeps the source and permissions in scope. The team records who plans, implements and reviews the change. The reviewer can see the actual patch and commands, and the user can open the resulting file from the task board. A solo developer can leave the workspace during execution and decide separately whether to merge.
+
+The inspection started with the 43 commits between the previously installed macOS version and GitHub main at `6bdb097`. They added the board, Fleet, Linux support, skill imports and self-service Feishu setup. Those capabilities address different parts of the same user journey. The question that still needs a user trial is whether they reduce intervention and rework across a normal week. [Inspected GitHub changes](https://github.com/Joey0819/ModelDesk/compare/7cab03c...6bdb097)
+
+## Walkthrough and verification
+
+| Area | What we exercised | What the evidence supports |
+| --- | --- | --- |
+| Project group | Sent a fresh coding task to a saved Git fixture through the same group-message API the composer calls. GPT planned, Codex implemented and Gemini reviewed the saved patch and test evidence. | All three assigned roles completed in 137 seconds. A clean copy accepted the patch, ran four generated tests and passed nine independent input checks. The source fixture stayed clean. |
+| Document presentation | Opened the actual coding report. The first downloaded HTML matched its checksum but displayed markup as code. Fixed the report renderer and re-exported the saved task. | The corrected HTML has three real section headings, the Word file has editable heading styles, and the PDF contains the expected text. The original download still resolves to its original bytes. Explicit HTML source examples remain available as code. |
+| Task board | Opened a terminal Workbench card in Chromium and followed its result action. Exercised an in-flight source change while editing another card. | Partial output goes to review, blocked delivery has its own column and the open editor keeps its draft. The result action resolves the source project and job. Standalone Agent cards still need an equivalent room/result reference. |
+| Mobile setup and Skills | Replayed Feishu owner setup and confirmation with temporary stores. Uploaded LF and CRLF skill files through the production settings page and checked the saved instructions. | The confirmed room preserves the previewed assignments for one to four models. Uploaded files use an explicit name, frontmatter or filename in that order. The Feishu checks used a test transport. |
+| Fleet | Enrolled two test nodes, polled, reported, retried, cancelled and reassigned through the API. Exercised the bundled node's original worker flag. | A telemetry-only node leaves work available. The replacement node can claim the reassigned job. Conflicting late reports cannot replace terminal results. The local group harness still needs an adapter for distributed execution. |
+| Linux onboarding | Installed locked dependencies from a clean source tree and fetched the built JavaScript and API response. Added an Ubuntu workflow for installation under systemd and Linux Electron packaging. | Readers can reproduce installation and rerun package checks on the release commit. Native Muse automation depends on macOS. [Ubuntu product checks](https://github.com/Joey0819/ModelDesk/actions/workflows/product-smoke.yml) |
+
+The coordination run used `gpt-6-luna` and `gemini-3-flash`, with the Codex CLI in an isolated workspace. The project group currently accepts a text LLM as coordinator. Codex, Claude Code, Muse and MCP members have executor roles subject to their runtime permissions. The macOS bundle still depends on the local service workspace and installed runtimes. Real cloud video generation, Feishu message delivery and arbitrary third-party agent interoperability need separate runtime checks.
+
+## Recommended order of investment
+
+1. **Measure whether collaboration pays for itself.** Choose ten representative tasks from the intended workflow, define acceptance checks in advance, then run each with one agent and with the configured group. Record accepted artifacts, human intervention minutes, elapsed time, retries and model cost where available. Verify patches on a clean copy and open output files. Use the results to decide which tasks default to a group. This adapts the issue-to-executable-patch evaluation used by SWE-bench and the cost-versus-quality tradeoff described by Anthropic. [SWE-bench](https://www.swebench.com/SWE-bench/) · [Building effective agents](https://www.anthropic.com/research/building-effective-agents)
+2. **Connect one real remote worker to a group.** Start with a bounded document-rendering task. The worker should advertise its supported task and formats, claim one attempt, and return a file and checksum. Test disconnect, retry and reassignment. Pass when the group, board and original requester can all open the same verified output and a late attempt cannot replace it.
+3. **Unify the results people already have.** Start with standalone Agent cards. Persist the project, room, run and artifact references, then route the board, Feishu receipt and background inbox through the same lookup. Test a failed task with a usable partial file and a restarted client. Pass when the user can open the right file or see the concrete missing output in one action.

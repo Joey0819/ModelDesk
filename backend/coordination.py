@@ -360,13 +360,15 @@ def actual_checks(job, delivery):
     return checks
 
 
-def save_version(delivery, reason):
+def save_version(delivery, reason, source_html=None):
     content = delivery.get("content", "")
     if not content.strip():
         return
     version = {"number": len(delivery["versions"]) + 1, "reason": reason, "title": delivery["title"], "content": content,
                "content_sha256": hashlib.sha256(content.encode()).hexdigest(),
                "asset_ids": [item["id"] for item in delivery["media"]]}
+    if source_html is not None:
+        version["source_html"] = source_html
     delivery["versions"].append(version)
     delivery["artifact"] = {"id": delivery["workflow"]["run_id"] + ":delivery", "version": version["number"],
                             "content_sha256": version["content_sha256"]}
@@ -850,7 +852,7 @@ async def run(manager, job, *, continuing=False):
                     "你是最终交付编辑。输出完整可使用的成品，不能仅说采纳某成员稿件或让用户回看消息。"
                     "仅返回JSON：{\"title\":\"标题\",\"content\":\"完整Markdown正文\",\"missing_outputs\":[\"缺失项\"]}。"
                     "只用真实执行证据，代码测试依据实际命令；媒体用 {{media:slot_id}} 绑定给定清单。"
-                    "document_packaging 为平台在正文审查后生成的 Word/PDF/HTML 文件，输出完整可排版正文，不要编造下载链接或要求用户自行转换。"
+                    "document_packaging 为平台在正文审查后生成的 Word/PDF/HTML 文件。报告和文章正文用 Markdown，不能把整份正文包进 HTML 或代码围栏。编程示例可以放在代码围栏。不要编造下载链接或要求用户自行转换。"
                     "正文只包含用户要使用的成品。除非用户明确要求，不把内部审查流程、导出进度、运行日志或与本任务无关的音视频检查写进正文。"
                     "真实缺失项放 missing_outputs，平台会在成果旁显示；文档包装本身由平台核验。"
                     "继续修改时保留上版正文中未要求修改的内容；仅在最新要求或实际证据需要时调整，不任意扩写或重写。"
@@ -862,9 +864,12 @@ async def run(manager, job, *, continuing=False):
                 final = FinalDelivery.model_validate(json_document(raw))
                 if not final.content.strip():
                     raise ValueError("未取得完整正文")
-                delivery.update(title=final.title, content=bind_media(final.content, delivery["media"]))
+                from .report_content import report_markdown
+                delivery["title"] = final.title
+                body = report_markdown(job, delivery, final.content)
+                delivery["content"] = bind_media(body, delivery["media"])
                 delivery["editor_missing"] = final.missing_outputs
-                save_version(delivery, "按审查修改" if revision else "汇总实际成果")
+                save_version(delivery, "按审查修改" if revision else "汇总实际成果", final.content if body != final.content else None)
                 changed()
 
             await assemble()

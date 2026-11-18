@@ -101,7 +101,10 @@ def artifact_markdown(job, identifier):
     artifact = selected_artifact(job, identifier)
     status = "部分输出；整体任务尚未完成" if artifact["partial"] else "已保存的实际输出"
     body = artifact["content"]
-    if artifact["code"]:
+    if identifier == "group:delivery":
+        from .report_content import report_markdown
+        body = report_markdown(job, job["result"]["delivery"], body)
+    if artifact["code"] and body == artifact["content"]:
         fence = "`" * max(3, max((len(match) for match in re.findall(r"`+", body)), default=0) + 1)
         body = f"{fence}\n{body}\n{fence}"
     note = artifact.get("note")

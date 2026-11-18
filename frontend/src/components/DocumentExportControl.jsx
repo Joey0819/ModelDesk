@@ -7,7 +7,7 @@ export default function DocumentExportControl({ job, artifact }) {
   const dialog = useRef(null);
   const activeRequest = useRef(null);
   const download = useRef(null);
-  const [format, setFormat] = useState('docx');
+  const [format, setFormat] = useState(artifact.report_preview ? 'html' : 'docx');
   const [layout, setLayout] = useState('report');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -61,7 +61,7 @@ export default function DocumentExportControl({ job, artifact }) {
   };
 
   return <>
-    <button type="button" className="document-export-trigger" onClick={() => { setError(''); dialog.current?.showModal(); }} aria-label="导出 Word、PDF 或网页" title="导出 Word、PDF 或网页"><Icon name="export" size={15} /><span>导出</span></button>
+    <button type="button" className="document-export-trigger" onClick={() => { setError(''); dialog.current?.showModal(); }} aria-label={artifact.report_preview ? '重新导出可阅读报告' : '导出 Word、PDF 或网页'} title="导出 Word、PDF 或网页"><Icon name="export" size={15} /><span>{artifact.report_preview ? '重新导出' : '导出'}</span></button>
     <dialog className="document-export-dialog" ref={dialog} aria-labelledby={titleId} onCancel={(event) => { event.preventDefault(); close(); }}>
       <form onSubmit={generate}>
         <header><div><h2 id={titleId}>导出成果</h2><p>{artifact.title}</p></div><button type="button" className="artifact-icon-button" aria-label="关闭文档导出" onClick={close}><Icon name="close" size={18} /></button></header>

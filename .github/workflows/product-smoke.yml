@@ -1,0 +1,128 @@
+name: Product Smoke
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: bash
+        working-directory: modeldesk smoke
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: modeldesk smoke
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: |
+            modeldesk smoke/frontend/package-lock.json
+            modeldesk smoke/desktop/package-lock.json
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: "0.11.16"
+          working-directory: modeldesk smoke
+          cache-dependency-glob: uv.lock
+
+      - name: Start the runner's user systemd session
+        run: |
+          uid="$(id -u)"
+          export XDG_RUNTIME_DIR="/run/user/$uid"
+          export DBUS_SESSION_BUS_ADDRESS="unix:path=$XDG_RUNTIME_DIR/bus"
+          printf 'XDG_RUNTIME_DIR=%s\nDBUS_SESSION_BUS_ADDRESS=%s\n' "$XDG_RUNTIME_DIR" "$DBUS_SESSION_BUS_ADDRESS" >> "$GITHUB_ENV"
+          sudo -n loginctl enable-linger "$(id -un)"
+          sudo -n systemctl start "user@$uid.service"
+          if ! timeout 20 bash -c 'until [[ -S "$XDG_RUNTIME_DIR/bus" ]] && systemctl --user show-environment >/dev/null 2>&1; do sleep 1; done'; then
+            sudo -n systemctl status "user@$uid.service" --no-pager || true
+            echo "::error::The Ubuntu runner did not start a usable user systemd session"
+            exit 1
+          fi
+
+      - name: Install and verify both loopback services
+        run: |
+          bash -n scripts/install-linux.sh
+          bash scripts/install-linux.sh
+          unit_dir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
+          units=("$unit_dir/modeldesk.service" "$unit_dir/modeldesk-ui.service")
+          systemd-analyze --user --recursive-errors=no verify "${units[@]}"
+          systemctl --user is-active --quiet modeldesk.service
+          systemctl --user is-active --quiet modeldesk-ui.service
+          sha256sum "${units[@]}" > "$RUNNER_TEMP/modeldesk-units.sha256"
+          bash scripts/install-linux.sh
+          sha256sum --check "$RUNNER_TEMP/modeldesk-units.sha256"
+          test -z "$(find "$unit_dir" -maxdepth 1 -name 'modeldesk*.service.bak.*' -print -quit)"
+          ss -H -ltn 'sport = :8001 or sport = :5173' | awk '{print $4}' | sort | diff -u <(printf '%s\n' '127.0.0.1:5173' '127.0.0.1:8001') -
+          .venv/bin/python - <<'PY'
+          from pathlib import Path
+          from urllib.request import ProxyHandler, build_opener
+          import json
+          import re
+
+          opener = build_opener(ProxyHandler({}))
+          dist = Path("frontend/dist")
+          ui = "http://127.0.0.1:5173"
+          api = "http://127.0.0.1:8001"
+          with opener.open(ui, timeout=5) as response:
+              html = response.read()
+          assert html == (dist / "index.html").read_bytes()
+          script = re.search(rb'src="(/assets/[^"]+\.js)"', html)[1].decode()
+          with opener.open(ui + script, timeout=5) as response:
+              assert response.read() == (dist / script.lstrip("/")).read_bytes()
+          with opener.open(api, timeout=5) as response:
+              assert json.load(response) == {"status": "ok", "service": "ModelDesk API"}
+          for route in ("feishu", "skills", "todo", "fleet"):
+              with opener.open(f"{api}/api/{route}", timeout=5) as response:
+                  json.load(response)
+              print(f"HTTP 200 /api/{route}")
+          PY
+          systemctl --user stop modeldesk.service
+          if ! timeout 10 bash -c 'until [[ "$(systemctl --user show --property=ActiveState --value modeldesk-ui.service)" == inactive ]]; do sleep 1; done'; then
+            echo "::error::The frontend unit did not stop with the backend unit"
+            exit 1
+          fi
+
+      - name: Test Feishu, Skills, To-do Sync, and Fleet
+        run: |
+          .venv/bin/python -m unittest -v \
+            backend.test_feishu \
+            backend.test_feishu_bootstrap \
+            backend.test_skill_frontmatter \
+            backend.test_native_skills \
+            backend.test_todo_board \
+            backend.test_todo_sync \
+            backend.test_fleet \
+            backend.test_fleet_worker
+
+      - name: Test and lint the frontend
+        run: |
+          npm --prefix frontend test
+          npm --prefix frontend run lint
+
+      - name: Test and package the Linux desktop
+        run: |
+          npm --prefix desktop ci
+          npm --prefix desktop test
+          npm --prefix desktop run package:linux
+          bundle=desktop/dist/package/ModelDesk-linux-x64
+          test -x "$bundle/modeldesk"
+          test -s "$bundle/resources/app.asar"
+
+      - name: Show systemd diagnostics on failure
+        if: failure()
+        run: |
+          systemctl --user status modeldesk.service modeldesk-ui.service --no-pager || true
+          journalctl --user -u modeldesk.service -u modeldesk-ui.service --no-pager -n 100 || true

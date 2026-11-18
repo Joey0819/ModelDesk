@@ -1,5 +1,7 @@
 import io
 import base64
+import copy
+import hashlib
 import re
 import shutil
 import subprocess
@@ -16,6 +18,8 @@ from PIL import Image
 from pypdf import PdfReader
 
 from backend import delivery_media
+from backend.artifacts import artifact_markdown
+from backend.report_content import add_report_preview
 from backend.document_exports import (prepare_document, html_document, docx_document,
                                       render_document, document_capabilities)
 
@@ -91,6 +95,59 @@ class DocumentExportTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(source.warnings), 1)  # CommonMark rejects file: images itself.
         document = Document(io.BytesIO(docx_document(source)))
         self.assertFalse(any(r.target_ref.startswith(('file:', 'javascript:')) for r in document.part.rels.values() if r.is_external))
+
+    def test_whole_html_report_becomes_readable_and_drops_untrusted_markup(self):
+        image = self.image()
+        source = f'''<!doctype html><html><head><style>p {{ display: none }}</style></head><body>
+        <h1>项目协作成果</h1><p onclick="doSomething()">实际<strong>验证</strong>完成。<code>duration.py</code></p>
+        <h2>步骤</h2><ul><li>分析需求</li><li>运行测试</li></ul>
+        <table><thead><tr><th>检查</th><th>结果</th></tr></thead><tbody><tr><td>边界测试</td><td>通过</td></tr></tbody></table>
+        <p><a href="https://untrusted.example/path">来源标签</a> <a href="javascript:post()">危险链接</a></p>
+        <p><img src="{image['url']}" alt="项目实图" onerror="doSomething()"></p>
+        <img src="https://untrusted.example/remote.png" alt="外部说明"/><script>window.reportInjected = true;</script>
+        <pre><code>&lt;div&gt;故意的代码示例&lt;/div&gt;</code></pre></body></html>'''
+        job = self.job
+        job['prompt'] = '请提供中文交付报告与 HTML 文件'
+        job['result']['delivery']['content'] = source
+        job['result']['delivery']['title'] = '项目协作成果报告'
+        original = copy.deepcopy(job)
+
+        for raw in (source, f'```html\n{source}\n```'):
+            with self.subTest(fenced=raw != source):
+                job['result']['delivery']['content'] = raw
+                preview = add_report_preview(copy.deepcopy(job))['result']['delivery']
+                self.assertEqual(preview['content'], raw)
+                self.assertIn('## 步骤', preview['preview_content'])
+                prepared = self.source()
+                self.assertEqual(prepared.source_sha256, hashlib.sha256(raw.encode()).hexdigest())
+                markup = html_document(prepared).decode()
+                self.assertIn('<h2>步骤</h2>', markup)
+                self.assertIn('<strong>验证</strong>', markup)
+                self.assertIn('<ul>', markup)
+                self.assertIn('<td>边界测试</td>', markup)
+                self.assertIn('来源标签', markup)
+                self.assertIn('<code>&lt;div&gt;故意的代码示例&lt;/div&gt;', markup)
+                self.assertEqual(markup.count('src="data:image/'), 1)
+                self.assertLess(markup.index('来源标签'), markup.index('src="data:image/'))
+                for discarded in ('&lt;!doctype', '<script', 'untrusted.example', 'javascript:', 'doSomething', 'reportInjected', 'display: none'):
+                    self.assertNotIn(discarded, markup)
+                self.assertIn('## 步骤', artifact_markdown(job, 'group:delivery'))
+        job['result']['delivery']['content'] = source
+        self.assertEqual(job, original)
+
+    def test_html_source_delivery_and_mixed_markdown_remain_code(self):
+        code = '<!doctype html><html><body><h1>示例</h1><script>alert(1)</script></body></html>'
+        self.job['prompt'] = '请提供一个 HTML 源代码示例和简短报告'
+        delivery = self.job['result']['delivery']
+        delivery['content'] = code
+        self.assertNotIn('preview_content', add_report_preview(copy.deepcopy(self.job))['result']['delivery'])
+        self.assertIn('&lt;!doctype html&gt;', html_document(self.source()).decode())
+        self.assertNotIn('<script>', html_document(self.source()).decode())
+
+        self.job['prompt'] = '请提供交付报告'
+        delivery['content'] = f'说明文字\n\n```html\n{code}\n```\n\n结语'
+        self.assertEqual(self.source().content, delivery['content'])
+        self.assertIn('&lt;!doctype html&gt;', html_document(self.source()).decode())
 
     def test_hash_mismatch_and_foreign_media_fail_closed(self):
         entry = self.image()

@@ -41,6 +41,7 @@ export function groupByStatus(tasks) {
 export function computeReorder(tasks, draggedId, targetStatus, targetIndex) {
   const task = tasks.find((t) => t.id === draggedId);
   if (!task) return { tasks, reorderPayload: null };
+  if (task.external_source && task.status !== targetStatus) return { tasks, reorderPayload: null };
 
   // Remove dragged task from list
   const without = tasks.filter((t) => t.id !== draggedId);
@@ -76,6 +77,37 @@ export function computeReorder(tasks, draggedId, targetStatus, targetIndex) {
       position_start: 0,
     },
   };
+}
+
+export function isFleetReassignment(task, targetStatus) {
+  return task?.external_source?.platform === 'fleet' && !task.archived && task.status === 'blocked' && targetStatus === 'todo';
+}
+
+export function hasWorkbenchResult(task) {
+  return Boolean(task.project_id && task.external_source?.platform === 'workbench' &&
+    task.external_source.task_id && ['review', 'blocked', 'done'].includes(task.status));
+}
+
+export function checkWorkbenchResult(task, job) {
+  if (!hasWorkbenchResult(task) || job?.id !== task.external_source.task_id || job?.project_id !== task.project_id) {
+    throw new Error('此任务记录与看板卡片的项目不一致，请刷新看板后重试。');
+  }
+}
+
+/** Submit editable fields only, keeping the source's live state intact during edits. */
+export function buildTaskPayload(fields, task) {
+  const payload = {
+    title: fields.title.trim(),
+    description: fields.description || '',
+    priority: fields.priority,
+    assignee: fields.assignee || '',
+    due_date: fields.due_date || null,
+    tags: fields.tags || [],
+    project_id: fields.project_id || null,
+  };
+  if (!task?.external_source) payload.status = fields.status;
+  if (!task?.id) return payload;
+  return Object.fromEntries(Object.entries(payload).filter(([key]) => fields[key] !== task[key]));
 }
 
 /**

@@ -130,7 +130,7 @@ export default function FleetNodes() {
     <div className="agent-section-heading">
       <div>
         <h2>节点与算力</h2>
-        <p>把服务器和电脑接入 ModelDesk，实时查看各节点的状态与负载。本阶段只做注册、心跳和遥测展示，不支持远程执行命令。</p>
+        <p>把服务器和电脑接入 ModelDesk，实时查看各节点的状态与负载。随附节点 Agent 提供注册、心跳和遥测，队列任务由接入了执行器的工作节点领取。</p>
       </div>
       <div className="agent-inline-actions">
         <button type="button" className="subtle-button" disabled={busy} onClick={reload}><Icon name="refresh" size={15} />刷新</button>

@@ -40,15 +40,16 @@ router = APIRouter(prefix='/api/skills', tags=['skills'])
 
 class SkillInput(BaseModel):
     model_config = ConfigDict(extra='forbid')
-    name: str = Field(min_length=1, max_length=80)
+    name: str = Field(default='', max_length=80)
     description: str = Field(default='', max_length=400)
+    filename: str = Field(default='', max_length=255)
     instructions: str = Field(min_length=1, max_length=50000)
 
 
 def parse_frontmatter(text):
     """Parse YAML frontmatter from SKILL.md text. Hand-written parser, no yaml dependency.
 
-    Only triggers when text starts exactly with '---\\n'. Supports single-line 'key: value' pairs.
+    Supports LF and CRLF delimiters and single-line 'key: value' pairs. Preserves body line endings.
     Values wrapped in single/double quotes are unquoted; literal true/false become booleans.
     On any parse error or missing end delimiter, degrades safely: entire text as body, empty meta.
     Returns (meta_dict, body_text, frontmatter_raw). Always a 3-tuple: the early
@@ -56,7 +57,7 @@ def parse_frontmatter(text):
     callers unpack once and never index conditionally.
     Raises HTTPException(422) if body is empty after stripping.
     """
-    if not text.startswith('---\n'):
+    if not text.startswith(('---\n', '---\r\n')):
         if not text.strip():
             raise HTTPException(422, '技能指令为空')
         return {}, text, ''
@@ -64,7 +65,7 @@ def parse_frontmatter(text):
     lines = text.split('\n')
     end_idx = None
     for i in range(1, len(lines)):
-        if lines[i] == '---' or lines[i] == '...':
+        if lines[i].removesuffix('\r') in {'---', '...'}:
             end_idx = i
             break
     if end_idx is None:
@@ -75,7 +76,7 @@ def parse_frontmatter(text):
     # Parse frontmatter block (lines between opening and closing delimiters)
     meta = {}
     fm_block_lines = lines[1:end_idx]
-    fm_raw = '\n'.join(fm_block_lines)
+    fm_raw = '\n'.join(fm_block_lines).removesuffix('\r')
     try:
         for line in fm_block_lines:
             if not line.strip() or ':' not in line:
@@ -239,24 +240,15 @@ async def list_skills():
 
 @router.post('/import', dependencies=[Depends(require_local_admin)])
 async def import_skill(body: SkillInput):
-    # Parse frontmatter from uploaded instructions text
-    result = parse_frontmatter(body.instructions)
-    meta, instructions_body = result[0], result[1]
-    fm_raw = result[2] if len(result) > 2 else ''
-    # Secret check must cover body, name, description AND raw frontmatter block
-    # (prevents hiding credentials in stripped header)
-    if secret_text(fm_raw):
+    meta, instructions_body, fm_raw = parse_frontmatter(body.instructions)
+    if secret_text(fm_raw) or secret_text(body.filename):
         raise HTTPException(422, 'Skill 不得包含密钥或凭据')
-    # Name priority: request body (non-empty) > frontmatter name > fallback
-    final_name = body.name.strip() if body.name.strip() else str(meta.get('name', '')).strip()
+    filename = re.split(r'[/\\]', body.filename)[-1].strip()
+    filename_stem = re.sub(r'\.md$', '', filename, flags=re.IGNORECASE).strip()
+    final_name = body.name.strip() or str(meta.get('name', '')).strip() or filename_stem[:80]
     if not final_name:
         raise HTTPException(422, '技能名称不能为空')
-    # Description priority: request body (non-empty) > frontmatter description > ''
-    final_desc = body.description.strip() if body.description.strip() else str(meta.get('description', '')).strip()
-    final_desc = final_desc[:400]  # Enforce max length
-    # Stable id hash input: uses final resolved name + body for idempotent custom ids.
-    # Comment: We hash the resolved name (not raw body name) so re-importing the same
-    # skill with identical content produces the same id regardless of frontmatter presence.
+    final_desc = (body.description.strip() or str(meta.get('description', '')).strip())[:400]
     value = 'custom-' + hashlib.sha256((final_name + instructions_body).encode()).hexdigest()[:16]
     return put_skill(value, final_name, instructions_body, description=final_desc)
 

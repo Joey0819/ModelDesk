@@ -354,7 +354,8 @@ async def list_messages(identifier: str, project_id: str | None = None, before: 
             raise HTTPException(422, "分页位置不属于当前项目群")
         jobs = jobs[:index]
     page = jobs[-limit:]
-    return {"jobs": copy.deepcopy(page), "next_before": page[0]["id"] if len(jobs) > limit else None}
+    from .report_content import add_report_preview
+    return {"jobs": [add_report_preview(job) for job in copy.deepcopy(page)], "next_before": page[0]["id"] if len(jobs) > limit else None}
 
 
 @router.post("/{identifier}/messages", status_code=202)

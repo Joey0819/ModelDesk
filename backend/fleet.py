@@ -149,6 +149,7 @@ class PollJobsRequest(BaseModel):
 
 class JobReportRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
+    attempt_id: str | None = Field(default=None, pattern=r"^[0-9a-f]{32}$")
     status: str = Field(pattern=r"^(running|complete|error|cancelled)$")
     progress: float | None = Field(default=None, ge=0.0, le=100.0)
     log_chunk: str = Field(default="", max_length=32768)
@@ -514,6 +515,7 @@ class FleetStore:
             now_iso = self._stamp()
             target["status"] = "running"
             target["assigned_node_id"] = node["node_id"]
+            target["attempt_id"] = uuid.uuid4().hex
             target["assigned_at"] = now_iso
             target["updated_at"] = now_iso
             target["logs"].append(f"[{now_iso}] 任务被节点 {node['name']} ({node['node_id']}) 认领")
@@ -536,6 +538,11 @@ class FleetStore:
                 raise HTTPException(404, "任务不存在")
             if job.get("assigned_node_id") != node["node_id"]:
                 raise HTTPException(403, "当前节点无权报告此任务")
+            if body.attempt_id is not None:
+                if body.attempt_id != job.get("attempt_id"):
+                    raise HTTPException(409, "报告属于此任务的旧认领，请核对此次 poll 返回的 attempt_id")
+            elif node["node_id"] in job.get("previous_node_ids", []):
+                raise HTTPException(409, "此节点重新认领了同一任务，报告必须携带此次 poll 返回的 attempt_id")
             current_status = job["status"]
             if current_status in TERMINAL_JOB_STATUSES and body.status == current_status:
                 return {"job_id": job_id, "status": current_status}
@@ -614,7 +621,10 @@ class FleetStore:
         diagnostics = [value for value in (job.get("failure_reason"), job.get("error")) if value]
         if diagnostics:
             job["logs"].append(f"[{stamp}] 上次尝试诊断：{' · '.join(diagnostics)}")
-        job.update(status="queued", failure_reason=None, assigned_node_id=None, assigned_at=None,
+        previous_node = job.get("assigned_node_id")
+        if previous_node and previous_node not in job.get("previous_node_ids", []):
+            job.setdefault("previous_node_ids", []).append(previous_node)
+        job.update(status="queued", failure_reason=None, assigned_node_id=None, assigned_at=None, attempt_id=None,
                    completed_at=None, progress=0.0, result=None, error=None, updated_at=stamp)
 
     def reassign_job(self, job_id, target_node_id=None):

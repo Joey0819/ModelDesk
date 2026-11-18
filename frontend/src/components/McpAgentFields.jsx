@@ -33,10 +33,10 @@ export default function McpAgentFields({ member, index, projectId, onChange, onV
   const selectTool = (name) => {
     const options = mcpStringFields(tools.find((tool) => tool.name === name)?.inputSchema);
     const field = options.includes(member.mcp_prompt_field || 'prompt') ? member.mcp_prompt_field || 'prompt' : options[0] || 'prompt';
-    onChange({ mcp_tool: name || null, mcp_prompt_field: field });
+    onChange({ mcp_tool: name || null, mcp_prompt_field: field, mcp_can_plan: false, mcp_document_worker: false });
   };
   return <div className="mission-member-model-field">
-    <label><span>MCP Agent 服务</span><select aria-label={`成员 ${index + 1} MCP 服务`} value={member.mcp_server_id || ''} onChange={(event) => { generation.current++; setDiscovered(null); onChange({ mcp_server_id: event.target.value || null, mcp_tool: null, mcp_prompt_field: 'prompt' }); }}>
+    <label><span>MCP Agent 服务</span><select aria-label={`成员 ${index + 1} MCP 服务`} value={member.mcp_server_id || ''} onChange={(event) => { generation.current++; setDiscovered(null); onChange({ mcp_server_id: event.target.value || null, mcp_tool: null, mcp_prompt_field: 'prompt', mcp_can_plan: false, mcp_document_worker: false }); }}>
       <option value="">选择已注册的 MCP 服务</option>
       {member.mcp_server_id && !server?.enabled && <option value={member.mcp_server_id}>已保存的服务暂不可用</option>}
       {servers.items.filter((item) => item.enabled).map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
@@ -46,6 +46,9 @@ export default function McpAgentFields({ member, index, projectId, onChange, onV
       {tools.map((tool) => <option key={tool.name} value={tool.name}>{tool.name}</option>)}
     </select></label>
     <label><span>接收完整任务的字符串参数</span><select aria-label={`成员 ${index + 1} MCP 任务参数`} value={member.mcp_prompt_field || 'prompt'} disabled={!schema} onChange={(event) => onChange({ mcp_prompt_field: event.target.value })}>{!fields.includes(member.mcp_prompt_field || 'prompt') && <option value={member.mcp_prompt_field || 'prompt'}>{member.mcp_prompt_field || 'prompt'} · 需要核对</option>}{fields.map((field) => <option key={field} value={field}>{field}</option>)}</select></label>
+    <label><span>MCP 任务能力</span><select aria-label={`成员 ${index + 1} MCP 任务能力`} value={member.mcp_can_plan ? 'ruler' : member.mcp_document_worker ? 'document' : 'text'} disabled={!schema} onChange={(event) => onChange({ mcp_can_plan: event.target.value === 'ruler', mcp_document_worker: event.target.value === 'document' })}>
+      <option value="text">一般文本回复</option><option value="ruler">结构化规划 · 可选为统筹成员</option><option value="document">可校验的纯文本文档</option>
+    </select></label>
     <button type="button" className="subtle-button" onClick={refresh}>重新检查服务与工具</button>
     {issue ? <small role={servers.status === 'loading' || discovery.status === 'loading' ? 'status' : 'alert'}>{issue}</small> : <small role="status">工具与任务参数结构已确认。保存配置不会派发任务；执行前仍会重新核对权限和结构。</small>}
     <small>在“项目资源 → 工具与 MCP”注册服务并允许工具。自动协作会把本轮要求、上游成果和已选 Skills 交给所选工具，实际结果交给后续成员。单次等待最多 120 秒；结果未确认的调用不会重复发送。</small>

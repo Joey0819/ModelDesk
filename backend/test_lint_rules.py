@@ -155,21 +155,28 @@ class TestR1PlatformCopy(unittest.TestCase):
 
 
 class TestR2BareSuppression(unittest.TestCase):
-    """R2: every suppression comment needs reason + valid expires."""
+    """R2: every suppression comment needs a reason and valid expiry."""
+
+    def test_only_actual_python_comments_count_even_across_multiline_strings(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            scripts = root / 'scripts'
+            scripts.mkdir()
+            (scripts / 'sample.py').write_text('examples = """\n# noqa\n"""  # noqa\n')
+            with patch.object(lint_rules, 'REPO_ROOT', root), patch.object(lint_rules, 'SCRIPT_DIR', scripts):
+                violations = lint_rules.check_r2()
+            self.assertEqual(len(violations), 1)
+            self.assertIn('scripts/sample.py:3 ', violations[0])
 
     def test_valid_suppression_passes(self):
         """Suppression with reason=... expires=2099-01-01 should pass."""
-        line = '// eslint-disable next-line reason=legacy API expires=2099-01-01'
-        # Mock file scanning to return just this line
+        line = '# noqa reason=legacy API expires=2099-01-01'
         with tempfile.NamedTemporaryFile(mode="w", suffix=".py", dir=str(lint_rules.REPO_ROOT / "backend"), delete=False) as f:
             f.write(f'{line}\nx = 1\n')
             tmpname = f.name
         try:
             relpath = os.path.relpath(tmpname, lint_rules.REPO_ROOT)
-            orig_walk = lint_rules._walk_backend_py
-            def mock_walk(*a, **kw):
-                yield relpath
-            with patch.object(lint_rules, '_walk_backend_py', side_effect=lambda *a, **kw: [relpath] if not kw.get('exclude_tests') else []):
+            with patch.object(lint_rules, '_walk_backend_py', return_value=[relpath]):
                 with patch.object(lint_rules, '_walk_frontend_src', return_value=[]):
                     viols = lint_rules.check_r2()
             file_viols = [v for v in viols if relpath in v]
@@ -229,6 +236,23 @@ class TestR2BareSuppression(unittest.TestCase):
 
 class TestR3ReturnArity(unittest.TestCase):
     """R3: detect functions returning tuples of varying lengths."""
+
+    def test_nested_function_is_checked_independently(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / 'backend').mkdir()
+            (root / 'backend' / 'sample.py').write_text(textwrap.dedent("""\
+                def outer():
+                    async def inner(flag):
+                        if flag:
+                            return (1, 2)
+                        return (1, 2, 3)
+                    return inner
+                """))
+            with patch.object(lint_rules, 'REPO_ROOT', root):
+                violations = lint_rules.check_r3()
+            self.assertEqual(len(violations), 1)
+            self.assertIn('inner()', violations[0])
 
     def test_mixed_arity_flagged(self):
         """Function returning (a,b) and (a,b,c) must be flagged."""

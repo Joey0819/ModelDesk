@@ -1,4 +1,4 @@
-export const mcpConfigurationKey = (member, projectId) => JSON.stringify([projectId || null, member.mcp_server_id || null, member.mcp_tool || null, member.mcp_prompt_field || 'prompt']);
+export const mcpConfigurationKey = (member, projectId) => JSON.stringify([projectId || null, member.mcp_server_id || null, member.mcp_tool || null, member.mcp_prompt_field || 'prompt', member.mcp_can_plan === true, member.mcp_document_worker === true]);
 
 export async function fetchMcpDiscovery(api, id) {
   try { return { ...await api.discoverMcp(id), id, status: 'ready' }; }
@@ -29,6 +29,9 @@ export function mcpConfigurationIssue(member, server, discovery) {
   if (schema.required !== undefined && !Array.isArray(schema.required)) return '工具参数结构无效，请检查服务。';
   const otherRequired = (schema.required || []).filter((name) => name !== field);
   if (otherRequired.length) return `此工具还要求参数 ${otherRequired.join('、')}。当前 Agent 接收一个完整任务字符串，请选择单参数工具，或在服务端提供对应封装。`;
+  const fields = member.mcp_can_plan ? ['title', 'requirements', 'steps'] : member.mcp_document_worker ? ['filename', 'content_base64', 'sha256'] : [];
+  const output = tool.outputSchema;
+  if (fields.length && (output?.type !== 'object' || !Array.isArray(output.required) || fields.some((key) => !output.required.includes(key) || !Object.hasOwn(output.properties || {}, key)))) return `此能力需要工具声明必填的结构化输出字段：${fields.join('、')}。`;
   return '';
 }
 

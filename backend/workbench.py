@@ -222,6 +222,7 @@ class JobManager:
         import logging as _logging
         _logger = _logging.getLogger(__name__)
         try:
+            from .result_refs import workbench_result_ref
             from .todo_sync import sync_task
             title = (job.get("prompt") or "")[:200] or f"Job {job['id']}"
             ext_src = job.get("external_source")
@@ -238,6 +239,7 @@ class JobManager:
                 detail=detail,
                 source_label=source_label,
                 project_id=project_id,
+                result_ref=workbench_result_ref(job),
             )
         except Exception:
             _logger.exception("workbench: todo sync failed for job %s", job.get("id"))

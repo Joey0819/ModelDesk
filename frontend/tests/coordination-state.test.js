@@ -41,6 +41,9 @@ test('only scoped coordination jobs get continuation controls', () => {
 
 test('a review cannot visually override a failed real-output check', () => {
   const value = job();
+  value.result.delivery.status = 'partial';
+  value.result.delivery.validation.status = 'passed';
+  assert.equal(coordinationState(value).reviewLabel, '已有部分成果，交付仍未完成');
   value.result.delivery.validation.review.checks[0].met = true;
   value.result.delivery.validation.mechanical_checks[0].met = false;
   assert.equal(coordinationState(value).requirements[0].state, 'missing');

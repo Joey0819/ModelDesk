@@ -89,7 +89,7 @@ class TeamStore:
                         "members": body["members"], "created_at": now(), "updated_at": now(), "archived": False}
         else:
             snapshot = None
-        if snapshot and any(member.get("skill_ids") for member in snapshot["members"]):
+        if snapshot and (snapshot.get("writing_review") or any(member.get("skill_ids") for member in snapshot["members"])):
             raise HTTPException(422, "绑定 Skills 的团队请在项目群中使用；此流程模板尚未支持角色技能执行")
         for step in request.steps:
             if step.models and not set(step.models) <= set(body["models"]):

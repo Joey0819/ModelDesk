@@ -6,6 +6,7 @@ export const MEMBER_KINDS = { model: 'LLM 模型', image: '绘图模型', codex:
 export const isImageModel = (id = '') => /^(gpt-image(?:-|$)|dall-e(?:-|$)|grok.*image|gemini.*image)/i.test(id.split(':').at(-1).split('/').at(-1));
 export const memberKind = (member) => (!member?.kind || member.kind === 'model') && isImageModel(member?.model) ? 'image' : member?.kind || 'model';
 export const memberKindLabel = (member) => MEMBER_KINDS[memberKind(member)] || '未知类型';
+export const eligibleRulers = (team) => (team?.members || []).filter((member) => memberKind(member) === 'mcp' && member.mcp_can_plan === true);
 
 export const hasRoleContract = (member) => Boolean(member.required || member.after_member_ids?.length || member.expected_output?.trim());
 export function roleContractIssues(members) {
@@ -24,7 +25,7 @@ export function roleContractIssues(members) {
 }
 
 export function removeTeamMember(team, id) {
-  return { ...team, members: team.members.filter((member) => member.id !== id).map((member) => ({ ...member,
+  return { ...team, ...(team.coordinator_member_id === id ? { coordinator_member_id: null } : {}), members: team.members.filter((member) => member.id !== id).map((member) => ({ ...member,
     ...(member.after_member_ids ? { after_member_ids: member.after_member_ids.filter((parent) => parent !== id) } : {}),
   })) };
 }
@@ -39,7 +40,7 @@ export function roleSkillHelp(kind, skill) {
 }
 export function changeMemberKind(member, kind, catalog) {
   const { mcp_server_id: server, mcp_tool: tool, mcp_prompt_field: field, ...base } = member;
-  return { ...base, kind, ...(kind === 'mcp' ? { mcp_server_id: server || null, mcp_tool: tool || null, mcp_prompt_field: field || 'prompt' } : {}), skill_ids: supportsRoleSkills(kind) ? [...(member.skill_ids || [])] : [],
+  return { ...base, kind, ...(kind === 'mcp' ? { mcp_server_id: server || null, mcp_tool: tool || null, mcp_prompt_field: field || 'prompt' } : { mcp_can_plan: false, mcp_document_worker: false }), skill_ids: supportsRoleSkills(kind) ? [...(member.skill_ids || [])] : [],
     model: ['model', 'image'].includes(kind) ? catalog.find((model) => isImageModel(model.id) === (kind === 'image'))?.id || '' : null };
 }
 
@@ -96,6 +97,9 @@ export function teamIssues(team, catalog = [], { allowRepeatedModels = false, al
   if (!team.name?.trim()) errors.push('请填写协作组名称。');
   const members = team.members || [];
   errors.push(...roleContractIssues(members));
+  const rulers = new Set(eligibleRulers(team).map((member) => member.id));
+  if (team.coordinator_member_id && !rulers.has(team.coordinator_member_id)) errors.push('请选择具有结构化规划能力的 MCP 统筹成员。');
+  if (members.some((member) => (rulers.has(member.id) && hasRoleContract(member)) || member.after_member_ids?.some((id) => rulers.has(id)))) errors.push('MCP 规划成员不能承担交付角色或作为前置角色，请调整角色交接。');
   if (members.length < 2 || members.length > 4) errors.push('每个协作组需要 2–4 名成员。');
   const llms = members.filter((member) => memberKind(member) === 'model');
   if (members.some((member) => !member.name?.trim() || !member.role?.trim() || !MEMBER_KINDS[memberKind(member)] || (['model', 'image'].includes(memberKind(member)) && !member.model))) errors.push('每名成员需要名称、类型与职责；LLM 成员还需要选择模型。');
@@ -105,7 +109,7 @@ export function teamIssues(team, catalog = [], { allowRepeatedModels = false, al
   if (!allowRepeatedModels && new Set(llms.map((member) => member.model)).size !== llms.length) errors.push('协作任务中的模型不能重复；同一模型的多个角色请使用项目群聊。');
   if (new Set([...llms.map((member) => member.model), ...(team.coordinator_model ? [team.coordinator_model] : [])]).size > 4) errors.push('LLM 成员与统筹合计最多使用四个不同模型。');
   if (isImageModel(team.coordinator_model || "")) errors.push("统筹模型需要文字推理能力，请将生图模型配置为绘图成员。");
-  if (!allowExecutableMembers && members.some((member) => member.skill_ids?.length)) errors.push("Skills 请在项目群中使用；流程模板暂不支持。");
+  if (!allowExecutableMembers && (team.writing_review || members.some((member) => member.skill_ids?.length))) errors.push("Skills 请在项目群中使用；流程模板暂不支持。");
   if (!allowExecutableMembers && members.some(hasRoleContract)) errors.push('已配置角色交接约定，请在项目群自动完成中执行；流水线不会应用这些约定。');
   const unavailable = members.filter((member) => ["model", "image"].includes(memberKind(member))).filter((member) => !catalog.some((model) => model.id === member.model && !model.unavailable));
   if (unavailable.length) errors.push(`当前未接入：${unavailable.map((member) => member.model || '未选择模型').join('、')}。请更换模型或接入对应账户。`);
@@ -114,7 +118,7 @@ export function teamIssues(team, catalog = [], { allowRepeatedModels = false, al
 }
 
 export function teamRequest(team, projectId) {
-  return { name: team.name.trim(), description: team.description || '', coordinator_model: team.coordinator_model || null, project_id: projectId || null, members: team.members.map((member) => ({ id: member.id, name: member.name.trim(), kind: memberKind(member), model: ['muse', 'mcp'].includes(memberKind(member)) ? null : member.model?.trim() || null, role: member.role.trim(), ...(member.required ? { required: true } : {}), ...(member.after_member_ids?.length ? { after_member_ids: [...member.after_member_ids] } : {}), ...(member.expected_output?.trim() ? { expected_output: member.expected_output.trim() } : {}), ...(memberKind(member) === 'mcp' ? { mcp_server_id: member.mcp_server_id, mcp_tool: member.mcp_tool, mcp_prompt_field: member.mcp_prompt_field || 'prompt' } : {}), ...(member.skill_ids?.length ? { skill_ids: member.skill_ids } : {}) })) };
+  return { name: team.name.trim(), description: team.description || '', ...(team.writing_review ? { writing_review: true } : {}), coordinator_model: team.coordinator_model || null, ...(team.coordinator_member_id ? { coordinator_member_id: team.coordinator_member_id } : {}), project_id: projectId || null, members: team.members.map((member) => ({ id: member.id, name: member.name.trim(), kind: memberKind(member), model: ['muse', 'mcp'].includes(memberKind(member)) ? null : member.model?.trim() || null, role: member.role.trim(), ...(member.required ? { required: true } : {}), ...(member.after_member_ids?.length ? { after_member_ids: [...member.after_member_ids] } : {}), ...(member.expected_output?.trim() ? { expected_output: member.expected_output.trim() } : {}), ...(memberKind(member) === 'mcp' ? { mcp_server_id: member.mcp_server_id, mcp_tool: member.mcp_tool, mcp_prompt_field: member.mcp_prompt_field || 'prompt', ...(member.mcp_can_plan ? { mcp_can_plan: true } : {}), ...(member.mcp_document_worker ? { mcp_document_worker: true } : {}) } : {}), ...(member.skill_ids?.length ? { skill_ids: member.skill_ids } : {}) })) };
 }
 
 export function runTeamSelection(team, models = []) {
@@ -124,6 +128,6 @@ export function runTeamSelection(team, models = []) {
 
 export function copyRunTeam(run) {
   const snapshot = run.team_snapshot;
-  if (snapshot?.members?.length) return { name: `${snapshot.name || '历史协作组'}的副本`, description: snapshot.description || '', coordinator_model: snapshot.coordinator_model || null, project_id: run.project_id || null, members: structuredClone(snapshot.members) };
+  if (snapshot?.members?.length) return { name: `${snapshot.name || '历史协作组'}的副本`, description: snapshot.description || '', ...(snapshot.writing_review ? { writing_review: true } : {}), coordinator_model: snapshot.coordinator_model || null, ...(snapshot.coordinator_member_id ? { coordinator_member_id: snapshot.coordinator_member_id } : {}), project_id: run.project_id || null, members: structuredClone(snapshot.members) };
   return run.request?.members?.length ? { name: '临时协作组', members: structuredClone(run.request.members) } : null;
 }

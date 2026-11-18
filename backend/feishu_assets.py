@@ -41,3 +41,26 @@ def verified_artifacts(job, delivery):
     except (HTTPException, KeyError, TypeError, OSError) as error:
         raise FeishuAPIError("成果文件无法通过本机归属与完整性校验，已停止飞书回传；请在 ModelDesk 检查") from error
     return outputs
+
+
+def verified_text_attachment(job, delivery, *, partial=False):
+    """Materialize only the persisted, version-matched delivery as text bytes."""
+    try:
+        content = delivery["content"]
+        if not content.strip():
+            return None
+        raw = content.encode("utf-8")
+        artifact = delivery["artifact"]
+        latest = delivery["versions"][-1]
+        digest = hashlib.sha256(raw).hexdigest()
+        if (artifact["id"] != job["id"] + ":delivery" or not artifact["version"]
+                or latest["number"] != artifact["version"] or latest["content"] != content
+                or latest["title"] != delivery.get("title")
+                or artifact["content_sha256"] != digest or latest["content_sha256"] != digest):
+            return None
+        if not 0 < len(raw) <= MAX_FILE_BYTES:
+            return None
+        filename = "modeldesk-partial-result.txt" if partial else "modeldesk-result.txt"
+        return ("saved-text", {"filename": filename, "format": "stream"}, raw)
+    except (AttributeError, IndexError, KeyError, TypeError, UnicodeError):
+        return None

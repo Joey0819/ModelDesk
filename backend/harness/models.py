@@ -24,13 +24,15 @@ class TeamMember(BaseModel):
     mcp_server_id: UUID | None = None
     mcp_tool: str | None = Field(default=None, min_length=1, max_length=100, pattern=r"^[A-Za-z0-9_.:/-]+$")
     mcp_prompt_field: str = Field(default="prompt", min_length=1, max_length=100, pattern=r"^[A-Za-z][A-Za-z0-9_]*$")
+    mcp_can_plan: bool = Field(default=False, strict=True)
+    mcp_document_worker: bool = Field(default=False, strict=True)
 
     @model_serializer(mode="wrap")
     def serialize_member(self, handler):
         value = handler(self)
-        for field in ("required", "after_member_ids", "expected_output"):
-            if not value[field]:
-                value.pop(field)
+        for field in ("required", "after_member_ids", "expected_output", "mcp_can_plan", "mcp_document_worker"):
+            if not value.get(field):
+                value.pop(field, None)
         if self.kind != "mcp":
             for field in ("mcp_server_id", "mcp_tool", "mcp_prompt_field"):
                 value.pop(field, None)
@@ -54,8 +56,10 @@ class TeamMember(BaseModel):
             raise ValueError("应用与 MCP Agent 使用自己的执行能力，不配置底层模型")
         if self.kind == "mcp" and (not self.mcp_server_id or not self.mcp_tool):
             raise ValueError("MCP Agent 需要已注册服务、获准工具和任务参数名")
-        if self.kind != "mcp" and (self.mcp_server_id or self.mcp_tool or self.mcp_prompt_field != "prompt"):
+        if self.kind != "mcp" and (self.mcp_server_id or self.mcp_tool or self.mcp_prompt_field != "prompt" or self.mcp_can_plan or self.mcp_document_worker):
             raise ValueError("只有 MCP Agent 可以绑定 MCP 执行工具")
+        if self.mcp_can_plan and self.mcp_document_worker:
+            raise ValueError("请分别配置规划工具与文档工具")
         if self.kind in {"codex", "claude"} and self.model and (self.model.startswith("-") or any(char.isspace() for char in self.model)):
             raise ValueError("CLI 模型标识不能含空格或以选项符号开头")
         if not self.model:
@@ -91,8 +95,19 @@ class TeamRequest(BaseModel):
     name: str = Field(min_length=1, max_length=100)
     description: str = Field(default="", max_length=2000)
     project_id: UUID | None = None
+    writing_review: bool = False
     members: list[TeamMember] = Field(min_length=2, max_length=4)
     coordinator_model: str | None = Field(default=None, max_length=200)
+    coordinator_member_id: str | None = Field(default=None, pattern=r"^[A-Za-z][A-Za-z0-9_-]{0,39}$")
+
+    @model_serializer(mode="wrap")
+    def serialize_team(self, handler):
+        value = handler(self)
+        if not self.writing_review:
+            value.pop("writing_review", None)
+        if self.coordinator_member_id is None:
+            value.pop("coordinator_member_id", None)
+        return value
 
     @field_validator("coordinator_model")
     @classmethod
@@ -117,6 +132,16 @@ class TeamRequest(BaseModel):
         # Group rooms dispatch by member ID; workflow engines still validate
         # their distinct-model invariant when a saved roster is used for a run.
         validate_members(self.members, distinct_models=False)
+        if self.coordinator_member_id and not any(
+            member.id == self.coordinator_member_id and member.kind == "mcp" and member.mcp_can_plan
+            for member in self.members
+        ):
+            raise ValueError("统筹 Agent 必须是团队中明确获准规划的 MCP 成员")
+        planner_ids = {member.id for member in self.members if member.mcp_can_plan}
+        if any(planner_ids.intersection(member.after_member_ids) or (
+            member.id in planner_ids and (member.required or member.after_member_ids or member.expected_output)
+        ) for member in self.members):
+            raise ValueError("规划成员不执行交付步骤；请将交付要求和依赖分配给其他成员")
         from ..role_contracts import validate_role_graph
         validate_role_graph([member.model_dump() for member in self.members])
         from ..member_capabilities import member_kind, image_model

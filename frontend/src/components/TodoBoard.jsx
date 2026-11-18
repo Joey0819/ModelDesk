@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { REMOTE_CLIENT } from '../api-base';
 import { todoApi } from '../todo-api';
-import { COLUMNS, groupByStatus, computeReorder, filterTasks, countByStatus, validateTask, buildTaskPayload, isFleetReassignment, hasWorkbenchResult } from '../todo-state';
+import { COLUMNS, groupByStatus, computeReorder, filterTasks, countByStatus, validateTask, buildTaskPayload, isFleetReassignment, todoResultRef } from '../todo-state';
 import './TodoBoard.css';
 import './TodoBoardTheme.css';
 
@@ -60,7 +60,7 @@ function TodoCard({ task, onEdit, onDragStart, onDragEnd, onOpenResult }) {
           {task.tags.map((tag, i) => <span key={i} className="todo-tag">{tag}</span>)}
         </div>
       )}
-      {onOpenResult && hasWorkbenchResult(task) && (
+      {onOpenResult && todoResultRef(task) && (
         <button type="button" className="subtle-button" onClick={(event) => { event.stopPropagation(); onOpenResult(task); }}>
           {task.status === 'blocked' ? '查看记录' : '查看成果'}
         </button>

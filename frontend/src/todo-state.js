@@ -88,8 +88,31 @@ export function hasWorkbenchResult(task) {
     task.external_source.task_id && ['review', 'blocked', 'done'].includes(task.status));
 }
 
+export function todoResultRef(task) {
+  if (!task?.project_id || !['review', 'blocked', 'done'].includes(task.status)) return null;
+  const source = task.external_source;
+  const kind = source?.platform === 'workbench' ? 'workbench' : source?.platform === 'group' ? 'group_agent' : null;
+  if (!kind || !source.task_id) return null;
+  const ref = task.result_ref;
+  if (!ref) return !Object.hasOwn(task, 'result_ref') && hasWorkbenchResult(task) ? { kind, id: source.task_id, project_id: task.project_id } : null;
+  if (ref.kind !== kind || ref.id !== source.task_id || ref.project_id !== task.project_id ||
+      (kind === 'group_agent' && !ref.room_id)) return null;
+  return ref;
+}
+
+export function checkGroupTaskResult(ref, task) {
+  const saved = task?.result_ref;
+  if (ref?.kind !== 'group_agent' || task?.id !== ref.id || task?.project_id !== ref.project_id || task?.room_id !== ref.room_id ||
+      saved?.kind !== ref.kind || saved.id !== ref.id || saved.project_id !== ref.project_id || saved.room_id !== ref.room_id ||
+      (saved.source_run_id || null) !== (ref.source_run_id || null)) {
+    throw new Error('此 Agent 成果与卡片上的项目、群聊或来源运行不一致，请刷新看板后重试。');
+  }
+}
+
 export function checkWorkbenchResult(task, job) {
-  if (!hasWorkbenchResult(task) || job?.id !== task.external_source.task_id || job?.project_id !== task.project_id) {
+  const ref = todoResultRef(task);
+  if (ref?.kind !== 'workbench' || job?.id !== ref.id || job?.project_id !== ref.project_id ||
+      (task.result_ref && (job.group_room_id || null) !== (ref.room_id || null))) {
     throw new Error('此任务记录与看板卡片的项目不一致，请刷新看板后重试。');
   }
 }

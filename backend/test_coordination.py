@@ -132,6 +132,36 @@ class CoordinationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(delivery["artifact"]["version"], 2)
         self.assertEqual(delivery["status"], "complete")
 
+    async def test_one_paragraph_keeps_body_and_uses_the_plan_title_for_the_file(self):
+        body = "Only the requested paragraph."
+
+        async def provider(job, model, system, prompt, **kwargs):
+            if "最终交付编辑" in system:
+                return json.dumps({"title": "", "content": body, "missing_outputs": []}), False
+            return await self.provider(job, model, system, prompt, **kwargs)
+
+        delivery = (await self.run_delivery(provider))["delivery"]
+        self.assertEqual(delivery["status"], "complete")
+        self.assertEqual(delivery["title"], plan()["title"])
+        self.assertEqual(delivery["content"], body)
+
+    async def test_invalid_final_envelope_can_be_corrected_without_replaying_team_steps(self):
+        edits = []
+
+        async def provider(job, model, system, prompt, **kwargs):
+            if "最终交付编辑" in system:
+                edits.append(prompt)
+                if len(edits) == 1:
+                    return '{"title":"unfinished","content":', True
+            return await self.provider(job, model, system, prompt, **kwargs)
+
+        delivery = (await self.run_delivery(provider))["delivery"]
+        self.assertEqual(delivery["status"], "complete")
+        self.assertEqual(len(edits), 2)
+        self.assertEqual(delivery["format_diagnostics"][0]["stage"], "assembly")
+        self.assertTrue(delivery["format_diagnostics"][0]["truncated"])
+        self.assertEqual([len(step["attempts"]) for step in delivery["steps"]], [1, 1])
+
     async def test_final_review_resolves_editor_questions_using_actual_evidence(self):
         async def provider(job, model, system, prompt, **kwargs):
             if "最终交付编辑" in system:
@@ -379,6 +409,22 @@ class CoordinationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(delivery["status"], "complete")
         self.assertEqual(delivery["steps"][0]["attempts"], first_attempt)
         self.assertEqual(len(delivery["steps"][1]["attempts"]), 2)
+
+    async def test_failed_reassembly_retains_earlier_review_only_in_history(self):
+        await self.run_delivery()
+        delivery = self.job["result"]["delivery"]
+        previous = copy.deepcopy(delivery["reviews"])
+        self.assertTrue(previous[-1]["goal_met"])
+        async def unavailable(job, model, system, prompt, **kwargs):
+            self.assertIn("最终交付编辑", system)
+            raise RuntimeError("upstream HTTP 500")
+        with patch.object(group_delivery, "model_output", side_effect=unavailable):
+            await coordination.run(self.manager, self.job, continuing=True)
+        self.assertEqual(delivery["status"], "partial")
+        self.assertEqual(delivery["validation"]["status"], "unavailable")
+        self.assertNotIn("review", delivery["validation"])
+        self.assertEqual(delivery["reviews"], previous)
+        self.assertIn("upstream HTTP 500", delivery["limitations"])
 
     async def test_context_tampering_blocks_continue(self):
         await self.run_delivery()

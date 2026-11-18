@@ -10,7 +10,7 @@ import uuid
 from datetime import datetime
 from typing import Literal
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, HTTPException, Query, Request, Response
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from . import workbench
@@ -273,12 +273,14 @@ def validate_job_creation(request, metadata, authorization):
             or type(meta.get("group_broadcast")) is not bool):
         raise HTTPException(403, "群成员配置必须来自本群的已保存成员")
     selected = meta.get("group_recipient_member_ids")
-    if not selected or len(selected) != len(set(selected)) or not set(selected) <= {member["id"] for member in members}:
+    recipients = [member for member in members if member.get("mcp_can_plan") is not True]
+    delivery_kinds = {"model", "image", "mcp"} if meta.get("group_delivery_mode") == "auto" else {"model", "image"}
+    if not selected or len(selected) != len(set(selected)) or not set(selected) <= {member["id"] for member in recipients}:
         raise HTTPException(422, "请选择本群中的接收成员")
     if meta["group_broadcast"]:
-        if selected != [member["id"] for member in members]:
+        if selected != [member["id"] for member in recipients]:
             raise HTTPException(403, "广播成员必须来自完整的已保存群组")
-    elif any(member_kind(member) not in {"model", "image"} for member in members if member["id"] in selected):
+    elif any(member_kind(member) not in delivery_kinds for member in recipients if member["id"] in selected):
         raise HTTPException(422, "可执行 Agent 请通过派发任务操作，不能作为模型网关发言者")
 
 
@@ -358,6 +360,26 @@ async def list_messages(identifier: str, project_id: str | None = None, before: 
     return {"jobs": [add_report_preview(job) for job in copy.deepcopy(page)], "next_before": page[0]["id"] if len(jobs) > limit else None}
 
 
+@router.get("/{identifier}/messages/{job_id}/mcp-documents/{task_id}")
+async def download_mcp_document(identifier: str, job_id: str, task_id: str, project_id: str | None = None):
+    from .mcp_agent import group_document
+    room = await asyncio.to_thread(store.get, identifier, project_id)
+    job_id, task_id = checked_id(job_id), checked_id(task_id)
+    job = next((item for item in room_jobs(room) if item["id"] == job_id), None)
+    delivery = ((job or {}).get("result") or {}).get("delivery") or {}
+    step = next((item for item in delivery.get("steps", []) if item.get("kind") == "mcp"
+                 and item.get("status") == "complete" and item.get("task_id") == task_id
+                 and (item.get("worker_document") or {}).get("id") == task_id), None)
+    if step is None:
+        raise HTTPException(404, "未找到本群的 MCP 文档")
+    content, metadata = await asyncio.to_thread(group_document, task_id, job_id=job_id,
+        project_id=room["project_id"], room_id=room["id"], member_id=step["member_id"])
+    return Response(content, media_type="text/plain", headers={
+        "Content-Disposition": f'attachment; filename="{metadata["filename"]}"',
+        "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff",
+    })
+
+
 @router.post("/{identifier}/messages", status_code=202)
 async def send_message(identifier: str, request: MessageRequest, transport: Request, project_id: str | None = None):
     if request.background_mode and request.delivery_mode != "auto":
@@ -380,6 +402,10 @@ async def submit_message(identifier: str, request: MessageRequest, project_id: s
     selected = request.recipient_member_ids or [member["id"] for member in members]
     if not set(selected) <= {member["id"] for member in members}:
         raise HTTPException(422, "接收成员不属于当前项目群")
+    planner_ids = {member["id"] for member in members if member.get("mcp_can_plan") is True}
+    if planner_ids.intersection(request.recipient_member_ids):
+        raise HTTPException(422, "统筹成员只负责规划；请选择全员自动完成，或定向发送给交付成员")
+    selected = [member_id for member_id in selected if member_id not in planner_ids]
     # Stable roster order defines the relay order, regardless of chip click order.
     selected = [member["id"] for member in members if member["id"] in selected]
     if request.delivery_mode == "auto":
@@ -389,6 +415,9 @@ async def submit_message(identifier: str, request: MessageRequest, project_id: s
         except ValueError as error:
             raise HTTPException(422, str(error)) from error
     broadcast = not request.recipient_member_ids
+    if (request.delivery_mode == "auto" and broadcast
+            and room["team_snapshot"].get("coordinator_member_id") and not native_allowed):
+        raise HTTPException(403, "使用 MCP Agent 统筹需要本机授权，请在本机项目群发起全员自动完成")
     if not broadcast and any(member_kind(member) not in {"model", "image", "mcp"} for member in members if member["id"] in selected):
         raise HTTPException(422, "已选择可执行 Agent；请使用派发任务，由其实际运行时执行")
     if request.delivery_mode != "auto" and not broadcast and any(member_kind(member) == "mcp" for member in members if member["id"] in selected):
@@ -430,7 +459,7 @@ async def submit_message(identifier: str, request: MessageRequest, project_id: s
     if external_source:
         metadata["external_source"] = copy.deepcopy(external_source)
     from .skill_library import frozen_skills
-    metadata['_skill_snapshots'] = frozen_skills(members)
+    metadata['_skill_snapshots'] = frozen_skills(members, writing_review=request.delivery_mode == "auto" and room["team_snapshot"].get("writing_review", False))
     if request.background_mode:
         from .autonomy import initial_state
         metadata["autonomy"] = initial_state()

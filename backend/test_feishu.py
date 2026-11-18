@@ -294,6 +294,45 @@ class FeishuTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(hashlib.sha256(upload[2]).hexdigest(), entry["sha256"])
         self.assertTrue(any(call[0] == "reply" and call[2] == "file" for call in self.sdk.calls))
 
+    async def test_verified_text_results_reply_once_to_original_chat(self):
+        from backend.coordination import save_version
+
+        for state, status, filename in [
+            ("complete", "complete", "modeldesk-result.txt"),
+            ("needs_attention", "partial", "modeldesk-partial-result.txt"),
+            ("needs_attention", "blocked", None),
+        ]:
+            with self.subTest(status=status):
+                self.sdk.calls.clear()
+                record = self.received()
+                with patch.object(groups, "submit_message", AsyncMock(side_effect=self.submit)):
+                    await self.controller.tick()
+                job = self.jobs.jobs[record["job_id"]]
+                content = "保存的正文与成果。\n"
+                delivery = {"title": "报告", "status": status, "content": content, "media": [],
+                            "versions": [], "workflow": {"run_id": job["id"]}}
+                save_version(delivery, "fixture output")
+                if status == "blocked":
+                    delivery["artifact"]["content_sha256"] = "0" * 64
+                job.update(status="complete", result={"delivery": delivery},
+                           autonomy={"state": state, "notification_id": str(uuid.uuid4()), "reason": "已保存阶段成果"})
+                with patch("backend.autonomy.completion_problem", return_value=None):
+                    await self.controller.tick()
+                    calls = list(self.sdk.calls)
+                    await self.controller.tick()
+                self.assertEqual(self.sdk.calls, calls)
+                outgoing = [call for call in calls if call[0] == "reply"]
+                self.assertTrue(outgoing)
+                self.assertEqual({call[1] for call in outgoing}, {record["message_id"]})
+                uploads = [call for call in calls if call[0] == "upload"]
+                self.assertEqual([call[1]["filename"] for call in uploads], [filename] if filename else [])
+                self.assertEqual([call[2] for call in uploads], [content.encode()] if filename else [])
+                self.assertEqual(any(call[2] == "file" for call in outgoing), bool(filename))
+                self.assertEqual(any(call[3].get("text", "").startswith("完整正文") for call in outgoing), state == "complete")
+                self.assertNotIn("localhost", str(calls))
+                saved = next(row for row in self.store.events() if row["id"] == record["id"])
+                self.assertEqual(saved["state"], "delivered" if state == "complete" else "attention")
+
     async def test_local_api_secret_redaction_and_read_only_credentials_test(self):
         api = FastAPI()
         api.include_router(feishu.router)

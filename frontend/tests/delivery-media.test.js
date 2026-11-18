@@ -392,3 +392,21 @@ test('chat exposes saved media after synthesis fails and keeps long execution ev
   assert.match(html, /<details class="group-delivery-receipt"><summary>/);
   assert.doesNotMatch(html, /完整成果已生成|尚未生成完整成果/);
 });
+
+
+test('the group chat and result panel expose a saved MCP document when it is the only output', () => {
+  const room = '33333333-4444-5555-6666-777777777777';
+  const sha256 = 'a'.repeat(64);
+  const link = `/api/groups/${room}/messages/${jobId}/mcp-documents/${videoId}?project_id=${projectId}`;
+  const current = job([], { status: 'error', group_room_id: room });
+  current.result.delivery = { status: 'partial', steps: [{
+    kind: 'mcp', status: 'complete', task_id: videoId, output_sha256: sha256,
+    worker_document: { id: videoId, filename: 'mcp-result.txt', size: 32, sha256, download_url: link },
+  }] };
+  const chat = render(GroupDeliveryProgress, { job: current, onOpenArtifacts() {} });
+  const result = render(MediaDelivery, { job: current, content: '', apiBase: phone });
+  assert.match(chat, /查看部分成果/);
+  assert.doesNotMatch(chat, /尚未生成完整成果/);
+  assert.ok(result.includes(`href="${phone}${link}"`));
+  assert.match(result, /aria-label="下载 MCP 文档 mcp-result.txt"/);
+});

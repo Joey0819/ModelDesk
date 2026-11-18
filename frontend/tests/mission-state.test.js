@@ -121,6 +121,18 @@ test('copying a historical team uses immutable roles and removes the live saved-
   assert.equal(body.project_id, 'project-a'); assert.equal(body.members[0].role, 'changed');
 });
 
+test('the final writing review follows the saved team and its frozen history', () => {
+  const team = { name: 'Editing desk', members: temporaryMembers(['a', 'b']), writing_review: true };
+  const catalog = [{ id: 'a' }, { id: 'b' }];
+  assert.equal(teamRequest(team, 'p').writing_review, true);
+  assert.equal(copyRunTeam({ team_snapshot: team }).writing_review, true);
+  assert.deepEqual(teamIssues(team, catalog, { allowExecutableMembers: true }), []);
+  assert.ok(teamIssues(team, catalog).some((issue) => issue.includes('项目群')));
+  const legacy = { ...team, writing_review: false };
+  assert.ok(!Object.hasOwn(teamRequest(legacy, 'p'), 'writing_review'));
+  assert.ok(!Object.hasOwn(copyRunTeam({ team_snapshot: legacy }), 'writing_review'));
+});
+
 test('mission model choices remain isolated per project alongside copied temporary teams', () => {
   const first = { draft: 'A', models: ['a1', 'a2', 'a3'], team: { name: 'Copy', members: temporaryMembers(['a1', 'a2', 'a3']) } };
   const second = { draft: 'B', models: ['b1', 'b2'] };

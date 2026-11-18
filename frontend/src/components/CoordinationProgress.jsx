@@ -12,6 +12,7 @@ export default function CoordinationProgress({ job }) {
   const [error, setError] = useState('');
   const state = coordinationState(job);
   if (!state) return null;
+  const writing = job.result.delivery.validation?.review?.writing_review;
   const busy = busyRevision === state.workflow.revision;
   const continueTask = async () => {
     setBusyRevision(state.workflow.revision); setError('');
@@ -35,6 +36,10 @@ export default function CoordinationProgress({ job }) {
     {state.versions.length > 1 && <details><summary>成果版本（{state.versions.length}）</summary>{state.versions.map((version) => <details key={version.number}><summary>第 {version.number} 版：{version.reason}</summary><Markdown components={versionComponents}>{version.content}</Markdown></details>)}</details>}
     {job.result.delivery.visual_evidence?.assets?.length > 0 && <details><summary>图片与视频检查依据</summary><ul>{job.result.delivery.visual_evidence.assets.map((asset) => <li key={asset.asset_id}><strong>{asset.kind === 'video' ? '视频' : '图片'}：{asset.status === 'sampled' ? `${asset.width} × ${asset.height}${asset.duration_seconds ? `，${asset.duration_seconds} 秒` : ''}` : '画面尚未取得'}</strong><small>{asset.samples?.length ? `提供 ${asset.samples.length} 处画面${asset.kind === 'video' ? `（${asset.samples.map((item) => `${item.timestamp_seconds}s`).join('、')}）` : ''}` : asset.reason}</small></li>)}</ul><p className="coordination-review-note">视频仅抽取画面，不包含音轨或全片连续动作检查。</p></details>}
     {job.result.delivery.validation?.review && <p className="coordination-review-note">{job.result.delivery.validation.review.independent_model ? '另一模型已审阅正文与执行记录。' : '统筹模型已自检正文与执行记录。'}{job.result.delivery.validation.review.visual_input_count > 0 ? `同时检查了 ${job.result.delivery.validation.review.visual_input_count} 处实际画面。` : '本次未审阅媒体画面。'}外部事实仍需可核查来源。</p>}
+    {writing && <details><summary>成品写作复核 · {writing.met ? '通过' : '需要修改'}</summary>
+      <blockquote>{writing.excerpt}</blockquote><p>{writing.reason}</p>
+      <small>pstack · {writing.revision?.slice(0, 12)} · {job.result.delivery.validation.review.model}</small>
+    </details>}
     {state.canContinue && <div className="coordination-continue"><button type="button" disabled={busy} onClick={continueTask}>{busy ? '正在继续…' : '继续未完成的工作'}</button><small>保留完成步骤和文件；不重发状态未确认的任务，已确认的 Muse 创作最多自动修订一次。</small></div>}
     {error && <p role="alert" className="output-error">{error}</p>}
   </section>;

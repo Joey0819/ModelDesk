@@ -83,6 +83,49 @@ print(json.dumps({'type':'turn.completed'}))
         self.assertNotEqual(tasks.local_git(workspace, "rev-parse", "HEAD").strip().decode(), item["base_sha"])
         self.assertEqual((self.manager.directory / (item["id"] + ".json")).stat().st_mode & 0o777, 0o600)
 
+    async def test_board_result_survives_reload_and_exports_the_scoped_patch(self):
+        from backend import todo_board, workbench
+
+        origin_id = str(uuid.uuid4())
+        project_id, room_id = self.project["id"], self.room["id"]
+        other = self.rooms.create(groups.RoomRequest(title="other", project_id=project_id, team_id=self.team["id"]), self.teams)
+        jobs = workbench.JobManager(self.root / "workbench")
+        jobs.jobs[origin_id] = {"id": origin_id, "mode": "group", "project_id": project_id, "group_room_id": other["id"]}
+        with patch.object(workbench, "manager", jobs):
+            with self.assertRaises(HTTPException) as crossed:
+                await self.manager.create(self.request(source_run_id=origin_id))
+            self.assertEqual(crossed.exception.status_code, 403)
+            jobs.jobs[origin_id]["group_room_id"] = room_id
+            original = await self.run_task(self.request(source_run_id=origin_id))
+        self.assertEqual(original["status"], "complete", original["error"])
+        task_id = original["id"]
+        expected_ref = {"kind": "group_agent", "id": task_id, "project_id": project_id,
+                        "room_id": room_id, "source_run_id": origin_id}
+        board_path = self.root / "board.json"
+        reloaded = tasks.TaskManager(self.root / "tasks")
+        api = FastAPI()
+        api.include_router(todo_board.router)
+        api.include_router(tasks.router)
+        with (patch.object(todo_board, "BOARD_FILE", board_path), patch.object(todo_board, "_cache", None),
+              patch.object(tasks, "manager", reloaded)):
+            self.manager._sync_to_todo(original)
+            board = json.loads(board_path.read_text())
+            self.assertEqual(board["tasks"][0]["result_ref"], expected_ref)
+            board["tasks"][0].pop("result_ref")  # Simulate a legacy mirrored card on restart.
+            todo_board._save_board(board)
+            todo_board.repair_group_task_result_refs(reloaded.records)
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=api), base_url="http://local") as client:
+                result = await client.get("/api/todo")
+                self.assertEqual(result.json()[0]["result_ref"], expected_ref)
+                resource = f"/api/group-tasks/{task_id}"
+                scope = {"project_id": project_id, "room_id": room_id}
+                self.assertEqual((await client.get(resource, params=scope)).json()["result_ref"], expected_ref)
+                export = await client.get(resource + "/export", params=scope)
+                self.assertEqual(export.status_code, 200, export.text)
+                self.assertIn("Changed greeting; no tests run.", export.text)
+                self.assertIn('+print("changed")', export.text)
+                self.assertEqual((await client.get(resource + "/export", params={**scope, "room_id": other["id"]})).status_code, 403)
+
     async def test_member_change_during_engine_probe_rejects_stale_assignment(self):
         async def changing_engine_status():
             room = self.rooms.get(self.room["id"], self.project["id"])

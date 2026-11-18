@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   COLUMNS, groupByStatus, computeReorder, filterTasks, countByStatus, validateTask,
-  buildTaskPayload, isFleetReassignment, hasWorkbenchResult, checkWorkbenchResult,
+  buildTaskPayload, isFleetReassignment, hasWorkbenchResult, checkWorkbenchResult, todoResultRef, checkGroupTaskResult,
 } from '../src/todo-state.js';
 
 // --- groupByStatus ---
@@ -266,4 +266,18 @@ test('validateTask rejects long assignee', () => {
 test('COLUMNS has five entries with correct ids', () => {
   assert.equal(COLUMNS.length, 5);
   assert.deepEqual(COLUMNS.map((c) => c.id), ['todo', 'doing', 'blocked', 'review', 'done']);
+});
+
+
+test('cards open a saved Agent result only with matching source, project, room and run', () => {
+  const result_ref = { kind: 'group_agent', id: 'task', project_id: 'project', room_id: 'room', source_run_id: 'run' };
+  const card = { status: 'blocked', project_id: 'project', external_source: { platform: 'group', task_id: 'task' }, result_ref };
+  assert.deepEqual(todoResultRef(card), result_ref);
+  assert.equal(todoResultRef({ ...card, status: 'doing' }), null);
+  assert.equal(todoResultRef({ ...card, result_ref: { ...result_ref, room_id: null } }), null);
+  assert.equal(todoResultRef({ ...card, project_id: 'other' }), null);
+  assert.doesNotThrow(() => checkGroupTaskResult(result_ref, { ...result_ref, result_ref }));
+  assert.throws(() => checkGroupTaskResult(result_ref, { ...result_ref, room_id: 'other', result_ref }), /不一致/);
+  assert.throws(() => checkGroupTaskResult(result_ref, { ...result_ref, result_ref: { ...result_ref, source_run_id: 'other' } }), /不一致/);
+  assert.equal(todoResultRef({ ...card, external_source: { platform: 'workbench', task_id: 'task' }, result_ref: null }), null);
 });

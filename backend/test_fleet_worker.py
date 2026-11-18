@@ -394,6 +394,32 @@ class FleetWorkerTests(unittest.IsolatedAsyncioTestCase):
                                           headers={"Authorization": f"Bearer {replacement['node_token']}"})
             self.assertEqual(poll.json()["assigned_job"]["job_id"], job_id)
 
+    async def test_same_node_after_reassignment_rejects_stale_reports_even_after_restart(self):
+        node = await self._enroll_node("retry-node", "linux")
+        headers = {"Authorization": "Bearer " + node["node_token"]}
+        job = (await self.client.post("/api/fleet/jobs", json={"title": "可恢复交付"})).json()
+        route = "/api/fleet/jobs/" + job["job_id"]
+        async def claim():
+            response = await self.client.post("/api/fleet/jobs/poll", headers=headers, json={})
+            return response.json()["assigned_job"]["attempt_id"]
+        first = await claim()
+        response = await self.client.post(route + "/report", headers=headers, json={"status": "error"})
+        self.assertEqual(response.status_code, 200)  # An older worker's first claim remains valid.
+        self.assertEqual((await self.client.post(route + "/reassign")).status_code, 200)
+        second = await claim()
+        self.assertNotEqual(first, second)
+        with patch.object(fleet, "store", fleet.FleetStore(self.directory, clock=lambda: self.now)):
+            for attempt in ({"attempt_id": first}, {}):
+                rejected = await self.client.post(route + "/report", headers=headers, json={"status": "complete", **attempt})
+                self.assertEqual(rejected.status_code, 409)
+            self.assertEqual((await self.client.get(route)).json()["status"], "running")
+            accepted = {"status": "complete", "attempt_id": second, "result": {"file": "verified.txt"}}
+            for _ in range(2):
+                self.assertEqual((await self.client.post(route + "/report", headers=headers, json=accepted)).status_code, 200)
+            late = await self.client.post(route + "/report", headers=headers, json={"status": "complete", "attempt_id": first})
+            self.assertEqual(late.status_code, 409)
+            self.assertEqual((await self.client.get(route)).json()["result"], accepted["result"])
+
     async def test_cancel_job(self):
         created = (await self.client.post("/api/fleet/jobs", json={"title": "将被取消的任务"})).json()
         cancelled = await self.client.post(f"/api/fleet/jobs/{created['job_id']}/cancel")

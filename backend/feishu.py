@@ -325,7 +325,7 @@ class FeishuController:
 
     async def deliver(self, record):
         from .autonomy import completion_problem
-        from .feishu_assets import verified_artifacts
+        from .feishu_assets import verified_artifacts, verified_text_attachment
         job = self.jobs.jobs.get(record["job_id"])
         if not job or not self.belongs(job, record):
             self.store.update(record, state="needs_attention", reason="找不到匹配的原始项目任务，请在本机检查")
@@ -354,16 +354,23 @@ class FeishuController:
                 except Exception:
                     pass
                 return
+        partial = state == "needs_attention" and delivery.get("status") in {"partial", "blocked"}
+        if not artifacts and (state == "complete" or partial):
+            saved_text = verified_text_attachment(job, delivery, partial=partial)
+            if saved_text is not None:
+                artifacts.append(saved_text)
         title = {"complete": "任务已完成", "needs_attention": "任务需要你处理", "cancelled": "任务已停止"}[state]
         text = title + "\n任务 ID：" + job["id"] + "\n" + meta.get("reason", "")
         if artifacts:
-            text += f"\n将回传完整正文和 {len(artifacts)} 份实际成果文件；图片和视频作为文件附件发送。"
+            text += ("\n附上已保存的部分成果，任务仍需要处理。" if partial
+                     else f"\n将回传完整正文和 {len(artifacts)} 份成果附件。")
         await self.reply_once(record, notification + ":summary", text)
         if state == "complete":
             content = delivery["content"]
             chunks = [content[index:index + 4500] for index in range(0, len(content), 4500)]
             for index, chunk in enumerate(chunks):
                 await self.reply_once(record, notification + f":body:{index}", f"完整正文 {index + 1}/{len(chunks)}\n" + chunk)
+        if artifacts:
             sdk = self.sdk_factory(self.store.config())
             for key, manifest, raw in artifacts:
                 file_key = await self.operation(record, notification + ":upload:" + key,

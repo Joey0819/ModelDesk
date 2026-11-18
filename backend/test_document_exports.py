@@ -215,6 +215,22 @@ class DocumentExportTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('部分输出', paragraphs)
         self.assertIn('缺少第二张图片', paragraphs)
 
+    def test_reader_layouts_keep_run_provenance_out_of_the_finished_copy(self):
+        from lxml import html
+        source = self.source()
+        for layout in ('article', 'compact', 'report'):
+            with self.subTest(layout=layout):
+                page = html.fromstring(html_document(source, layout))
+                doc = Document(io.BytesIO(docx_document(source, layout)))
+                self.assertEqual(page.xpath('//meta[@name="modeldesk-task"]/@content'), [source.job_id])
+                self.assertIn(source.job_id, doc.core_properties.comments)
+                self.assertEqual(source.job_id in page.xpath('//body')[0].text_content(), layout == 'report')
+                self.assertEqual(any(source.job_id in p.text for p in doc.paragraphs), layout == 'report')
+        self.job['result']['delivery'].update(status='partial', limitations=['第二张图片仍在制作'])
+        partial = html.fromstring(html_document(self.source(), 'compact')).xpath('//body')[0].text_content()
+        self.assertIn('部分输出', partial)
+        self.assertIn('第二张图片仍在制作', partial)
+
     def test_code_is_literal_and_not_interpreted(self):
         self.job = {'id': str(uuid.uuid4()), 'mode': 'sdk_script', 'status': 'complete', 'result': {'answer': '<html><script>alert(1)</script></html>'}}
         markup = html_document(prepare_document(self.job, 'sdk:answer')).decode()

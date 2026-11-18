@@ -275,6 +275,7 @@ def upsert_external_task(
     description: str = "",
     source_label: str = "",
     project_id: Optional[str] = None,
+    result_ref: dict | None = None,
 ) -> dict:
     """Idempotent upsert of a synced card keyed by (platform, task_id).
 
@@ -285,6 +286,15 @@ def upsert_external_task(
     This function is called from todo_sync while holding no lock;
     it acquires _lock internally.
     """
+    from .result_refs import card_result_ref
+
+    def persist_ref(card):
+        ref = card_result_ref(card, result_ref)
+        if ref:
+            card["result_ref"] = ref
+        elif result_ref:
+            card.pop("result_ref", None)
+
     platform = external_source["platform"]
     task_id = external_source["task_id"]
     # Single write point for the sync key: HTTP models no longer accept it, so
@@ -320,6 +330,7 @@ def upsert_external_task(
             existing["title"] = safe_title
             existing["status"] = status
             existing["description"] = description[:4000]
+            persist_ref(existing)
             # The display label can change (e.g. a workbench job that turns out
             # to be Feishu-dispatched), and the UI must follow the newest one.
             if source_label:
@@ -347,6 +358,7 @@ def upsert_external_task(
                 archived_match["title"] = safe_title
                 archived_match["status"] = status
                 archived_match["description"] = description[:4000]
+                persist_ref(archived_match)
                 if source_label:
                     archived_match["source_label"] = source_label
                 archived_match["updated_at"] = now_ts
@@ -378,6 +390,7 @@ def upsert_external_task(
                     "archived": False,
                     "external_source": {"platform": platform, "task_id": task_id},
                 }
+                persist_ref(task)
                 tasks.append(task)
                 new_data = {"schema_version": SCHEMA_VERSION, "tasks": tasks}
                 _save_board(new_data)
@@ -416,6 +429,7 @@ def archive_external_task(external_source: dict) -> Optional[dict]:
 
 def repair_workbench_delivery_cards(jobs: dict) -> None:
     """Correct older cards from the source records recovered at startup."""
+    from .result_refs import card_result_ref, workbench_result_ref
     from .todo_sync import workbench_card_state
 
     with _lock:
@@ -424,15 +438,40 @@ def repair_workbench_delivery_cards(jobs: dict) -> None:
         changed = False
         for task in tasks:
             source = task.get("external_source") or {}
-            if source.get("platform") != "workbench" or task.get("status") != "done":
+            if source.get("platform") != "workbench":
                 continue
             job = jobs.get(source.get("task_id"))
-            if job is None or job.get("status") != "complete":
+            if job is None:
+                continue
+            ref = card_result_ref(task, workbench_result_ref(job))
+            if task.get("result_ref") != ref:
+                task["result_ref"] = ref
+                changed = True
+            if task.get("status") != "done" or job.get("status") != "complete":
                 continue
             status, detail = workbench_card_state(job)
             if status in {"review", "blocked"}:
                 task.update(status=status, description=detail, updated_at=_now_iso())
                 changed = True
+        if changed:
+            _save_board({**data, "tasks": tasks})
+
+
+def repair_group_task_result_refs(records: dict) -> None:
+    from .result_refs import card_result_ref, group_task_result_ref
+
+    with _lock:
+        data = _load_board()
+        tasks = copy.deepcopy(data["tasks"])
+        changed = False
+        for task in tasks:
+            source = task.get("external_source") or {}
+            item = records.get(source.get("task_id")) if source.get("platform") == "group" else None
+            if item:
+                ref = card_result_ref(task, group_task_result_ref(item))
+                if task.get("result_ref") != ref:
+                    task["result_ref"] = ref
+                    changed = True
         if changed:
             _save_board({**data, "tasks": tasks})
 
@@ -507,6 +546,9 @@ def update_task(task_id: str, body: TaskUpdate, request: Request):
             _require_source_archive_access(ext, request)
         for key, value in updates.items():
             target[key] = value
+        result_ref = target.get("result_ref")
+        if result_ref and target.get("project_id") != result_ref.get("project_id"):
+            target.pop("result_ref", None)
         target["updated_at"] = _now_iso()
         new_data = {"schema_version": SCHEMA_VERSION, "tasks": tasks}
         _save_board(new_data)

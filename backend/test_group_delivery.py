@@ -153,6 +153,26 @@ class DeliveryTests(unittest.IsolatedAsyncioTestCase):
                 with self.assertRaises(RuntimeError):
                     await group_delivery.model_output(current(), "a", "system", "prompt")
 
+    async def test_transient_server_error_retries_text_only_once_on_same_model(self):
+        client_type = httpx.AsyncClient
+        for final_status in (200, 500):
+            with self.subTest(final_status=final_status):
+                calls = []
+                def handle(request):
+                    calls.append(json.loads(request.content))
+                    status = 500 if len(calls) == 1 else final_status
+                    return httpx.Response(status, json={"choices": [{"message": {"content": "OK"}}]})
+                with patch.object(group_delivery.httpx, "AsyncClient", side_effect=lambda **kwargs: client_type(transport=httpx.MockTransport(handle), **kwargs)), patch.object(asyncio, "sleep", new_callable=AsyncMock):
+                    if final_status == 200:
+                        self.assertEqual(await group_delivery.model_output(current(), "a", "system", "prompt"), ("OK", False))
+                    else:
+                        with self.assertRaisesRegex(RuntimeError, "500"):
+                            await group_delivery.model_output(current(), "a", "system", "prompt")
+                self.assertEqual(len(calls), 2)
+                self.assertEqual(calls[0], calls[1])
+                self.assertEqual(calls[0]["model"], "a")
+                self.assertNotIn("tools", calls[0])
+
     def test_final_memory_precedes_long_discussion_and_restart_does_not_replay(self):
         with tempfile.TemporaryDirectory() as folder:
             result = {"messages": [{"content": "old discussion " * 5000}],

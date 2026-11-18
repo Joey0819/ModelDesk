@@ -1,5 +1,5 @@
 import { API_BASE } from './api-base.js';
-import { managedDeliveryMedia } from './delivery-media.js';
+import { managedDeliveryMedia, managedWorkerDocuments } from './delivery-media.js';
 
 const complete = (job) => ['complete', 'completed'].includes(job?.status);
 const active = (job) => ['queued', 'running'].includes(job?.status);
@@ -86,8 +86,9 @@ export function deriveArtifacts(job, apiBase = API_BASE) {
     }),
   ].filter(Boolean);
   if (job.mode === 'group_agent') return [
-    makeArtifact(job, 'group-agent:output', job.kind === 'review' ? '独立 Agent 审阅意见' : '独立 Agent 执行结果', text(job.output), { source: `${job.member?.name || '成员'} / ${job.engine === 'member_model' ? job.member?.model || '成员模型' : job.engine === 'claude' ? 'Claude Code' : 'Codex'}`, note: '这是执行引擎的实际返回；结论与测试说明需结合运行记录核查。代码合入需另行审批。' }),
+    makeArtifact(job, 'group-agent:output', job.kind === 'review' ? '独立 Agent 审阅意见' : '独立 Agent 执行结果', text(job.output), { partial: job.status !== 'complete', source: `${job.member?.name || '成员'} / ${job.engine === 'member_model' ? job.member?.model || '成员模型' : job.engine === 'claude' ? 'Claude Code' : 'Codex'}`, note: '这是执行引擎的实际返回；结论与测试说明需结合运行记录核查。代码合入需另行审批。' }),
     makeArtifact(job, 'group-agent:patch', '待审阅的实际补丁', text(job.diff), { source: `基准 ${job.base_sha?.slice(0, 12) || '未记录'} / 补丁 ${job.diff_sha256?.slice(0, 12) || '未记录'}`, format: 'code', language: 'diff', kind: 'evidence', note: '补丁保存在独立任务工作区。是否已经合入以审批卡片记录为准。' }),
+    makeArtifact(job, 'group-agent:run', '独立 Agent 运行记录', !job.output && !job.diff ? [job.error, ...(job.events || []).slice(-8).map((event) => event.text)].filter(Boolean).join('\n') : '', { source: '已保存的任务记录', kind: 'evidence', partial: job.status !== 'complete' }),
   ].filter(Boolean);
   if (job.mode === 'chat') return (result.responses || []).map((response) => makeArtifact(job, `chat:${response.model}`, response.model || '模型回答', text(response.text) || text(response.response), {
     model: response.model, source: '独立模型回答', partial: Boolean(response.error || response.incomplete),
@@ -101,12 +102,14 @@ export function deriveArtifacts(job, apiBase = API_BASE) {
   if (job.mode === 'group' && (job.group_delivery_mode === 'auto' || result.delivery)) {
     const delivery = result.delivery || {};
     const content = text(delivery.preview_content) || text(delivery.content);
-    // Media can finish before synthesis, or survive a failed synthesis. Keep it
+    // Saved files can arrive before synthesis, or survive a failed synthesis. Keep them
     // accessible without inventing prose or changing the task's completion state.
     const mediaOnly = !content.trim();
     const hasMedia = managedDeliveryMedia(job, apiBase).length > 0;
-    return [makeArtifact(job, 'group:delivery', delivery.title || (mediaOnly ? '已保存的图片与视频' : '完整交付结果'), content, {
-      allowEmpty: hasMedia, media_only: mediaOnly,
+    const hasDocuments = managedWorkerDocuments(job, apiBase).length > 0;
+    const fallbackTitle = hasDocuments ? '已保存的交付文件' : '已保存的图片与视频';
+    return [makeArtifact(job, 'group:delivery', delivery.title || (mediaOnly ? fallbackTitle : '完整交付结果'), content, {
+      allowEmpty: hasMedia || hasDocuments, media_only: mediaOnly,
       report_preview: Boolean(delivery.preview_content),
       model: delivery.model, source: '项目群自动交付', partial: delivery.status !== 'complete',
       media: Array.isArray(delivery.media) ? delivery.media : [],

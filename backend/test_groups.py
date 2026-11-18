@@ -86,6 +86,102 @@ class GroupRoomTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(job["status"], "complete", job.get("error"))
         return job
 
+    async def test_qualified_mcp_group_http_delivers_scoped_verified_worker_bytes(self):
+        import socket
+        import subprocess
+        import sys
+
+        from backend import coordination, mcp_agent
+        from backend.harness import context
+        from backend.harness.store import RunStore
+
+        with socket.socket() as listener:
+            listener.bind(("127.0.0.1", 0))
+            port = listener.getsockname()[1]
+        process = subprocess.Popen([sys.executable, "-m", "scripts.qualified_mcp_demo", "--port", str(port)],
+                                   cwd=Path(__file__).resolve().parents[1], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self.addCleanup(process.wait, 5)
+        self.addCleanup(lambda: process.terminate() if process.poll() is None else None)
+        async with asyncio.timeout(8):
+            while True:
+                self.assertIsNone(process.poll(), "MCP reference server did not start")
+                try:
+                    _, connection = await asyncio.open_connection("127.0.0.1", port)
+                except OSError:
+                    await asyncio.sleep(.05)
+                else:
+                    connection.close()
+                    await connection.wait_closed()
+                    break
+        registration = await self.client.post("/api/platform/mcp", json={"name": "qualified demo", "project_id": self.project["id"],
+            "url": f"http://127.0.0.1:{port}/mcp", "allowed_tools": ["plan_document", "render_document"]})
+        self.assertEqual(registration.status_code, 201, registration.text)
+        resource = registration.json()
+        self.team = self.teams.put(TeamRequest(name="qualified demo", project_id=self.project["id"], coordinator_model="a",
+            coordinator_member_id="planner", members=[
+                {"id": "planner", "name": "统筹", "kind": "mcp", "mcp_server_id": resource["id"], "mcp_tool": "plan_document", "mcp_can_plan": True},
+                {"id": "worker", "name": "撰稿", "kind": "mcp", "mcp_server_id": resource["id"], "mcp_tool": "render_document", "mcp_document_worker": True,
+                 "required": True, "expected_output": "可下载的任务简报"}]))
+        room = await self.room()
+        path = f"/api/groups/{room['id']}/messages"
+        body = {"prompt": "为火山展览准备一份任务简报", "delivery_mode": "auto", "output_format": "text", "document_formats": []}
+        headers = {"origin": "http://localhost:5173"}
+        rejected = await self.client.post(path, params=self.params(room), json={**body, "recipient_member_ids": ["planner"]}, headers=headers)
+        self.assertEqual(rejected.status_code, 422, rejected.text)
+        remote = await self.client.post(path, params=self.params(room), json=body, headers={**headers, "x-modeldesk-remote": "phone"})
+        self.assertEqual(remote.status_code, 403, remote.text)
+
+        stages = []
+        async def editor(_job, _model, _system, _prompt, validate, _delivery, stage, *_args, **_kwargs):
+            stages.append(stage)
+            if stage == "assembly":
+                return validate(json.dumps({"title": "任务简报", "content": "火山展览任务简报。", "missing_outputs": []}))
+            self.assertEqual(stage, "review")
+            return validate(json.dumps({"goal_met": True, "missing_requirements": [], "revision_instructions": "",
+                "checks": [{"requirement_id": "brief", "met": True, "evidence_status": "verified", "reason": "已取得文档"}]}))
+
+        receipts = RunStore(self.root / "mcp")
+        with (
+            patch.object(group_chat.httpx, "AsyncClient", self.client_type),
+            patch.object(coordination, "structured_output", editor),
+            patch.object(mcp_agent, "resources", self.resources),
+            patch.object(context, "resources", self.resources),
+            patch.object(mcp_agent, "STORE", receipts),
+        ):
+            discovered = await self.client.post(f"/api/platform/mcp/{resource['id']}/discover")
+            self.assertEqual(discovered.status_code, 200, discovered.text)
+            created = await self.client.post(path, params=self.params(room), json=body, headers=headers)
+            self.assertEqual(created.status_code, 202, created.text)
+            identifier = created.json()["id"]
+            task = self.jobs.tasks.get(identifier)
+            if task:
+                async with asyncio.timeout(20):
+                    await task
+            job = self.jobs.get(identifier)
+            self.assertEqual(job["status"], "complete", job.get("error"))
+            delivery = job["result"]["delivery"]
+            self.assertEqual(delivery["status"], "complete", delivery)
+            self.assertEqual(stages, ["assembly", "review"])
+            self.assertEqual(delivery["workflow"]["planner"]["status"], "accepted")
+            self.assertEqual(delivery["workflow"]["planner"]["dispatch_count"], 1)
+            step, = delivery["steps"]
+            self.assertEqual(step["member_id"], "worker")
+            self.assertEqual(step["dispatch_count"], 1)
+            document = step["worker_document"]
+            downloaded = await self.client.get(document["download_url"])
+            self.assertEqual(downloaded.status_code, 200, downloaded.text)
+            self.assertIn(body["prompt"].encode(), downloaded.content)
+            self.assertEqual(document["sha256"], hashlib.sha256(downloaded.content).hexdigest())
+            self.assertEqual(document["size"], len(downloaded.content))
+            self.assertEqual(downloaded.headers["content-disposition"], 'attachment; filename="task-brief.txt"')
+            foreign = await self.client.get(document["download_url"].split("?")[0], params={"project_id": self.other["id"]})
+            self.assertEqual(foreign.status_code, 403)
+            record = json.loads((receipts.directory / (document["id"] + ".json")).read_text())
+            self.assertEqual(record["dispatch_count"], 1)
+            record["output"] += "changed"
+            receipts.save(record)
+            self.assertEqual((await self.client.get(document["download_url"])).status_code, 409)
+
     async def test_room_snapshot_project_scope_and_reloading(self):
         room = await self.room()
         self.assertEqual((await self.client.get("/api/groups")).json(), [])
@@ -93,7 +189,7 @@ class GroupRoomTests(unittest.IsolatedAsyncioTestCase):
         for suffix in ["", "/messages"]:
             response = await self.client.get(f"/api/groups/{room['id']}{suffix}", params={"project_id": self.other["id"]})
             self.assertEqual(response.status_code, 403)
-        changed = TeamRequest.model_validate({key: self.team[key] for key in TeamRequest.model_fields})
+        changed = TeamRequest.model_validate({key: self.team[key] for key in TeamRequest.model_fields if key in self.team})
         changed.members[0].role = "changed role"
         self.teams.put(changed, self.team["id"])
         self.teams.archive(self.team["id"], self.project["id"])
@@ -392,7 +488,7 @@ class GroupRoomTests(unittest.IsolatedAsyncioTestCase):
     async def test_apply_roster_updates_future_dispatch_preserves_history_and_checks_scope(self):
         room = await self.room()
         first = await self.send(room, recipient_member_ids=["writer"])
-        changed = TeamRequest.model_validate({key: self.team[key] for key in TeamRequest.model_fields})
+        changed = TeamRequest.model_validate({key: self.team[key] for key in TeamRequest.model_fields if key in self.team})
         changed.members[0].name = "新作者"
         changed.members[0].role = "提出可验证的第二版"
         self.teams.put(changed, self.team["id"])

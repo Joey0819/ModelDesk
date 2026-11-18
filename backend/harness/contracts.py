@@ -73,6 +73,13 @@ class RuntimeRevision(BaseModel):
     instruction: str = Field(min_length=1, max_length=2000)
 
 
+class WritingReview(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    met: bool = Field(strict=True)
+    excerpt: str = Field(min_length=1, max_length=240)
+    reason: str = Field(min_length=1, max_length=600)
+
+
 class Review(BaseModel):
     model_config = ConfigDict(extra="forbid")
     goal_met: bool
@@ -80,10 +87,11 @@ class Review(BaseModel):
     checks: list[ReviewItem] = Field(min_length=1, max_length=12)
     revision_instructions: str = Field(default="", max_length=2500)
     runtime_revision: RuntimeRevision | None = None
+    writing_review: WritingReview | None = None
 
     @model_validator(mode="after")
     def all_requirements_verified(self):
-        if any(not item.met for item in self.checks):
+        if any(not item.met for item in self.checks) or (self.writing_review and not self.writing_review.met):
             self.goal_met = False
         return self
 

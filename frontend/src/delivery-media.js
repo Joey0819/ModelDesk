@@ -49,6 +49,33 @@ export function managedDeliveryMedia(job, apiBase) {
   });
 }
 
+/** MCP documents are saved as UTF-8 bytes and retrieved by the scoped job and task IDs. */
+export function managedWorkerDocuments(job, apiBase) {
+  const roomId = job?.group_room_id;
+  const projectId = job?.project_id;
+  const steps = job?.result?.delivery?.steps;
+  if (job?.mode !== 'group' || !UUID.test(job.id || '') || !UUID.test(roomId || '')
+      || (projectId != null && !UUID.test(projectId)) || !Array.isArray(steps)) return [];
+  const seen = new Set();
+  return steps.flatMap((step) => {
+    const document = step?.worker_document;
+    if (step?.kind !== 'mcp' || step.status !== 'complete' || !document || document.id !== step.task_id
+        || !UUID.test(document.id || '') || seen.has(document.id)
+        || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}\.txt$/.test(document.filename || '')
+        || !/^[a-f0-9]{64}$/.test(document.sha256 || '') || document.sha256 !== step.output_sha256
+        || !Number.isSafeInteger(document.size) || document.size < 1 || document.size > 24 * 1024) return [];
+    try {
+      const base = new URL(apiBase);
+      if (!/^https?:$/.test(base.protocol) || base.username || base.password) return [];
+      const expected = new URL(`/api/groups/${roomId}/messages/${job.id}/mcp-documents/${document.id}`, base);
+      if (projectId) expected.searchParams.set('project_id', projectId);
+      if (typeof document.download_url !== 'string' || new URL(document.download_url, base).href !== expected.href) return [];
+      seen.add(document.id);
+      return [{ ...document, download_url: expected.href }];
+    } catch { return []; }
+  });
+}
+
 /** Reused files have new IDs; old source links must open this job's verified copy. */
 export function resolveReusedMediaLink(value, asset, job, apiBase) {
   const current = resolveManagedMediaUrl(asset?.url, asset, job, apiBase);

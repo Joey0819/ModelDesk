@@ -15,6 +15,7 @@ import { REMOTE_CLIENT } from './api-base';
 import { machineShort, hostIsMacos } from './machine';
 import { groupScopeKey } from './group-state';
 import { groupApi } from './group-api';
+import { groupTaskApi } from './group-task-api';
 import { autonomyApi } from './autonomy-api';
 import { checkAutonomyTarget, scopedAutonomyTasks } from './autonomy-state';
 import { applyEvent, hydrateJob } from './workbench-state';
@@ -30,7 +31,7 @@ import ToolSettings from './components/ToolSettings';
 import WorkflowEditor from './components/WorkflowEditor';
 import WorkflowFailureNotice from './components/WorkflowFailureNotice';
 import TodoBoard from './components/TodoBoard';
-import { checkWorkbenchResult } from './todo-state';
+import { checkGroupTaskResult, checkWorkbenchResult, todoResultRef } from './todo-state';
 import { defaultWorkflow, workflowErrors } from './workflow-settings';
 import PlatformWorkspace from './components/PlatformWorkspace';
 import ContextAttachments from './components/ContextAttachments';
@@ -268,7 +269,18 @@ function ModelDeskWorkspace() {
   };
   const openTodoResult = async (card) => {
     const request = ++artifactRequest.current;
-    const saved = await workbenchApi.getJob(card.external_source.task_id);
+    const ref = todoResultRef(card);
+    if (!ref) throw new Error('此卡片没有可验证的成果记录，请刷新看板后重试。');
+    if (ref.kind === 'group_agent') {
+      const saved = await groupTaskApi.get(ref.id, ref.project_id, ref.room_id);
+      checkGroupTaskResult(ref, saved);
+      if (request !== artifactRequest.current) return;
+      setArtifactJob({ ...saved, mode: 'group_agent' });
+      setArtifactsOpen(true);
+      setMobileArtifactsOpen(true);
+      return;
+    }
+    const saved = await workbenchApi.getJob(ref.id);
     checkWorkbenchResult(card, saved);
     if (saved.group_room_id) await groupApi.get(saved.group_room_id, saved.project_id);
     if (request !== artifactRequest.current) return;
@@ -286,6 +298,8 @@ function ModelDeskWorkspace() {
     if (request !== artifactRequest.current) return;
     const task = scopedAutonomyTasks(inbox, target.project_id).find((item) => item.id === id);
     checkAutonomyTarget(task, saved);
+    if (task.room_id) await groupApi.get(task.room_id, task.project_id);
+    if (request !== artifactRequest.current) return;
     await autonomyApi.read(id, task.project_id);
     if (request !== artifactRequest.current) return;
     selectJob(saved, { focusResult: true });

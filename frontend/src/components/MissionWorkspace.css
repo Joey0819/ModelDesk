@@ -176,6 +176,8 @@
 .mission-team-editor label small { color: var(--muted); font-size: 10px; margin-left: 6px; }
 .mission-team-editor :is(input, select, textarea) { width: 100%; min-width: 0; box-sizing: border-box; border: 1px solid var(--line); border-radius: 5px; background: var(--shell-paper); color: var(--ink); padding: 8px; font: inherit; font-size: 12px; }
 .mission-team-description { display: block; margin-top: 12px; }
+.team-writing-review { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin-top: 12px; font-size: 12px; }
+.team-writing-review input[type="checkbox"] { width: auto; margin: 0; }
 .mission-member-editors { margin: 17px 0 12px; display: grid; gap: 14px; }
 .mission-member-fields { display: grid; grid-template-columns: 26px minmax(70px, .7fr) minmax(90px, 1.3fr) 28px; gap: 8px; align-items: center; }
 .mission-member-editors textarea { margin: 7px 0 0 34px; width: calc(100% - 34px); resize: vertical; line-height: 1.65; min-height: 56px; }

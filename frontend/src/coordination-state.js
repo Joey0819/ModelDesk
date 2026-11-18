@@ -6,6 +6,12 @@ export function coordinationState(job) {
   const requirements = Array.isArray(delivery.task_spec?.requirements) ? delivery.task_spec.requirements : [];
   const checks = delivery.validation?.review?.checks || [];
   const actual = delivery.validation?.mechanical_checks || [];
+  let reviewLabel = terminal.has(job.status) ? '交付检查尚未完成' : '正在执行与检查';
+  if (delivery.validation?.status === 'passed') {
+    reviewLabel = delivery.status === 'partial' ? '已有部分成果，交付仍未完成' : '交付检查通过';
+  } else if (delivery.validation?.status === 'needs_revision') {
+    reviewLabel = '仍有要求需要处理';
+  }
   return {
     workflow,
     requirements: requirements.map((item) => ({ ...item,
@@ -16,6 +22,6 @@ export function coordinationState(job) {
     steps: Array.isArray(delivery.steps) ? delivery.steps : [],
     versions: Array.isArray(delivery.versions) ? delivery.versions.filter((item) => Number.isInteger(item.number) && typeof item.content === 'string') : [],
     canContinue: terminal.has(job.status) && delivery.status !== 'complete' && workflow.resume_count < 2 && workflow.elapsed_seconds < 1200,
-    reviewLabel: delivery.validation?.status === 'passed' ? '交付检查通过' : delivery.validation?.status === 'needs_revision' ? '仍有要求需要处理' : terminal.has(job.status) ? '交付检查尚未完成' : '正在执行与检查',
+    reviewLabel,
   };
 }

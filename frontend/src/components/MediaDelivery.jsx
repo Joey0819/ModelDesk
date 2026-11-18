@@ -1,6 +1,6 @@
 import { defaultUrlTransform } from 'react-markdown';
 import { API_BASE } from '../api-base';
-import { deliveryMediaProgress, deliveryMediaWarnings, embeddedMediaIds, managedDeliveryMedia, resolveManagedMediaUrl, resolveReusedMediaLink } from '../delivery-media';
+import { deliveryMediaProgress, deliveryMediaWarnings, embeddedMediaIds, managedDeliveryMedia, managedWorkerDocuments, resolveManagedMediaUrl, resolveReusedMediaLink } from '../delivery-media';
 import { Icon, Markdown } from './WorkbenchResults';
 import './MediaDelivery.css';
 import CoordinationProgress from './CoordinationProgress';
@@ -33,9 +33,10 @@ export function DeliveryMediaProgress({ job, apiBase = API_BASE }) {
   </section></>;
 }
 
-/** Rich delivery only loads stored media from this job's verified asset manifest. */
+/** Render rich output and downloads from this job's verified result records. */
 export function MediaDelivery({ job, content, apiBase = API_BASE }) {
   const media = managedDeliveryMedia(job, apiBase);
+  const documents = managedWorkerDocuments(job, apiBase);
   const resolveSource = (source, asset) => resolveManagedMediaUrl(source, asset, job, apiBase)
     || resolveReusedMediaLink(source, asset, job, apiBase);
   const embedded = embeddedMediaIds(content, media, resolveSource);
@@ -55,5 +56,6 @@ export function MediaDelivery({ job, content, apiBase = API_BASE }) {
     <Markdown components={{ img: renderImage }} urlTransform={transform}>{content}</Markdown>
     {remaining.length > 0 && <section className="delivery-media-gallery" aria-label="本次生成的图片与视频">{remaining.map((asset) => <figure key={asset.id}><MediaPreview asset={asset} /><figcaption>{label(asset)}</figcaption></figure>)}</section>}
     {media.length > 0 && <section className="delivery-originals" aria-label="下载原始图片与视频"><h3>本次生成的文件</h3><ul>{media.map((asset) => <li key={asset.id}><div><strong>{asset.name || label(asset)}</strong><span>{asset.provider}{asset.model && ` · ${asset.model}`} · {sizeLabel(asset.size)}</span></div><a href={asset.download_url} download={asset.name} aria-label={`下载原始${asset.kind === 'image' ? '图片' : '视频'} ${label(asset)}`}><Icon name="export" size={14} />下载原件</a></li>)}</ul></section>}
+    {documents.length > 0 && <section className="delivery-originals" aria-label="下载 MCP 文档"><h3>已保存的 MCP 文档</h3><ul>{documents.map((document) => <li key={document.id}><div><strong>{document.filename}</strong><span>{sizeLabel(document.size)}</span></div><a href={document.download_url} download={document.filename} aria-label={`下载 MCP 文档 ${document.filename}`}><Icon name="export" size={14} />下载文档</a></li>)}</ul></section>}
   </div>;
 }

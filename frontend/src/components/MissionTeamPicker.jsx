@@ -6,7 +6,7 @@ import { skillsApi } from '../skills-api';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { mcpSaveIssues } from '../mcp-agent-state';
 import { harnessApi } from '../harness-api';
-import { MEMBER_KINDS, isImageModel, memberKind, memberKindLabel, appendTeamMember, temporaryMembers, teamIssues, teamRequest, TEAM_RECIPES, recipeTeam, supportsRoleSkills, roleSkillHelp, changeMemberKind, removeTeamMember } from '../mission-teams';
+import { MEMBER_KINDS, eligibleRulers, hasRoleContract, isImageModel, memberKind, memberKindLabel, appendTeamMember, temporaryMembers, teamIssues, teamRequest, TEAM_RECIPES, recipeTeam, supportsRoleSkills, roleSkillHelp, changeMemberKind, removeTeamMember } from '../mission-teams';
 import { Icon } from './WorkbenchResults';
 
 export default function MissionTeamPicker({ projectId, team, models = [], catalog = [], onChange, onPending, onOpenAgentSettings, editSignal = 0, requireSaved = false }) {
@@ -51,11 +51,18 @@ export default function MissionTeamPicker({ projectId, team, models = [], catalo
   useEffect(() => { onPending(loading || busy || Boolean(editing) || Boolean(team?.id && loadError)); return () => onPending(false); }, [loading, busy, editing, team?.id, loadError, onPending]);
 
   const members = team?.members || temporaryMembers(models);
+  const ruler = members.find((member) => member.id === team?.coordinator_member_id);
+  const coordinatorLabel = catalog.find((model) => model.id === team?.coordinator_model)?.label || team?.coordinator_model;
+  const hasWritingSkill = skills.some((skill) => skill.id === 'pstack-unslop');
   const available = (model) => catalog.some((item) => item.id === model);
   const catalogReady = sharedCatalog ? Boolean(sharedCatalog.checkedAt) : catalog.length > 0;
   const missing = catalogReady ? members.filter((member) => memberKind(member) === 'model' && !available(member.model)) : [];
   const openEditor = () => { setMcpChecks({}); setEditing(structuredClone(team || { name: '临时协作组', description: '', members })); setError(''); };
-  const changeMember = (index, patch) => setEditing({ ...editing, members: editing.members.map((member, position) => position === index ? { ...member, ...patch } : member) });
+  const changeMember = (index, patch) => setEditing((previous) => {
+    const next = { ...previous, members: previous.members.map((member, position) => position === index ? { ...member, ...patch } : member) };
+    if (next.coordinator_member_id && !eligibleRulers(next).some((member) => member.id === next.coordinator_member_id)) next.coordinator_member_id = null;
+    return next;
+  });
   const validate = () => {
     const issues = teamIssues(editing, catalog, { allowRepeatedModels: true, allowExecutableMembers: true }).filter((issue) => !issue.startsWith('当前未接入'));
     issues.push(...mcpSaveIssues(editing?.members, mcpChecks, projectId));
@@ -100,18 +107,28 @@ export default function MissionTeamPicker({ projectId, team, models = [], catalo
       <button className="subtle-button" type="button" disabled={busy} onClick={() => { setEditing({ name: '', description: '', members: temporaryMembers(models) }); setError(''); }}><Icon name="plus" size={14} />新建组</button>
     </div>
     <div className="mission-team-members">{members.map((member) => <span key={member.id} title={`${memberKindLabel(member)} · ${member.role}`} className={memberKind(member) !== 'model' || available(member.model) ? '' : 'unavailable'}><Icon name={memberKind(member) === 'model' ? 'chat' : 'tasks'} size={13} /><strong>{member.name}</strong><small>{memberKind(member) === 'model' ? catalog.find((model) => model.id === member.model)?.label || member.model : memberKindLabel(member)}</small></span>)}</div>
-    {team?.coordinator_model && <p className="mission-coordinator-summary"><Icon name="council" size={14} /><strong>统筹模型（Ruler）</strong><span>{catalog.find((model) => model.id === team.coordinator_model)?.label || team.coordinator_model}</span></p>}
+    {(ruler || coordinatorLabel) && <p className="mission-coordinator-summary"><Icon name="council" size={14} /><strong>{ruler ? '统筹 Agent（Ruler）' : '统筹模型（Ruler）'}</strong><span>{ruler ? ruler.name : coordinatorLabel}{ruler && coordinatorLabel ? ` · 编辑与验收：${coordinatorLabel}` : ''}</span></p>}
     {missing.length > 0 && <p className="mission-team-warning" role="status">当前未接入：{missing.map((member) => member.model).join('、')}。可以保存分工，运行前请在“成员与分工”更换模型或连接对应账户。</p>}
     {editing && <fieldset disabled={busy} className="mission-team-editor">
       {!editing.id && <div className="team-recipes"><span>从常用分工开始，成员和模型都可以调整</span>{TEAM_RECIPES.map((recipe) => <button type="button" key={recipe.id} onClick={() => { setEditing(recipeTeam(recipe.id, catalog)); setError(''); }}><strong>{recipe.name}</strong><small>{recipe.summary}</small></button>)}</div>}
       <div className="mission-team-name"><label><span>协作组名称</span><input aria-label="协作组名称" value={editing.name} maxLength={100} placeholder="例如：产品研究组、代码审查组" onChange={(event) => setEditing({ ...editing, name: event.target.value })} /></label><button type="button" className="icon-button" disabled={busy} aria-label="关闭协作组编辑" onClick={() => { setEditing(null); setError(''); }}><Icon name="close" size={16} /></button></div>
       <label className="mission-team-description"><span>用途说明 <small>可选</small></span><input aria-label="协作组用途说明" value={editing.description || ''} maxLength={2000} placeholder="这个团队适合处理什么任务？" onChange={(event) => setEditing({ ...editing, description: event.target.value })} /></label>
-      <div className="mission-coordinator-field"><span>统筹模型（Ruler）</span><ModelPicker label="统筹模型（Ruler）" value={editing.coordinator_model || ''} catalog={catalog} emptyLabel="由首位模型成员统筹" onChange={(value) => setEditing({ ...editing, coordinator_model: value || null })} /><small>统筹模型负责规划；下方角色可由 LLM 或独立 Agent 担任。自动协作按角色交接约定执行，收集成果后检查交付。</small></div>
+      <label className="team-writing-review">
+        <input type="checkbox" checked={Boolean(editing.writing_review)} disabled={!hasWritingSkill && !editing.writing_review}
+          onChange={(event) => setEditing({ ...editing, writing_review: event.target.checked })} />
+        成品写作复核（pstack）
+        <small>{hasWritingSkill ? '编辑和审稿人按同一标准检查套话与空泛表述。' : '在「Agent 与连接 → Skills」安装 pstack 后可启用。'}</small>
+      </label>
+      <div className="mission-coordinator-field">
+        <label><span>统筹成员（Ruler）</span><select aria-label="统筹成员（Ruler）" value={editing.coordinator_member_id || ''} onChange={(event) => setEditing({ ...editing, coordinator_member_id: event.target.value || null })}><option value="">由模型统筹</option>{eligibleRulers(editing).map((member) => <option key={member.id} value={member.id}>{member.name} · MCP</option>)}</select></label>
+        <span>{editing.coordinator_member_id ? '编辑与验收模型' : '统筹模型（Ruler）'}</span><ModelPicker label={editing.coordinator_member_id ? '编辑与验收模型' : '统筹模型（Ruler）'} value={editing.coordinator_model || ''} catalog={catalog} emptyLabel="使用首位模型成员" onChange={(value) => setEditing({ ...editing, coordinator_model: value || null })} />
+        <small>{editing.coordinator_member_id ? 'MCP 统筹用于获准自动执行的文字交付。团队角色和交付约定由平台校验，编辑模型检查成果。' : '也可为 MCP 成员选用结构化规划能力，保存后在此选择。自动协作按角色交接约定执行，收集成果后检查交付。'}</small>
+      </div>
       <TeamRoleMap members={editing.members} /><div className="mission-member-editors">{editing.members.map((member, index) => <div key={member.id}>
         <div className="mission-member-fields mission-typed-member-fields"><span className="mission-step-number">{index + 1}</span><input aria-label={`成员 ${index + 1} 名称`} value={member.name} maxLength={80} onChange={(event) => changeMember(index, { name: event.target.value })} /><select aria-label={`成员 ${index + 1} 类型`} value={memberKind(member)} onChange={(event) => changeKind(index, event.target.value)}>{Object.entries(MEMBER_KINDS).map(([kind, label]) => <option key={kind} value={kind}>{label}</option>)}</select><button type="button" className="icon-button" aria-label={`移除成员 ${index + 1}`} disabled={editing.members.length <= 2 || busy} onClick={() => setEditing(removeTeamMember(editing, member.id))}><Icon name="close" size={14} /></button></div>
         {['model', 'image'].includes(memberKind(member)) ? <div className="mission-member-model-field"><span>{memberKind(member) === 'image' ? '生图模型 · 返回真实图片' : '回复模型'}</span><ModelPicker label={`成员 ${index + 1} 模型`} value={member.model || ''} catalog={catalog} capability={memberKind(member) === 'image' ? 'image' : 'text'} onChange={(value) => changeMember(index, { model: value, kind: isImageModel(value) ? 'image' : 'model' })} /></div> : memberKind(member) === 'mcp' ? <McpAgentFields key={`${projectId || "global"}:${member.id}`} member={member} index={index} projectId={projectId} onChange={(patch) => changeMember(index, patch)} onValidation={checkedMcp} /> : memberKind(member) === 'muse' ? <p className="mission-runtime-help">使用本机已登录的 Muse 应用。需要原生桥接就绪；保存成员不会授予系统权限。</p> : <label className="mission-member-model-field"><span>{memberKindLabel(member)} 的执行模型 <small>可选</small></span><input aria-label={`成员 ${index + 1} 执行模型`} value={member.model || ''} maxLength={120} placeholder="留空使用官方 CLI 默认模型" onChange={(event) => changeMember(index, { model: event.target.value || null })} /><small>使用官方 CLI 的现有登录，在隔离项目副本中工作。能否执行以本机登录与执行器检查为准。</small></label>}
         <textarea aria-label={`成员 ${index + 1} 职责`} value={member.role} maxLength={1600} rows={2} placeholder="这个成员负责什么？" onChange={(event) => changeMember(index, { role: event.target.value })} />
-        <RoleContractFields member={member} members={editing.members} index={index} onChange={(patch) => changeMember(index, patch)} />
+        {(!member.mcp_can_plan || hasRoleContract(member)) && <RoleContractFields member={member} members={editing.members.filter((item) => !item.mcp_can_plan || member.after_member_ids?.includes(item.id))} index={index} onChange={(patch) => changeMember(index, patch)} />}
         <details className="member-skills-disclosure"><summary>Skills 与扩展能力{member.skill_ids?.length ? ` · ${member.skill_ids.length} 项已选` : " · 可选"}</summary>{supportsRoleSkills(memberKind(member)) ? <div className="member-skills"><strong>Skills <small>按角色选用 · 每次任务保留版本</small></strong>{skillError ? <small role="alert">技能列表读取失败：{skillError}。已选技能仍保留，请关闭后重试。</small> : skills.length ? skills.map((skill) => <label key={skill.id}><input type="checkbox" aria-label={`成员 ${index + 1} Skill ${skill.name}`} checked={(member.skill_ids || []).includes(skill.id)} disabled={!(member.skill_ids || []).includes(skill.id) && (member.skill_ids || []).length >= 4} onChange={(event) => changeMember(index, { skill_ids: event.target.checked ? [...(member.skill_ids || []), skill.id] : (member.skill_ids || []).filter((id) => id !== skill.id) })} />{skill.name}<small>{roleSkillHelp(memberKind(member), skill)}</small></label>) : <small>在“Agent 与连接 → Skills”安装后即可选择。</small>}{(member.skill_ids || []).filter((id) => !skills.some((s) => s.id === id)).map((id) => <label key={id}><input type="checkbox" checked aria-label={`移除未读取的 Skill ${id}`} onChange={() => changeMember(index, { skill_ids: member.skill_ids.filter((saved) => saved !== id) })} />{id} · 尚未读取或已移除，运行前请检查</label>)}</div> : <p className="mission-runtime-help">绘图模型直接生成图片。Skill 请绑定到编剧或导演，再把画面要求交给绘图者。</p>}</details>
       </div>)}</div>
       <div className="mission-team-editor-actions"><select aria-label="添加成员类型" value={newKind} disabled={busy || editing.members.length >= 4} onChange={(event) => setNewKind(event.target.value)}>{Object.entries(MEMBER_KINDS).map(([kind, label]) => <option key={kind} value={kind}>{label}</option>)}</select><button type="button" className="subtle-button" disabled={busy || editing.members.length >= 4} onClick={addMember}><Icon name="plus" size={14} />添加 Agent</button>{editing.id && <button className="subtle-button" type="button" disabled={busy} onClick={archive}>归档组</button>}<span />{!requireSaved && <button className="subtle-button" type="button" disabled={busy} onClick={useTemporarily}>仅用于本次</button>}<button className="primary-button" type="button" disabled={busy} onClick={save}>{busy ? '正在保存' : editing.id ? '保存变更' : '保存协作组'}</button></div>

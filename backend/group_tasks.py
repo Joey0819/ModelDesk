@@ -8,6 +8,7 @@ import asyncio
 import copy
 import hashlib
 import json
+import logging
 import os
 from pathlib import Path, PurePosixPath
 import re
@@ -55,6 +56,7 @@ class TaskRequest(BaseModel):
     kind: Literal["code", "review", "creative"] = "code"
     prompt: str = Field(min_length=1, max_length=12000)
     source_task_id: uuid.UUID | None = None
+    source_run_id: uuid.UUID | None = None
     timeout_seconds: int = Field(default=600, ge=30, le=1800)
 
     @field_validator("prompt")
@@ -378,7 +380,7 @@ class TaskManager:
                 if path.is_symlink():
                     continue
                 item = json.loads(path.read_text())
-                body = TaskRequest.model_validate({k: item[k] for k in TaskRequest.model_fields}).model_dump(mode="json")
+                body = TaskRequest.model_validate({k: item[k] for k in TaskRequest.model_fields if k in item}).model_dump(mode="json")
                 if item["id"] != checked_id(path.stem) or item.get("schema_version") != 1 or body["project_id"] != item["project_id"]:
                     continue
                 if recover_interrupted and item["status"] in ACTIVE:
@@ -393,6 +395,12 @@ class TaskManager:
         # Module imports in a second process must never interrupt live children.
         self.records.clear()
         self.load(recover_interrupted=True)
+        if getattr(self, "_todo_sync_enabled", True):
+            from .todo_board import repair_group_task_result_refs
+            try:
+                repair_group_task_result_refs(self.records)
+            except Exception:
+                logging.getLogger(__name__).exception("Could not repair saved Agent task result references")
 
     def save(self, item, event=None, text=""):
         item["updated_at"] = now()
@@ -422,6 +430,7 @@ class TaskManager:
         import logging as _logging
         _logger = _logging.getLogger(__name__)
         try:
+            from .result_refs import group_task_result_ref
             from .todo_sync import sync_task
             status = item.get("status", "queued")
             title = (item.get("title") or item.get("prompt") or f"Task {item['id']}")[:200]
@@ -435,6 +444,7 @@ class TaskManager:
                 detail=detail,
                 source_label="协作任务",
                 project_id=project_id,
+                result_ref=group_task_result_ref(item),
             )
         except Exception:
             _logger.exception("group_tasks: todo sync failed for item %s", item.get("id"))
@@ -446,7 +456,8 @@ class TaskManager:
             raise HTTPException(404, "独立 Agent 任务不存在")
         if item["project_id"] != project_id or (room_id and item["room_id"] != checked_id(room_id)):
             raise HTTPException(403, "任务不属于当前项目群")
-        return copy.deepcopy(item)
+        from .result_refs import group_task_result_ref
+        return {**copy.deepcopy(item), "result_ref": group_task_result_ref(item)}
 
     def list(self, project_id, room_id):
         groups.store.get(room_id, project_id)
@@ -492,6 +503,13 @@ class TaskManager:
         parent_link = {"parent_job_id": checked_id(parent_job_id)} if parent_job_id is not None else {}
         body = request.model_dump(mode="json")
         room = groups.store.get(body["room_id"], body["project_id"])
+        if body["source_run_id"]:
+            if body["kind"] != "code" or parent_link:
+                raise HTTPException(422, "来源运行仅用于手动交接的代码任务")
+            from .workbench import manager as workbench_manager
+            run = workbench_manager.get(body["source_run_id"])
+            if (run.get("mode"), run.get("project_id"), run.get("group_room_id")) != ("group", body["project_id"], body["room_id"]):
+                raise HTTPException(403, "来源运行不属于当前项目群")
         member = next((member for member in room["team_snapshot"]["members"] if member["id"] == body["member_id"]), None)
         if not member:
             raise HTTPException(422, "请选择当前群的成员")
@@ -521,6 +539,7 @@ class TaskManager:
             if not source["changed_files"]:
                 raise HTTPException(422, "源任务没有代码改动可供审阅")
             head = source["base_sha"]
+            body["source_run_id"] = source["result_ref"]["source_run_id"]
             if body["engine"] == "member_model" and len(source["diff"].encode()) > 100000:
                 raise HTTPException(422, "成员模型审查支持 100 KB 以内的完整补丁，请拆分任务或选择 Codex 审阅")
         capability = next(entry for entry in (await engine_status())["engines"] if entry["id"] == body["engine"])

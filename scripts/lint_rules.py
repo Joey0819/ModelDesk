@@ -13,6 +13,7 @@ import json
 import os
 import re
 import sys
+import tokenize
 from datetime import date
 from pathlib import Path
 
@@ -320,15 +321,6 @@ def check_r2():
     """
     violations = []
 
-    # Suppression directive tokens (used to build line-level regex)
-    _SUPPRESSION_TOKENS = (
-        "eslint-disable",
-        "@ts-ignore",
-        "@ts-expect-error",
-        "# noqa",
-        "# type: ignore",
-        "pylint: disable",
-    )
     suppression_re = re.compile(
         r"eslint-disable|@ts-ignore|@ts-expect-error|#\s*noqa|#\s*type:\s*ignore|pylint:\s*disable"
     )
@@ -342,44 +334,12 @@ def check_r2():
     def _py_comment_lines(filepath):
         """Yield (lineno, comment_text) for real Python comments only."""
         try:
-            with open(filepath, "r", encoding="utf-8") as f:
-                lines = f.readlines()
-        except (UnicodeDecodeError, OSError):
+            with tokenize.open(filepath) as source:
+                for token in tokenize.generate_tokens(source.readline):
+                    if token.type == tokenize.COMMENT:
+                        yield token.start[0], token.string
+        except (OSError, UnicodeDecodeError, SyntaxError, tokenize.TokenError):
             return
-        for i, line in enumerate(lines, 1):
-            # Find # that is NOT inside a string literal
-            # Simple heuristic: find # not preceded by quote context
-            # Use tokenize-like approach: scan for # outside strings
-            stripped = line.lstrip()
-            if stripped.startswith("#"):
-                yield (i, line)
-                continue
-            # Inline comment: find # after code, outside strings
-            in_str = None
-            j = 0
-            n = len(line)
-            while j < n:
-                c = line[j]
-                if in_str:
-                    if c == "\\" and j + 1 < n:
-                        j += 2
-                        continue
-                    if c == in_str:
-                        in_str = None
-                    j += 1
-                else:
-                    if c in ('"', "'"):
-                        # Check for triple quotes
-                        if line[j:j+3] in ('"""', "'''"):
-                            # Skip triple-quoted strings entirely for this simple check
-                            break
-                        in_str = c
-                        j += 1
-                    elif c == "#":
-                        yield (i, line[j:])
-                        break
-                    else:
-                        j += 1
 
     def _js_comment_lines(filepath):
         """Yield (lineno, comment_text) for JS/JSX comments only."""
@@ -500,7 +460,7 @@ def check_r3():
     """R3 return-arity: detect functions returning tuples of varying lengths.
 
     Zero tolerance: if a function directly returns tuples of different sizes,
-    that's a violation. Nested functions/lambdas/classes are excluded.
+    that's a violation. Evaluate each function in its own lexical scope.
     """
     violations = []
 
@@ -539,7 +499,8 @@ def check_r3():
                         f"函数 {name}() 返回元组长度不一致 {sorted(arities)}；"
                         f"修复：统一为单一返回形状（推荐具名 tuple 或 dict），禁止调用方按索引猜"
                     )
-                # Don't recurse into nested functions via generic_visit
+                # Each nested function gets its own independent return contract.
+                self.generic_visit(node)
 
             def visit_FunctionDef(self, node):
                 self._visit_func(node)

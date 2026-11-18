@@ -77,7 +77,7 @@ async def model_output(job, model, system, prompt, *, max_tokens=8192, image_par
             content = public_text(raw)
             return content.strip(), choice.get("finish_reason") == "length"
         except httpx.HTTPStatusError as error:
-            if error.response.status_code not in {408, 429, 502, 503, 504} or attempt:
+            if error.response.status_code not in {408, 429, 500, 502, 503, 504} or attempt:
                 raise RuntimeError(f"模型调用失败（HTTP {error.response.status_code}）") from None
         except httpx.RequestError:
             if attempt:

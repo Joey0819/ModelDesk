@@ -24,6 +24,7 @@ LEMO_COMMIT = '508848acb2b4930c4041fef4d594120da1525bff'
 LEMO_URL = 'https://github.com/lemomo-ai/lemo-opuscar'
 PSTACK_URL = 'https://github.com/cursor/plugins'
 PSTACK_COMMIT = 'e1cc03121a0e71129a4fb730d7c5528a0a3e43c8'
+WRITING_SKILL = 'pstack-unslop'
 # Curated pstack methodology skills: (source_folder_name, chinese_display_name)
 PSTACK_SKILLS = {
     'tdd': ('pstack-tdd', 'TDD 缺陷修复'),
@@ -158,7 +159,7 @@ def public_skill(item):
         'characters': len(item['instructions'])}
 
 
-def frozen_skills(members):
+def frozen_skills(members, *, writing_review=False):
     result = {}
     for member in members:
         for value in member.get('skill_ids', []):
@@ -173,6 +174,8 @@ def frozen_skills(members):
                 item['references'] = references
                 item['references_sha256'] = hashlib.sha256(json.dumps(references, sort_keys=True).encode()).hexdigest()
             result[value] = item
+    if writing_review and WRITING_SKILL not in result:
+        result[WRITING_SKILL] = get_skill(WRITING_SKILL)
     return result
 
 
@@ -259,7 +262,7 @@ def install_pstack_files(folder):
     Only reads SKILL.md files; never executes scripts or copies references/.
     Symlink checks on every path component for safety.
     """
-    results = []
+    manifests = []
     for source_name, (skill_id, display_name) in PSTACK_SKILLS.items():
         skill_dir = folder / 'pstack' / 'skills' / source_name
         # Symlink check on intermediate directories and target
@@ -269,20 +272,18 @@ def install_pstack_files(folder):
         if skill_md.is_symlink():
             raise HTTPException(409, 'Skill 路径无效')
         raw_text = skill_md.read_text()
-        # Parse frontmatter using commit 1's parser
-        result = parse_frontmatter(raw_text)
-        meta, body = result[0], result[1]
-        fm_raw = result[2] if len(result) > 2 else ''
+        meta, body, fm_raw = parse_frontmatter(raw_text)
         # Secret check covers body, name, description, and raw frontmatter
         if secret_text(body) or secret_text(display_name) or secret_text(fm_raw):
             raise HTTPException(422, 'Skill 不得包含密钥或凭据')
         desc = str(meta.get('description', '')).strip()[:400]
         if secret_text(desc):
             raise HTTPException(422, 'Skill 不得包含密钥或凭据')
-        source_url = f'{PSTACK_URL}/tree/main/pstack/skills/{source_name}'
-        results.append(put_skill(skill_id, display_name, body, description=desc,
-                                 source=source_url, revision=PSTACK_COMMIT))
-    return results
+        source_url = f'{PSTACK_URL}/tree/{PSTACK_COMMIT}/pstack/skills/{source_name}'
+        manifests.append(dict(value=skill_id, name=display_name, instructions=body, description=desc,
+                              source=source_url, revision=PSTACK_COMMIT))
+    # Validate the entire source pack before replacing any installed instructions.
+    return [put_skill(**manifest) for manifest in manifests]
 
 
 def install_pstack():
@@ -303,7 +304,7 @@ async def install_pstack_endpoint():
         installed = await asyncio.to_thread(install_pstack)
         return {'name': 'pstack 方法论精选', 'installed': installed}
     except (OSError, subprocess.SubprocessError):
-        raise HTTPException(502, '下载 pstack 技能失败，现有安装保持可用；请检查 GitHub 连接后重试') from None
+        raise HTTPException(502, '未能完成 pstack 安装。请检查 GitHub 连接和本机写入权限，再重试固定版本。') from None
 
 
 @router.post('/lemo-opuscar/install', dependencies=[Depends(require_local_admin)])

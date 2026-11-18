@@ -76,6 +76,7 @@ def sync_task(
     detail: str = "",
     source_label: str = "",
     project_id: Optional[str] = None,
+    result_ref: dict | None = None,
 ) -> None:
     """Idempotent upsert: create or update a kanban card from an external task.
 
@@ -129,6 +130,7 @@ def sync_task(
                 description=detail,
                 source_label=source_label or platform,
                 project_id=project_id,
+                result_ref=result_ref,
             )
     except Exception:
         logger.exception(

@@ -79,6 +79,10 @@ class DocumentSource:
     images: dict = field(default_factory=dict)
     videos: dict = field(default_factory=dict)
     warnings: list = field(default_factory=list)
+    is_final_delivery: bool = False
+
+    def show_run_details(self, layout):
+        return layout == "report" or not self.is_final_delivery or self.partial
 
     @property
     def status(self):
@@ -102,7 +106,8 @@ def prepare_document(job, artifact_id, include_video=False):
         content = f"{fence}\n{content}\n{fence}"
     document = DocumentSource(str(job["id"]), artifact["title"], artifact["source"], content,
                               artifact["partial"], artifact.get("note", ""), [],
-                              source_sha256=hashlib.sha256(original_content.encode()).hexdigest())
+                              source_sha256=hashlib.sha256(original_content.encode()).hexdigest(),
+                              is_final_delivery=artifact_id == "group:delivery")
     if artifact_id == "group:delivery":
         delivery = (job.get("result") or {}).get("delivery") or {}
         references = delivery.get("media") or []
@@ -193,10 +198,15 @@ def html_document(document, layout="report"):
                  + entry['mime_type'] + ';base64,' + base64.b64encode(video['raw']).decode() + '"></video><figcaption>'
                  + html.escape(entry['caption'] or entry['name']) + '</figcaption></figure>')
     note = document.note + ("\n" if document.note and document.warnings else "") + "\n".join(document.warnings)
+    run_details = ""
+    if document.show_run_details(layout):
+        run_details = ('<p class="meta">' + html.escape(document.status + " · " + document.source)
+                       + '<br>任务记录：' + html.escape(document.job_id) + '</p>')
     result = ('<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
+              '<meta name="modeldesk-task" content="' + html.escape(document.job_id, quote=True) + '">'
               '<meta http-equiv="Content-Security-Policy" content="default-src \'none\'; img-src data:; media-src data:; style-src \'unsafe-inline\'; base-uri \'none\'; form-action \'none\'; object-src \'none\'">'
               '<title>' + html.escape(document.title) + '</title><style>' + _css(layout) + '</style></head><body><main><h1>' + html.escape(document.title)
-              + '</h1><p class="meta">' + html.escape(document.status + " · " + document.source) + '<br>任务记录：' + html.escape(document.job_id) + '</p>'
+              + '</h1>' + run_details
               + ('<aside class="notice partial">部分输出，尚未完整满足任务要求。</aside>' if document.partial else '') + body
               + ('<aside class="notice">' + html.escape(note) + '</aside>' if note else '') + '</main></body></html>').encode()
     if len(result) > MAX_RENDER_BYTES:
@@ -242,15 +252,17 @@ def docx_document(document, layout="report"):
     doc.core_properties.subject = document.source
     doc.core_properties.comments = "任务记录：" + document.job_id
     doc.add_paragraph(document.title, "Title")
-    meta = doc.add_paragraph(document.status + " · " + document.source + "\n任务记录：" + document.job_id)
-    for run in meta.runs:
-        run.font.size = Pt(9)
-        run.font.color.rgb = RGBColor.from_string("667085")
+    if document.show_run_details(layout):
+        meta = doc.add_paragraph(document.status + " · " + document.source + "\n任务记录：" + document.job_id)
+        for run in meta.runs:
+            run.font.size = Pt(9)
+            run.font.color.rgb = RGBColor.from_string("667085")
     if document.partial:
         doc.add_paragraph("部分输出，尚未完整满足任务要求。")
     footer = section.footer.paragraphs[0]
     footer.alignment = 2
-    footer.add_run("ModelDesk · ").font.size = Pt(9)
+    if document.show_run_details(layout):
+        footer.add_run("ModelDesk · ").font.size = Pt(9)
     field = OxmlElement("w:fldSimple"); field.set(qn("w:instr"), "PAGE")
     footer._p.append(field)
     width_inches = (210 - 2 * spec["margin"]) / 25.4
@@ -379,7 +391,9 @@ async def pdf_document(document, layout="report"):
                     await page.set_content(markup.decode(), wait_until="load")
                     output = await page.pdf(format="A4", print_background=True, prefer_css_page_size=True,
                                             display_header_footer=True, header_template="<span></span>",
-                                            footer_template='<div style="font:8px sans-serif;color:#687080;width:100%;text-align:center">ModelDesk · <span class="pageNumber"></span> / <span class="totalPages"></span></div>')
+                                            footer_template='<div style="font:8px sans-serif;color:#687080;width:100%;text-align:center">'
+                                            + ('ModelDesk · ' if document.show_run_details(layout) else '')
+                                            + '<span class="pageNumber"></span> / <span class="totalPages"></span></div>')
                 finally:
                     await browser.close()
         except (PlaywrightError, TimeoutError, OSError) as error:

@@ -238,13 +238,15 @@ class AutonomySupervisor:
 
     def rows(self, project_id=None, *, all_projects=False):
         from .harness.store import checked_id
+        from .result_refs import workbench_result_ref
+
         project_id = checked_id(project_id) if project_id else None
         rows = []
         for job in self.jobs.jobs.values():
             meta = job.get("autonomy")
             if not isinstance(meta, dict) or (not all_projects and job.get("project_id") != project_id):
                 continue
-            rows.append({"id": job["id"], "project_id": job.get("project_id"), "room_id": job.get("group_room_id"),
+            rows.append({"id": job["id"], "result_ref": workbench_result_ref(job), "project_id": job.get("project_id"), "room_id": job.get("group_room_id"),
                          "title": (delivery_of(job).get("title") or job.get("prompt") or "后台任务")[:160],
                          "created_at": job.get("created_at"), **{key: meta.get(key) for key in [
                              "state", "reason", "attempts", "max_attempts", "next_action_at", "notification_id", "read", "updated_at", "outcome_at", "read_at"]}})

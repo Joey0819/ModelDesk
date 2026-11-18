@@ -219,8 +219,18 @@ class PstackInstallFilesTests(unittest.TestCase):
         self.assertEqual(tdd_manifest['description'], 'TDD workflow')
         self.assertIn('cursor/plugins', tdd_manifest['source'])
         self.assertEqual(tdd_manifest['revision'], skill_library.PSTACK_COMMIT)
+        self.assertIn(skill_library.PSTACK_COMMIT, tdd_manifest['source'])
         # Verify references/ was NOT copied
         self.assertFalse((installed_dir / 'pstack-tdd' / 'references').exists())
+
+    def test_missing_last_skill_preserves_previously_installed_version(self):
+        original = skill_library.put_skill('pstack-tdd', 'TDD', 'Previously installed material')
+        for source in list(skill_library.PSTACK_SKILLS)[:-1]:
+            self._write_skill(source, f'New instructions for {source}')
+        with self.assertRaises(FileNotFoundError):
+            skill_library.install_pstack_files(self.fake_folder)
+        self.assertEqual(skill_library.get_skill('pstack-tdd')['sha256'], original['sha256'])
+        self.assertFalse((skill_library.DIRECTORY / 'pstack-unslop').exists())
 
     def test_symlink_in_skill_path_raises_409(self):
         # Create a symlink instead of real directory

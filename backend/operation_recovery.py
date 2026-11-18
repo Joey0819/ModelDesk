@@ -92,11 +92,13 @@ def _completed_operation(job, step):
     from .group_delivery_runtime import _scope, _check_child, _finished
     scope = _scope(job, member)
     if kind == "mcp":
-        from .mcp_agent import STORE, public_record, configured_server
+        from .mcp_agent import DOCUMENT_GUIDANCE, STORE, public_record, configured_server
         from .harness.context import revision
         from .native_skills import freeze_native_skills
         from .skill_library import skill_prompt
-        identifier = str(uuid.uuid5(uuid.UUID(scope[0]), "mcp-agent:" + member["id"]))
+        document_worker = member.get("mcp_document_worker") is True
+        purpose = "text_document" if document_worker else None
+        identifier = str(uuid.uuid5(uuid.UUID(scope[0]), "mcp-agent:" + member["id"] + (":" + purpose if purpose else "")))
         path = STORE.directory / (identifier + '.json')
         if path.is_symlink() or STORE.directory.is_symlink():
             return None
@@ -107,9 +109,9 @@ def _completed_operation(job, step):
         if not frozen or frozen.get("server_revision") != revision(configured_server(job, member)):
             return None
         skills = freeze_native_skills(member, job.get("_skill_snapshots"))
-        guidance = skill_prompt(list(skills), snapshot=skills)
+        guidance = skill_prompt(list(skills), snapshot=skills) + (DOCUMENT_GUIDANCE if document_worker else "")
         if any(record.get(key) != value for key, value in {
-            "id": identifier, "parent_job_id": scope[0], "project_id": scope[1], "room_id": scope[2], "member": member,
+            "id": identifier, "purpose": purpose, "parent_job_id": scope[0], "project_id": scope[1], "room_id": scope[2], "member": member,
             "status": "complete", "dispatch_count": 1, "schema_sha256": frozen["schema_sha256"],
             "server_id": frozen["server_id"], "tool": frozen["tool"],
             "output_schema_sha256": frozen.get("output_schema_sha256"),

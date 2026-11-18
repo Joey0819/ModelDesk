@@ -19,7 +19,10 @@ export function autonomyCounts(tasks) {
 }
 
 export function checkAutonomyTarget(task, job) {
+  const ref = task?.result_ref;
   if (!task || !job || task.id !== job.id || !task.room_id || task.room_id !== job.group_room_id
-    || (task.project_id || null) !== (job.project_id || null)) throw new Error('后台任务与项目群记录不匹配，请刷新任务列表。');
+    || (task.project_id || null) !== (job.project_id || null)
+    || (ref && (ref.kind !== 'workbench' || ref.id !== job.id || ref.room_id !== job.group_room_id ||
+      (ref.project_id || null) !== (job.project_id || null)))) throw new Error('后台任务与项目群记录不匹配，请刷新任务列表。');
   return job;
 }

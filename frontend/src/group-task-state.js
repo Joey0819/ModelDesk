@@ -7,15 +7,15 @@ export function eligibleReviews(task, tasks) {
   if (task?.kind !== 'code' || task.status !== 'complete' || !task.diff_sha256) return [];
   return tasks.filter((review) => review.kind === 'review' && review.status === 'complete' && review.source_task_id === task.id && review.member_id !== task.member_id && review.review_of_patch_sha256 === task.diff_sha256 && review.project_id === task.project_id && review.room_id === task.room_id);
 }
-export function taskRequest({ projectId, roomId, memberId, engine, kind, prompt, sourceTaskId }) {
-  return { project_id: projectId, room_id: roomId, member_id: memberId, engine, kind, prompt: prompt.trim(), ...(kind === 'review' && sourceTaskId ? { source_task_id: sourceTaskId } : {}) };
+export function taskRequest({ projectId, roomId, memberId, engine, kind, prompt, sourceTaskId, sourceRunId }) {
+  return { project_id: projectId, room_id: roomId, member_id: memberId, engine, kind, prompt: prompt.trim(), ...(kind === 'review' && sourceTaskId ? { source_task_id: sourceTaskId } : {}), ...(kind === 'code' && sourceRunId ? { source_run_id: sourceRunId } : {}) };
 }
 export function approvalDecision(card, decision) {
   if (!['approve', 'reject'].includes(decision) || card?.status !== 'pending' || !card.base_sha || !card.patch_sha256) throw new Error('审批记录已变化，请刷新后重新检查。');
   return { project_id: card.project_id, room_id: card.room_id, decision, expected_base_sha: card.base_sha, expected_patch_sha256: card.patch_sha256 };
 }
 export function readTaskDraft(storage, projectId, roomId) {
-  try { const value = JSON.parse(storage.getItem(taskDraftKey(projectId, roomId)) || '{}'); return { prompt: typeof value.prompt === 'string' ? value.prompt : '', memberId: typeof value.memberId === 'string' ? value.memberId : '', engine: ['codex', 'claude', 'member_model'].includes(value.engine) ? value.engine : '', sourceTaskId: typeof value.sourceTaskId === 'string' ? value.sourceTaskId : '' }; } catch { return { prompt: '', memberId: '', engine: '', sourceTaskId: '' }; }
+  try { const value = JSON.parse(storage.getItem(taskDraftKey(projectId, roomId)) || '{}'); return { prompt: typeof value.prompt === 'string' ? value.prompt : '', memberId: typeof value.memberId === 'string' ? value.memberId : '', engine: ['codex', 'claude', 'member_model'].includes(value.engine) ? value.engine : '', sourceTaskId: typeof value.sourceTaskId === 'string' ? value.sourceTaskId : '', ...(typeof value.sourceRunId === 'string' && value.sourceRunId ? { sourceRunId: value.sourceRunId } : {}) }; } catch { return { prompt: '', memberId: '', engine: '', sourceTaskId: '' }; }
 }
 
 export function engineSupports(engine, kind) { return (engine?.capabilities || []).includes(kind); }

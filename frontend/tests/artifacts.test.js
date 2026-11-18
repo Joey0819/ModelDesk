@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { artifactMarkdown, copyText, deriveArtifacts } from '../src/artifacts.js';
+import { managedWorkerDocuments } from '../src/delivery-media.js';
 
 const job = (mode, result, extra = {}) => ({ id: 'job', mode, status: 'complete', models: ['gpt', 'gemini'], result, events: [], ...extra });
 
@@ -149,4 +150,32 @@ test('clipboard fallback uses a temporary text field and restores focus even whe
   assert.equal(focused, true);
   document.execCommand = () => false;
   await assert.rejects(copyText('plain text', { clipboard: null, document }), /手动复制/);
+});
+
+test('a saved MCP document can be downloaded from a job even when synthesis failed', () => {
+  const id = 'f37b36b3-3187-4cb8-9022-f64d4b171f27';
+  const group_room_id = '29004dd4-ee1f-4f9e-a2db-4692b32dc2a1';
+  const project_id = 'a685afbe-cc84-4a22-9653-dcb976f80776';
+  const task_id = '70adaef8-f03d-4766-817a-2a693ac5425a';
+  const sha256 = 'b'.repeat(64);
+  const path = `/api/groups/${group_room_id}/messages/${id}/mcp-documents/${task_id}?project_id=${project_id}`;
+  const document = { id: task_id, filename: 'worker-report.txt', download_url: path, size: 24, sha256 };
+  const step = { kind: 'mcp', status: 'complete', task_id, output_sha256: sha256, worker_document: document };
+  const build = (...steps) => job('group', { delivery: { status: 'partial', steps } }, { id, group_room_id, project_id, status: 'error' });
+  const apiBase = 'https://paired.example';
+  assert.deepEqual(managedWorkerDocuments(build(step, step), apiBase), [{ ...document, download_url: apiBase + path }]);
+  const [artifact] = deriveArtifacts(build(step), apiBase);
+  assert.equal(artifact.status, 'partial');
+  assert.equal(artifact.title, '已保存的交付文件');
+  assert.equal(artifact.media_only, true);
+  for (const unverified of [
+    { ...step, status: 'blocked' },
+    { ...step, output_sha256: 'a'.repeat(64) },
+    { ...step, worker_document: { ...document, filename: '../report.txt' } },
+    { ...step, worker_document: { ...document, download_url: `https://other.example${path}` } },
+    { ...step, worker_document: { ...document, download_url: path.replace(project_id, group_room_id) } },
+  ]) {
+    assert.deepEqual(managedWorkerDocuments(build(unverified), apiBase), []);
+    assert.deepEqual(deriveArtifacts(build(unverified), apiBase), []);
+  }
 });

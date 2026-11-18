@@ -104,7 +104,7 @@ jobs:
             backend.test_coordination \
             backend.test_group_delivery \
             backend.test_group_tasks \
-            backend.test_groups.GroupRoomTests.test_qualified_mcp_group_http_delivers_scoped_verified_worker_bytes \
+            backend.test_groups \
             backend.test_feishu \
             backend.test_feishu_bootstrap \
             backend.test_skill_frontmatter \
@@ -118,6 +118,14 @@ jobs:
         run: |
           npm --prefix frontend test
           npm --prefix frontend run lint
+
+      - name: Exercise desktop and phone navigation
+        run: |
+          export PLAYWRIGHT_MODULE
+          PLAYWRIGHT_MODULE="$(.venv/bin/python -c 'from pathlib import Path; import playwright; print((Path(playwright.__file__).parent / "driver/package/index.mjs").as_uri())')"
+          node frontend/tests/browser/check-navigation.mjs
+          node frontend/tests/browser/check-platform-catalogs.mjs
+          node frontend/tests/browser/check-conversation-actions.mjs
 
       - name: Test and package the Linux desktop
         run: |

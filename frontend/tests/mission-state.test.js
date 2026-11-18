@@ -97,9 +97,11 @@ test('actual plan component exposes editable engines, order and human review gat
   assert.match(html, /完成后暂停，等我审阅再继续/); assert.match(html, /上移/); assert.match(html, /移除此步/);
 });
 
-test('actual navigation gives cross-engine tasks a primary entry and retains legacy tools', () => {
-  const html = renderToStaticMarkup(React.createElement(WorkspaceNavigation, { missionView: false, navigationTab: 'tools', mode: 'chat', activeJobs: [], modeMenu: true }));
-  assert.match(html, /协作任务/); assert.match(html, /单项协作/); assert.match(html, /项目资源/); assert.match(html, /全部协作方式/); assert.match(html, /Workforce 团队/);
+test('actual navigation gives cross-engine tasks a primary entry and shows the active advanced mode', () => {
+  const render = (mode) => renderToStaticMarkup(React.createElement(WorkspaceNavigation, { workspace: 'tools', platformSection: 'overview', mode, activeJobs: [] }));
+  const html = render('chat');
+  assert.match(html, /协作任务/); assert.match(html, /单项协作/); assert.match(html, /项目资源/); assert.match(html, /其他协作方式/);
+  assert.match(render('camel_workforce'), /aria-current="page" aria-expanded="false"[^>]*>.*Workforce 团队/);
 });
 
 

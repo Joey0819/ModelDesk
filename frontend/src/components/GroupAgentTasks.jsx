@@ -51,7 +51,21 @@ export function TaskCard({ task, tasks, approvals, busy, onReview, onCancel, onR
   </article>;
 }
 
-export default function GroupAgentTasks({ projectId, room, kind, onKindChange, onOpenProjects, onOpenArtifacts, status }) {
+export default function GroupAgentTasks(props) {
+  if (!props.projectId) return <div className="group-agent-workspace">
+    <div className="group-agent-timeline">
+      <div className="group-task-empty">
+        <h2>先为这个协作群选择项目</h2>
+        <p>代码任务需要本地 Git 项目，才能创建独立工作区并保留可审阅的改动。</p>
+        <button type="button" className="primary-button" onClick={props.onOpenProjects}>选择本地项目</button>
+      </div>
+    </div>
+  </div>;
+
+  return <ProjectAgentTasks key={`${props.projectId}:${props.room.id}`} {...props} />;
+}
+
+function ProjectAgentTasks({ projectId, room, kind, onKindChange, onOpenArtifacts, status }) {
   const hostShort = machineShort(status);
   const roomId = room.id;
   const members = (room.team_snapshot?.members || []).filter((member) => groupMemberKind(member) !== 'muse');
@@ -64,8 +78,6 @@ export default function GroupAgentTasks({ projectId, room, kind, onKindChange, o
   const [composerOpen, setComposerOpen] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
-  const [artifactId, setArtifactId] = useState(null);
-  const [artifactDetail, setArtifactDetail] = useState(null);
   const alive = useRef(true);
   const promptRef = useRef(null);
   useEffect(() => { if (composerOpen && !window.matchMedia('(max-width: 600px)').matches) promptRef.current?.focus(); }, [composerOpen]);
@@ -87,9 +99,7 @@ export default function GroupAgentTasks({ projectId, room, kind, onKindChange, o
   }, [projectId, roomId]);
   useEffect(() => { alive.current = true; refresh(); refreshEngines(); const timer = setInterval(refresh, 5000); return () => { alive.current = false; clearInterval(timer); }; }, [refresh, refreshEngines]);
   useEffect(() => { localStorage.setItem(taskDraftKey(projectId, roomId), JSON.stringify(draft)); }, [projectId, roomId, draft]);
-  const selectedArtifact = tasks.find((task) => task.id === artifactId) || tasks.find((task) => task.output);
-  useEffect(() => { if (selectedArtifact) onOpenArtifacts({ ...selectedArtifact, ...(artifactDetail?.id === selectedArtifact.id ? { diff: artifactDetail.diff } : {}), mode: 'group_agent' }, false); }, [selectedArtifact, artifactDetail, onOpenArtifacts]);
-  const showArtifact = async (task) => { setArtifactId(task.id); onOpenArtifacts({ ...task, mode: 'group_agent' }, true); try { const detail = await groupTaskApi.get(task.id, projectId, roomId); if (alive.current) setArtifactDetail(detail); } catch (failure) { if (alive.current) setError(failure.message); } };
+  const showArtifact = (task) => onOpenArtifacts({ ...task, mode: 'group_agent' }, true);
   const update = (patch) => setDraft((previous) => ({ ...previous, ...patch }));
   const defaultMember = kind === 'code' ? members.find((member) => ['codex', 'claude'].includes(groupMemberKind(member))) : members.find((member) => groupMemberKind(member) === 'model');
   const memberId = members.some((member) => member.id === draft.memberId) ? draft.memberId : defaultMember?.id || members[0]?.id;
@@ -100,16 +110,15 @@ export default function GroupAgentTasks({ projectId, room, kind, onKindChange, o
   const engine = compatibleEngines.find((item) => item.id === draft.engine) || (kind === 'review' ? available.find((item) => item.id === 'member_model') : null) || available[0] || compatibleEngines[0];
   const sources = tasks.filter((task) => task.kind === 'code' && task.status === 'complete' && task.diff_sha256 && task.changed_files?.length);
   const source = sources.find((task) => task.id === draft.sourceTaskId);
-  const valid = projectId && draft.prompt.trim() && memberId && engine?.available && engine?.authenticated !== false && (kind !== 'review' || (source && source.member_id !== memberId));
+  const valid = draft.prompt.trim() && memberId && engine?.available && engine?.authenticated !== false && (kind !== 'review' || (source && source.member_id !== memberId));
   const mutate = async (action) => { setBusy(true); setError(''); try { await action(); await refresh(); } catch (failure) { if (alive.current) setError(failure.message); } finally { if (alive.current) setBusy(false); } };
   const send = (event) => { event.preventDefault(); if (!valid || busy) return; const sent = draft.prompt; mutate(async () => { await groupTaskApi.create(taskRequest({ projectId, roomId, memberId, engine: engine.id, kind, prompt: draft.prompt, sourceTaskId: draft.sourceTaskId, sourceRunId: draft.sourceRunId })); if (alive.current) { setDraft((previous) => (previous.prompt === sent && previous.sourceRunId === draft.sourceRunId ? { ...previous, prompt: '', sourceRunId: '' } : previous)); setComposerOpen(false); } }); };
   const review = (task) => { update({ sourceTaskId: task.id, engine: 'member_model', memberId: (members.find((member) => member.id !== task.member_id && groupMemberKind(member) === 'model') || members.find((member) => member.id !== task.member_id))?.id || '', prompt: `请独立审阅这份改动，重点检查正确性、回归风险和验证证据。列出必须修复的问题，并明确当前审阅的限制。` }); onKindChange('review'); setComposerOpen(true); promptRef.current?.focus(); };
   return <div className={`group-agent-workspace ${composerOpen ? 'agent-composer-open' : 'agent-composer-collapsed'}`}>
     <div className="group-agent-timeline">
       {error && <div className="error-banner" role="alert">{error}<button type="button" className="subtle-button" onClick={() => { setError(''); refresh(); refreshEngines(); }}>重新连接</button></div>}
-      {!projectId && <div className="group-task-empty"><h2>先为这个协作群选择项目</h2><p>代码任务需要本地 Git 项目，才能创建独立工作区并保留可审阅的改动。</p><button type="button" className="primary-button" onClick={onOpenProjects}>选择本地项目</button></div>}
       {loading && <p role="status" className="mission-loading"><span className="small-spinner" />正在读取成员任务…</p>}
-      {!loading && !tasks.length && projectId && <div className="group-task-empty"><Icon name="tasks" size={30} /><h2>把讨论交给成员执行</h2><p>指定一位成员，在独立 Git 工作区完成任务。另一位成员审阅实际补丁后，由你决定是否合入本地项目。</p><div className="group-task-sequence"><span>分配任务</span><Icon name="chevron" size={13} /><span>独立审阅</span><Icon name="chevron" size={13} /><span>你来批准</span></div></div>}
+      {!loading && !tasks.length && <div className="group-task-empty"><Icon name="tasks" size={30} /><h2>把讨论交给成员执行</h2><p>指定一位成员，在独立 Git 工作区完成任务。另一位成员审阅实际补丁后，由你决定是否合入本地项目。</p><div className="group-task-sequence"><span>分配任务</span><Icon name="chevron" size={13} /><span>独立审阅</span><Icon name="chevron" size={13} /><span>你来批准</span></div></div>}
       {[...tasks].sort((a, b) => String(a.created_at).localeCompare(String(b.created_at))).map((task) => <div key={task.id}><TaskCard onOpenArtifacts={showArtifact} task={task} tasks={tasks} approvals={approvals} busy={busy} onReview={review} onCancel={(target) => mutate(() => groupTaskApi.cancel(target.id, projectId, roomId))} onInspect={(target) => groupTaskApi.get(target.id, projectId, roomId)} onRequestApproval={(target, selectedReview) => mutate(() => groupTaskApi.requestApproval({ project_id: projectId, room_id: roomId, task_id: target.id, review_task_id: selectedReview.id }))} />{approvals.filter((card) => card.task_id === task.id).map((card) => <ApprovalCard key={`${card.id}:${card.base_sha}:${card.patch_sha256}`} card={card} busy={busy} onDecision={(target, decision) => mutate(() => groupTaskApi.decide(target.id, approvalDecision(target, decision)))} />)}</div>)}
     </div>
     <div className="group-agent-composer-toggle"><button type="button" aria-expanded={composerOpen} aria-controls={`group-agent-form-${roomId}`} onClick={() => setComposerOpen(!composerOpen)}><Icon name={composerOpen ? 'close' : 'plus'} size={17} /><strong>{composerOpen ? '收起，查看任务记录' : kind === 'review' ? '发起独立审阅' : '派发新任务'}</strong>{!composerOpen && draft.prompt.trim() && <small>草稿已保存</small>}</button></div>

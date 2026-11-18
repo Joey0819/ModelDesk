@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { platformApi } from '../api';
 import { Icon } from './WorkbenchResults';
 import PlatformJobInspector from './PlatformJobInspector';
@@ -52,35 +52,258 @@ export function MigrationWorkspace() {
   return <div className="migration-workspace"><section><header><h2>导出平台数据</h2><p>包含资源与运行记录，便于备份、迁移和复核。</p></header><button className="primary-button" onClick={exportData}><Icon name="export" size={17} />导出 JSON 备份</button><p className="platform-boundary">提供资源与运行数据迁移。供应商认证凭据不进入导出文件。</p></section><section><header><h2>导入已有备份</h2><p>先读取与校验，确认后才加入本地数据。</p></header><label className="migration-file-picker">选择 ModelDesk JSON 备份<input type="file" accept=".json,application/json" onChange={(event) => { selectFile(event.target.files[0]); event.target.value = ''; }} /></label>{fileName && <p className="selected-data-file">已选择：{fileName}</p>}<label className="platform-field"><span>导入数据预览（可编辑）</span><textarea rows={8} value={source} onChange={(event) => { setSource(event.target.value); setResult(null); }} spellCheck={false} /></label>{source && !parsed && <div className="output-error">文件内容不是有效 JSON。请检查备份文件或修正格式后再导入。</div>}{parsed && <p className="import-schema-preview">已解析 JSON；平台将继续校验数据版本、资源字段和任务状态。</p>}<label className="platform-field"><span>同名或重复记录处理</span><select value={conflict} onChange={(event) => setConflict(event.target.value)}><option value="skip">跳过重复记录</option><option value="rename">重命名并新增</option></select></label><button className="primary-button" disabled={!parsed || busy} onClick={importData}>{busy ? '正在校验与导入' : '校验并导入'}</button>{error && <div className="error-banner" role="alert">{error}</div>}{result && <div className="migration-report"><strong>实际导入结果</strong><pre>{JSON.stringify(result, null, 2)}</pre></div>}</section></div>;
 }
 
-export function OriginalsWorkspace() {
-  const [apps, setApps] = useState([]);
-  const [selected, setSelected] = useState(null);
-  const [busy, setBusy] = useState(null);
+function catalogItems(value, field) {
+  const items = value?.[field] ?? value?.items ?? value;
+  if (!Array.isArray(items)) throw new Error('服务返回的清单格式无效。');
+  return items;
+}
+
+const loadTools = async () => catalogItems(await platformApi.tools(), 'tools');
+const loadActiveServers = async () => catalogItems(await platformApi.list('mcp'));
+const loadArchivedServers = async () => catalogItems(await platformApi.list('mcp', true));
+const loadOriginals = async () => catalogItems(await platformApi.originals(), 'apps');
+
+function useCatalog(load) {
+  const [items, setItems] = useState(null);
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
-  useEffect(() => { platformApi.originals().then((value) => setApps(value.apps || [])).catch((failure) => setError(failure.message)); }, []);
-  const open = async (app) => { setBusy(app.id); setError(''); try { if (app.id === 'chathub' && window.modelDesk?.openOriginalApp) { const opened = await window.modelDesk.openOriginalApp('chathub'); if (!opened) throw new Error('Chrome 未能打开原版 ChatHub，请检查扩展是否已加载。'); } else { const started = await platformApi.startOriginal(app.id); setApps((previous) => previous.map((item) => item.id === started.id ? started : item)); if (started.embed) setSelected(started); } } catch (failure) { setError(failure.message); } finally { setBusy(null); } };
-  return <div className="originals-workspace"><div className="original-app-list">{apps.map((app) => <article key={app.id}><header><span className="model-mark">{app.id === 'multibot' ? 'M' : 'C'}</span><div><h2>{app.label}</h2><p>{app.account_mode}</p></div></header><div className="original-app-meta"><span>{app.installed ? '已安装源码' : '未安装'}</span><span>{app.running ? '服务已运行' : '尚未启动'}</span>{app.license && <span>{app.license}</span>}</div>{app.revision && <small>源码版本 {app.revision.slice(0, 10)}</small>}<div><button className="primary-button" onClick={() => open(app)} disabled={busy === app.id}>{busy === app.id ? '正在打开' : app.embed ? '打开完整原版' : '在 Chrome 打开原版'}</button>{app.source_url && <a href={app.source_url} target="_blank" rel="noreferrer">查看上游源码</a>}</div>{app.error && <p className="output-error">{app.error}</p>}</article>)}</div>{error && <div className="error-banner" role="alert">{error}</div>}{selected && <section className="original-app-frame"><header><strong>{selected.label}</strong><a href={selected.url} target="_blank" rel="noreferrer">独立窗口打开</a><a href={`${selected.url}?login=1`} target="_blank" rel="noreferrer">原版账户管理</a><button className="icon-button" aria-label="关闭原版应用" onClick={() => setSelected(null)}><Icon name="close" size={16} /></button></header><iframe src={selected.url} title={selected.label} /></section>}</div>;
+  const alive = useRef(false);
+  const pending = useRef(null);
+  const refresh = useCallback(function refreshCatalog(afterCurrent = false) {
+    if (pending.current) return afterCurrent ? pending.current.then(() => refreshCatalog()) : pending.current;
+    if (!alive.current) return Promise.resolve();
+    setLoading(true);
+    setError('');
+    pending.current = Promise.resolve().then(load).then((next) => {
+      if (alive.current) setItems(next);
+    }).catch((failure) => {
+      if (alive.current) setError(failure.message);
+    }).finally(() => {
+      pending.current = null;
+      if (alive.current) setLoading(false);
+    });
+    return pending.current;
+  }, [load]);
+  useEffect(() => {
+    alive.current = true;
+    refresh();
+    return () => { alive.current = false; };
+  }, [refresh]);
+  return { items, setItems, loading, error, refresh };
+}
+
+function CatalogFeedback({ catalog, label, empty }) {
+  if (catalog.error) return <div className="error-banner platform-catalog-error" role="alert">
+    <span>无法读取{label}。{catalog.error}{catalog.items?.length > 0 && ' 已保留上次读取结果。'}</span>
+    <button className="subtle-button" type="button" onClick={() => catalog.refresh()} aria-label={`重试读取${label}`}>重试</button>
+  </div>;
+  if (catalog.loading) return <p className="resource-empty" role="status">正在读取{label}…</p>;
+  if (!catalog.items?.length) return <p className="resource-empty" role="status">{empty}</p>;
+  return null;
+}
+
+function usePlatformAction() {
+  const [action, setAction] = useState('');
+  const [error, setError] = useState('');
+  const pending = useRef(false);
+  const run = async (name, perform) => {
+    if (pending.current) return;
+    pending.current = true;
+    setAction(name);
+    setError('');
+    try { await perform(); }
+    catch (failure) { setError(failure.message); }
+    finally { pending.current = false; setAction(''); }
+  };
+  return { action, error, setError, run };
+}
+
+export function OriginalsWorkspace() {
+  const catalog = useCatalog(loadOriginals);
+  const [selected, setSelected] = useState(null);
+  const operation = usePlatformAction();
+  const open = (app) => operation.run(app.id, async () => {
+    if (app.id === 'chathub' && window.modelDesk?.openOriginalApp) {
+      const opened = await window.modelDesk.openOriginalApp('chathub');
+      if (!opened) throw new Error('Chrome 未能打开原版 ChatHub，请检查扩展是否已加载。');
+      return;
+    }
+    const started = await platformApi.startOriginal(app.id);
+    catalog.setItems((previous) => previous.map((item) => item.id === started.id ? started : item));
+    if (started.embed) setSelected(started);
+  });
+  return <div className="originals-workspace">
+    <CatalogFeedback catalog={catalog} label="原版应用" empty="没有可显示的原版应用。" />
+    <div className="original-app-list">{catalog.items?.map((app) => <article key={app.id}>
+      <header><span className="model-mark">{app.id === 'multibot' ? 'M' : 'C'}</span><div><h2>{app.label}</h2><p>{app.account_mode}</p></div></header>
+      <div className="original-app-meta"><span>{app.installed ? '已安装源码' : '未安装'}</span><span>{app.running ? '服务已运行' : '尚未启动'}</span>{app.license && <span>{app.license}</span>}</div>
+      {app.revision && <small>源码版本 {app.revision.slice(0, 10)}</small>}
+      <div><button className="primary-button" onClick={() => open(app)} disabled={Boolean(operation.action)}>{operation.action === app.id ? '正在打开' : app.embed ? '打开完整原版' : '在 Chrome 打开原版'}</button>{app.source_url && <a href={app.source_url} target="_blank" rel="noreferrer">查看上游源码</a>}</div>
+      {app.error && <p className="output-error">{app.error}</p>}
+    </article>)}</div>
+    {operation.error && <div className="error-banner" role="alert">{operation.error}</div>}
+    {selected && <section className="original-app-frame"><header><strong>{selected.label}</strong><a href={selected.url} target="_blank" rel="noreferrer">独立窗口打开</a><a href={`${selected.url}?login=1`} target="_blank" rel="noreferrer">原版账户管理</a><button className="icon-button" aria-label="关闭原版应用" onClick={() => setSelected(null)}><Icon name="close" size={16} /></button></header><iframe src={selected.url} title={selected.label} /></section>}
+  </div>;
+}
+
+function defaultArguments(tool) {
+  const properties = (tool.parameters || tool.inputSchema || {}).properties || {};
+  const defaults = { number: 0, integer: 0, boolean: false, array: [], object: {} };
+  return JSON.stringify(Object.fromEntries(Object.entries(properties).map(([key, schema]) => [
+    key, schema.default ?? schema.enum?.[0] ?? schema.minimum ?? defaults[schema.type] ?? '',
+  ])), null, 2);
+}
+
+function ToolInvokePanel({ tool, operation, call, onGrant }) {
+  const [argumentsText, setArgumentsText] = useState(() => defaultArguments(tool));
+  const [result, setResult] = useState(null);
+  const invoke = () => operation.run('invoke', async () => {
+    let args;
+    try { args = JSON.parse(argumentsText); } catch { throw new Error('参数必须是有效 JSON。'); }
+    if (args === null || typeof args !== 'object' || Array.isArray(args)) throw new Error('调用参数必须是 JSON 对象。');
+    setResult(null);
+    setResult(await call(args));
+  });
+  return <section className="tool-invoke-panel">
+    <header><strong>{tool.name || tool.id}</strong><span>{tool.description}</span></header>
+    <details><summary>实际参数定义</summary><pre>{JSON.stringify(tool.parameters || tool.inputSchema || {}, null, 2)}</pre></details>
+    <label className="platform-field"><span>调用参数（JSON）</span><textarea rows={6} value={argumentsText} onChange={(event) => setArgumentsText(event.target.value)} spellCheck={false} /></label>
+    {onGrant && tool.allowed === false && <p className="context-invalid">此工具尚未加入该服务的允许列表。<button className="subtle-button" onClick={onGrant} disabled={Boolean(operation.action)}>允许调用此工具</button></p>}
+    <button className="primary-button" onClick={invoke} disabled={Boolean(operation.action) || tool.allowed === false}>{operation.action === 'invoke' ? '正在调用' : '调用工具'}</button>
+    {result !== null && <div className="tool-actual-result"><strong>实际返回结果</strong><pre>{JSON.stringify(result, null, 2)}</pre></div>}
+  </section>;
+}
+
+const toolKey = (tool) => tool.id || tool.name;
+
+function BuiltInTools({ context }) {
+  const catalog = useCatalog(loadTools);
+  const [selectedTool, setSelectedTool] = useState(null);
+  const operation = usePlatformAction();
+  const call = (args) => platformApi.invokeTool(toolKey(selectedTool), {
+    arguments: args, knowledge_ids: context.knowledge_ids, memory_scope: context.memory_scope,
+    project_id: context.project_id, snapshot_id: context.snapshot_id, mcp_server_ids: context.mcp_server_ids,
+  });
+  return <>
+    <CatalogFeedback catalog={catalog} label="内置工具" empty="没有可用的内置工具。" />
+    {operation.error && <div className="error-banner" role="alert">{operation.error}</div>}
+    <div className="platform-tool-catalog">{catalog.items?.map((tool) => <button className={selectedTool && toolKey(selectedTool) === toolKey(tool) ? 'selected' : ''} key={toolKey(tool)} disabled={Boolean(operation.action)} onClick={() => { setSelectedTool(tool); operation.setError(''); }}><strong>{tool.label || tool.name}</strong><p>{tool.description}</p></button>)}</div>
+    {selectedTool && <ToolInvokePanel key={toolKey(selectedTool)} tool={selectedTool} operation={operation} call={call} />}
+  </>;
+}
+
+const blankServer = { name: '', url: '', transport: 'streamable_http', enabled: true, allowed_tools: [] };
+const splitTools = (value) => value.split(/[,，]/).map((item) => item.trim()).filter(Boolean);
+
+function McpServerEditor({ initialServer, onSaved, onArchive }) {
+  const [saved, setSaved] = useState(initialServer);
+  const [draft, setDraft] = useState(initialServer || blankServer);
+  const [allowedText, setAllowedText] = useState(() => (initialServer?.allowed_tools || []).join(', '));
+  const [discovery, setDiscovery] = useState(null);
+  const [selectedName, setSelectedName] = useState(null);
+  const operation = usePlatformAction();
+  const busy = Boolean(operation.action);
+  const connectionSaved = saved && draft.url === saved.url && draft.transport === saved.transport && draft.enabled === saved.enabled;
+  const selectedTool = connectionSaved && discovery?.tools.find((tool) => tool.name === selectedName);
+  const update = (changes) => setDraft((previous) => ({ ...previous, ...changes }));
+  const save = (event) => {
+    event.preventDefault();
+    if (saved?.archived) return;
+    return operation.run('save', async () => {
+      const body = { name: draft.name, url: draft.url, transport: draft.transport, enabled: draft.enabled, allowed_tools: splitTools(allowedText) };
+      const response = saved ? await platformApi.update('mcp', saved.id, body) : await platformApi.create('mcp', body);
+      const item = response.item || response;
+      setSaved(item);
+      setDraft(item);
+      setAllowedText(item.allowed_tools.join(', '));
+      setDiscovery(null);
+      setSelectedName(null);
+      await onSaved(item);
+    });
+  };
+  const archive = () => operation.run('archive', async () => {
+    if (saved.archived) await platformApi.restore('mcp', saved.id);
+    else await platformApi.archive('mcp', saved.id);
+    await onArchive();
+  });
+  const discover = () => operation.run('discover', async () => {
+    setSelectedName(null);
+    setDiscovery(null);
+    const value = await platformApi.discoverMcp(saved.id);
+    if (value.id !== saved.id) throw new Error('发现工具的服务器与当前连接不匹配。');
+    setDiscovery({ ...value, tools: catalogItems(value, 'tools') });
+  });
+  const grant = () => operation.run('grant', async () => {
+    const { name, url, transport, enabled } = saved;
+    const allowed_tools = [...new Set([...saved.allowed_tools, selectedTool.name])];
+    const response = await platformApi.update('mcp', saved.id, { name, url, transport, enabled, allowed_tools });
+    const item = response.item || response;
+    setSaved(item);
+    setAllowedText((previous) => [...new Set([...splitTools(previous), selectedTool.name])].join(', '));
+    setDiscovery((previous) => ({ ...previous, tools: previous.tools.map((tool) => tool.name === selectedTool.name ? { ...tool, allowed: true } : tool) }));
+    await onSaved(item);
+  });
+  const call = (args) => platformApi.callMcp(saved.id, { tool: selectedTool.name, arguments: args });
+  return <>
+    {operation.error && <div className="error-banner" role="alert">{operation.error}</div>}
+    <form onSubmit={save}>
+      <div className="platform-field-row">
+        <label className="platform-field"><span>服务名称</span><input value={draft.name} onChange={(event) => update({ name: event.target.value })} disabled={busy} required /></label>
+        <label className="platform-field"><span>协议</span><select value={draft.transport} onChange={(event) => update({ transport: event.target.value })} disabled={busy}><option value="streamable_http">Streamable HTTP</option><option value="sse">SSE</option></select></label>
+      </div>
+      <label className="platform-field"><span>服务 URL</span><input type="url" value={draft.url} onChange={(event) => update({ url: event.target.value })} placeholder="http://127.0.0.1:…/mcp" disabled={busy} required /></label>
+      <label className="platform-field"><span>允许调用的工具（逗号分隔）</span><input value={allowedText} onChange={(event) => setAllowedText(event.target.value)} disabled={busy} /></label>
+      <label className="mcp-enabled"><input type="checkbox" checked={draft.enabled} onChange={(event) => update({ enabled: event.target.checked })} disabled={busy} />启用服务</label>
+      <div className="mcp-actions">
+        <button className="primary-button" type="submit" disabled={busy || saved?.archived}>{operation.action === 'save' ? '正在保存' : '保存服务'}</button>
+        {saved && <button className="subtle-button" type="button" onClick={archive} disabled={busy}>{saved.archived ? '恢复服务' : '归档服务'}</button>}
+        <button className="subtle-button" type="button" onClick={discover} disabled={busy || !connectionSaved || !saved.enabled || saved.archived}>{operation.action === 'discover' ? '正在发现工具' : '连接并发现工具'}</button>
+      </div>
+    </form>
+    {connectionSaved && discovery && <div className="mcp-discovered-tools">
+      <p role="status">{discovery.tools.length ? '实际发现的工具' : '此服务没有发布工具。'}</p>
+      {discovery.tools.map((tool) => <button className="subtle-button" type="button" key={tool.name} disabled={busy} onClick={() => { setSelectedName(tool.name); operation.setError(''); }}>{tool.name}{tool.allowed === false && '（未授权）'}</button>)}
+      {discovery.health && <small>{typeof discovery.health === 'string' ? discovery.health : JSON.stringify(discovery.health)}</small>}
+    </div>}
+    {selectedTool && <ToolInvokePanel key={selectedTool.name} tool={selectedTool} operation={operation} call={call} onGrant={grant} />}
+  </>;
+}
+
+function McpServices() {
+  const active = useCatalog(loadActiveServers);
+  const archived = useCatalog(loadArchivedServers);
+  const [showArchived, setShowArchived] = useState(false);
+  const [selection, setSelection] = useState({ revision: 0, item: null });
+  const catalog = showArchived ? archived : active;
+  const choose = (item) => setSelection((previous) => ({ revision: previous.revision + 1, item }));
+  const refresh = () => Promise.all([active.refresh(true), archived.refresh(true)]);
+  const onSaved = (item) => {
+    setSelection((previous) => previous.revision === selection.revision ? { ...previous, item } : previous);
+    return refresh();
+  };
+  const onArchive = () => {
+    setSelection((previous) => previous.revision === selection.revision ? { revision: previous.revision + 1, item: null } : previous);
+    return refresh();
+  };
+  return <div className="mcp-manager">
+    <aside>
+      <label className="archive-toggle"><input type="checkbox" checked={showArchived} onChange={(event) => setShowArchived(event.target.checked)} />查看归档服务</label>
+      <CatalogFeedback catalog={catalog} label={showArchived ? '归档 MCP 服务' : 'MCP 服务'} empty={showArchived ? '没有归档的 MCP 服务。' : '还没有 MCP 服务。'} />
+      {catalog.items?.map((item) => <button type="button" key={item.id} className={selection.item?.id === item.id ? 'selected' : ''} onClick={() => choose(item)}><strong>{item.name}</strong><small>{item.transport} · {item.enabled ? '已启用' : '未启用'}</small></button>)}
+      <button type="button" onClick={() => choose(null)}><Icon name="plus" size={14} />新增服务</button>
+    </aside>
+    <section><McpServerEditor key={selection.revision} initialServer={selection.item} onSaved={onSaved} onArchive={onArchive} /></section>
+  </div>;
 }
 
 export function ToolsWorkspace({ context }) {
   const [tab, setTab] = useState('tools');
-  const [catalog, setCatalog] = useState([]);
-  const [selectedTool, setSelectedTool] = useState(null);
-  const [argumentsText, setArgumentsText] = useState('{}');
-  const [servers, setServers] = useState([]);
-  const [showArchivedServers, setShowArchivedServers] = useState(false);
-  const [server, setServer] = useState({ name: '', url: '', transport: 'streamable_http', enabled: true, allowed_tools: [] });
-  const [discovered, setDiscovered] = useState(null);
-  const [result, setResult] = useState(null);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState('');
-  const refresh = async () => { const results = await Promise.allSettled([platformApi.tools(), Promise.all([platformApi.list('mcp'), platformApi.list('mcp', true)])]); if (results[0].status === 'fulfilled') setCatalog(list(results[0].value.tools || results[0].value)); if (results[1].status === 'fulfilled') setServers(results[1].value.flatMap(list)); };
-  useEffect(() => { let disposed = false; Promise.allSettled([platformApi.tools(), Promise.all([platformApi.list('mcp'), platformApi.list('mcp', true)])]).then((results) => { if (disposed) return; if (results[0].status === 'fulfilled') setCatalog(list(results[0].value.tools || results[0].value)); if (results[1].status === 'fulfilled') setServers(results[1].value.flatMap(list)); }); return () => { disposed = true; }; }, []);
-  const chooseTool = (tool) => { setSelectedTool(tool); setResult(null); const properties = (tool.parameters || tool.inputSchema || {}).properties || {}; setArgumentsText(JSON.stringify(Object.fromEntries(Object.entries(properties).map(([key, schema]) => [key, schema.default ?? schema.enum?.[0] ?? (schema.type === 'number' || schema.type === 'integer' ? schema.minimum ?? 0 : schema.type === 'boolean' ? false : schema.type === 'array' ? [] : schema.type === 'object' ? {} : '')])), null, 2)); };
-  const invoke = async () => { let args; try { args = JSON.parse(argumentsText); } catch { setError('参数必须是有效 JSON。'); return; } setBusy(true); setError(''); try { setResult(tab === 'tools' ? await platformApi.invokeTool(selectedTool.id || selectedTool.name, { arguments: args, knowledge_ids: context.knowledge_ids, memory_scope: context.memory_scope, project_id: context.project_id, snapshot_id: context.snapshot_id, mcp_server_ids: context.mcp_server_ids }) : await platformApi.callMcp(server.id, { tool: selectedTool.name, arguments: args })); } catch (failure) { setError(failure.message); } finally { setBusy(false); } };
-  const saveServer = async (event) => { event.preventDefault(); setBusy(true); setError(''); try { const body = { name: server.name, url: server.url, transport: server.transport, enabled: server.enabled, allowed_tools: server.allowed_tools }; const saved = server.id ? await platformApi.update('mcp', server.id, body) : await platformApi.create('mcp', body); setServer(saved.item || saved); await refresh(); } catch (failure) { setError(failure.message); } finally { setBusy(false); } };
-  const grantTool = async () => { if (!server.id || !selectedTool?.name) return; setBusy(true); setError(''); try { const body = { name: server.name, url: server.url, transport: server.transport, enabled: server.enabled, allowed_tools: [...new Set([...server.allowed_tools, selectedTool.name])] }; const saved = await platformApi.update('mcp', server.id, body); setServer(saved.item || saved); setSelectedTool({ ...selectedTool, allowed: true }); if (discovered?.tools) setDiscovered({ ...discovered, tools: discovered.tools.map((tool) => tool.name === selectedTool.name ? { ...tool, allowed: true } : tool) }); await refresh(); } catch (failure) { setError(failure.message); } finally { setBusy(false); } };
-  const archiveServer = async () => { if (!server.id) return; setBusy(true); setError(''); try { if (server.archived) await platformApi.restore('mcp', server.id); else await platformApi.archive('mcp', server.id); await refresh(); setServer({ name: '', url: '', transport: 'streamable_http', enabled: true, allowed_tools: [] }); setDiscovered(null); setSelectedTool(null); } catch (failure) { setError(failure.message); } finally { setBusy(false); } };
-  const discover = async () => { if (!server.id) return; setBusy(true); setError(''); try { setDiscovered(await platformApi.discoverMcp(server.id)); } catch (failure) { setError(failure.message); } finally { setBusy(false); } };
-  return <div className="tools-workspace"><div className="platform-inner-tabs"><button className={tab === 'tools' ? 'selected' : ''} onClick={() => { setTab('tools'); setSelectedTool(null); }}>内置工具</button><button className={tab === 'mcp' ? 'selected' : ''} onClick={() => { setTab('mcp'); setSelectedTool(null); }}>MCP 服务</button></div>{error && <div className="error-banner" role="alert">{error}</div>}{tab === 'tools' ? <div className="platform-tool-catalog">{catalog.map((tool) => <button className={selectedTool?.name === tool.name ? 'selected' : ''} key={tool.id || tool.name} onClick={() => chooseTool(tool)}><strong>{tool.label || tool.name}</strong><p>{tool.description}</p></button>)}</div> : <div className="mcp-manager"><aside><label className="archive-toggle"><input type="checkbox" checked={showArchivedServers} onChange={(event) => setShowArchivedServers(event.target.checked)} />查看归档服务</label>{servers.filter((item) => Boolean(item.archived) === showArchivedServers).map((item) => <button key={item.id} className={server.id === item.id ? 'selected' : ''} onClick={() => { setServer(item); setDiscovered(null); setSelectedTool(null); }}><strong>{item.name}</strong><small>{item.transport} · {item.enabled ? '已启用' : '未启用'}</small></button>)}<button onClick={() => { setServer({ name: '', url: '', transport: 'streamable_http', enabled: true, allowed_tools: [] }); setDiscovered(null); setSelectedTool(null); }}><Icon name="plus" size={14} />新增服务</button></aside><section><form onSubmit={saveServer}><div className="platform-field-row"><label className="platform-field"><span>服务名称</span><input value={server.name} onChange={(event) => setServer({ ...server, name: event.target.value })} required /></label><label className="platform-field"><span>协议</span><select value={server.transport} onChange={(event) => setServer({ ...server, transport: event.target.value })}><option value="streamable_http">Streamable HTTP</option><option value="sse">SSE</option></select></label></div><label className="platform-field"><span>服务 URL</span><input type="url" value={server.url} onChange={(event) => setServer({ ...server, url: event.target.value })} placeholder="http://127.0.0.1:…/mcp" required /></label><label className="platform-field"><span>允许调用的工具（逗号分隔）</span><input value={server.allowed_tools?.join(', ') || ''} onChange={(event) => setServer({ ...server, allowed_tools: event.target.value.split(/[,，]/).map((item) => item.trim()).filter(Boolean) })} /></label><label className="mcp-enabled"><input type="checkbox" checked={server.enabled} onChange={(event) => setServer({ ...server, enabled: event.target.checked })} />启用服务</label><div className="mcp-actions"><button className="primary-button" type="submit" disabled={busy || server.archived}>保存服务</button>{server.id && <button className="subtle-button" type="button" onClick={archiveServer} disabled={busy}>{server.archived ? '恢复服务' : '归档服务'}</button>}<button className="subtle-button" type="button" onClick={discover} disabled={!server.id || busy || server.archived}>连接并发现工具</button></div></form>{discovered && <div className="mcp-discovered-tools"><p>实际发现的工具</p>{list(discovered.tools || discovered).map((tool) => <button className="subtle-button" key={tool.name} onClick={() => chooseTool(tool)}>{tool.name}{tool.allowed === false && '（未授权）'}</button>)}{discovered.health && <small>{typeof discovered.health === 'string' ? discovered.health : JSON.stringify(discovered.health)}</small>}</div>}</section></div>}{selectedTool && <section className="tool-invoke-panel"><header><strong>{selectedTool.name || selectedTool.id}</strong><span>{selectedTool.description}</span></header><details><summary>实际参数定义</summary><pre>{JSON.stringify(selectedTool.parameters || selectedTool.inputSchema || {}, null, 2)}</pre></details><label className="platform-field"><span>调用参数（JSON）</span><textarea rows={6} value={argumentsText} onChange={(event) => setArgumentsText(event.target.value)} spellCheck={false} /></label>{tab === 'mcp' && selectedTool.allowed === false && <p className="context-invalid">此工具尚未加入该服务的允许列表。<button className="subtle-button" onClick={grantTool} disabled={busy}>允许调用此工具</button></p>}<button className="primary-button" onClick={invoke} disabled={busy || (tab === 'mcp' && selectedTool.allowed === false)}>{busy ? '正在调用' : '调用工具'}</button>{result && <div className="tool-actual-result"><strong>实际返回结果</strong><pre>{JSON.stringify(result, null, 2)}</pre></div>}</section>}</div>;
+  return <div className="tools-workspace">
+    <div className="platform-inner-tabs" role="group" aria-label="工具分类">
+      <button className={tab === 'tools' ? 'selected' : ''} aria-pressed={tab === 'tools'} onClick={() => setTab('tools')}>内置工具</button>
+      <button className={tab === 'mcp' ? 'selected' : ''} aria-pressed={tab === 'mcp'} onClick={() => setTab('mcp')}>MCP 服务</button>
+    </div>
+    <div hidden={tab !== 'tools'}><BuiltInTools context={context} /></div>
+    <div hidden={tab !== 'mcp'}><McpServices /></div>
+  </div>;
 }

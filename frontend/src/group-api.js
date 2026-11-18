@@ -8,7 +8,7 @@ async function request(path, method = 'GET', body) {
     let detail;
     try { detail = (await response.json()).detail; } catch { /* Preserve HTTP failure. */ }
     if (Array.isArray(detail)) detail = detail.map((item) => item.msg).join('；');
-    throw new Error(typeof detail === 'string' ? detail : `群聊请求失败（${response.status}）`);
+    throw Object.assign(new Error(typeof detail === 'string' ? detail : `群聊请求失败（${response.status}）`), { status: response.status });
   }
   return response.json();
 }

@@ -1,10 +1,12 @@
 import ModelCatalogProvider from './components/ModelCatalogProvider';
 import ModelPicker from './components/ModelPicker';
 import { initialModels, retainCatalogOnFailure } from './model-catalog-state';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react';
+import { PLATFORM_SECTIONS } from './platform-settings';
 import { platformApi, workbenchApi } from './api';
 import { MODES } from './workbench-modes';
 import WorkspaceNavigation from './components/WorkspaceNavigation';
+import ConversationMoreActions from './components/ConversationMoreActions';
 import MissionWorkspace from './components/MissionWorkspace';
 import GroupWorkspace from './components/GroupWorkspace';
 import AgentSettings from './components/AgentSettings';
@@ -47,19 +49,17 @@ import './WorkbenchShell.css';
 const STATUS_LABELS = { queued: '等待开始', running: '运行中', complete: '已完成', completed: '已完成', failed: '失败', error: '失败', cancelled: '已停止', interrupted: '已中断' };
 const active = (job) => ['queued', 'running'].includes(job?.status);
 
+const compactResultsQuery = '(max-width: 1600px)';
+function subscribeToResultsLayout(listener) {
+  const query = window.matchMedia(compactResultsQuery);
+  query.addEventListener('change', listener);
+  return () => query.removeEventListener('change', listener);
+}
+const usesCompactResults = () => window.matchMedia(compactResultsQuery).matches;
+
 function dateLabel(date) {
   if (!date) return '';
   return new Intl.DateTimeFormat('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }).format(new Date(date));
-}
-
-function exportJob(job, format) {
-  const link = document.createElement('a');
-  link.href = workbenchApi.exportUrl(job.id, format);
-  link.download = `ModelDesk-${job.mode}-${job.id.slice(0, 8)}.${format === 'json' ? 'json' : 'md'}`;
-  link.hidden = true;
-  document.body.appendChild(link);
-  link.click();
-  link.remove();
 }
 
 export default function App() { return <RemoteAccessGate><ProjectProvider><ModelDeskWorkspace /></ProjectProvider></RemoteAccessGate>; }
@@ -70,17 +70,24 @@ function ModelDeskWorkspace() {
   const [mode, setMode] = useState(() => Object.hasOwn(MODES, localStorage.getItem('modeldesk.mode')) ? localStorage.getItem('modeldesk.mode') : 'chat');
   const [bootSession] = useState(() => sessionFor(readSessions(localStorage), mode, activeProjectId));
   const [bootPreferences] = useState(() => conversationPreferences(bootSession.preferences));
-  const [agentsView, setAgentsView] = useState(() => localStorage.getItem('modeldesk.view') === 'agents');
+  const [workspace, setWorkspace] = useState(() => {
+    const saved = localStorage.getItem('modeldesk.view');
+    if (!saved) return 'missions';
+    return ['agents', 'groups', 'missions', 'projects', 'todo', 'platform'].includes(saved) ? saved : 'tools';
+  });
+  const agentsView = workspace === 'agents';
+  const groupsView = workspace === 'groups';
+  const missionView = workspace === 'missions';
+  const projectView = workspace === 'projects';
+  const todoView = workspace === 'todo';
+  const platformView = workspace === 'platform';
   const [agentSettingsSection, setAgentSettingsSection] = useState('agents');
-  const [groupsView, setGroupsView] = useState(() => localStorage.getItem('modeldesk.view') === 'groups');
   const [groupTarget, setGroupTarget] = useState(null);
   const [groupContext, setGroupContext] = useState(() => ({ ...EMPTY_CONTEXT, project_id: activeProjectId }));
-  const [missionView, setMissionView] = useState(() => !localStorage.getItem('modeldesk.view') || localStorage.getItem('modeldesk.view') === 'missions');
-  const [projectView, setProjectView] = useState(() => localStorage.getItem('modeldesk.view') === 'projects');
-  const [todoView, setTodoView] = useState(() => localStorage.getItem('modeldesk.view') === 'todo');
-  const [platformView, setPlatformView] = useState(() => localStorage.getItem('modeldesk.view') === 'platform');
-  const [platformSection, setPlatformSection] = useState(() => localStorage.getItem('modeldesk.platformSection') || 'overview');
-  const [navigationTab, setNavigationTab] = useState(() => localStorage.getItem('modeldesk.view') === 'platform' ? 'platform' : 'tools');
+  const [platformSection, setPlatformSection] = useState(() => {
+    const saved = localStorage.getItem('modeldesk.platformSection');
+    return Object.hasOwn(PLATFORM_SECTIONS, saved) ? saved : 'overview';
+  });
   const [context, setContext] = useState(() => ({ ...sourceSelection(bootSession.context), project_id: activeProjectId }));
   const [theme, setTheme] = useState(() => localStorage.getItem('modeldesk.theme') === 'dark' ? 'dark' : 'light');
   const [status, setStatus] = useState(null);
@@ -104,9 +111,7 @@ function ModelDeskWorkspace() {
   const [error, setError] = useState('');
   const [streamError, setStreamError] = useState(false);
   const [modelMenu, setModelMenu] = useState(false);
-  const [accountPanel, setAccountPanel] = useState(false);
   const [remotePanel, setRemotePanel] = useState(false);
-  const [exportMenu, setExportMenu] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => localStorage.getItem('modeldesk.sidebarCollapsed') === 'on');
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
@@ -114,15 +119,21 @@ function ModelDeskWorkspace() {
   const [refreshing, setRefreshing] = useState(false);
   const [historyQuery, setHistoryQuery] = useState('');
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [modeMenu, setModeMenu] = useState(false);
   const [rememberConversation, setRememberConversation] = useState(() => localStorage.getItem('modeldesk.conversationMemory') !== 'off');
   const [artifactsOpen, setArtifactsOpen] = useState(() => localStorage.getItem('modeldesk.artifactsOpen') !== 'off');
   const [artifactWidth, setArtifactWidth] = useState(() => Math.max(320, Math.min(Math.max(320, Math.min(680, window.innerWidth - 744)), Number(localStorage.getItem('modeldesk.artifactWidth')) || 420)));
   const [artifactJob, setArtifactJob] = useState(null);
   const [projectTarget, setProjectTarget] = useState(null);
   const [mobileArtifactsOpen, setMobileArtifactsOpen] = useState(false);
+  const compactResults = useSyncExternalStore(subscribeToResultsLayout, usesCompactResults, () => false);
+  const [groupResultShortcut, setGroupResultShortcut] = useState(null);
+  const registerGroupResultShortcut = useCallback((openResult) => setGroupResultShortcut(() => openResult), []);
   const [loadedTurns, setLoadedTurns] = useState([]);
   const inputRef = useRef(null);
+  const navigationTrigger = useRef(null);
+  const sidebarCloseRef = useRef(null);
+  const focusNewConversation = useRef(false);
+  const mainRef = useRef(null);
   const attachmentRef = useRef(null);
   const projectScopeRef = useRef(activeProjectId);
   const streamRef = useRef(null);
@@ -234,13 +245,17 @@ function ModelDeskWorkspace() {
     return () => { disposed = true; };
   }, [activeProjectId, job, prompt, projectView, status]);
 
+  const openWorkspace = (next) => {
+    setWorkspace(next);
+    setSidebarOpen(false);
+    localStorage.setItem('modeldesk.view', next);
+  };
   const selectMode = (next) => {
     initialModeSet.current = true;
     rememberSession(mode, { job_id: jobId, draft: prompt, context: sourceSelection(context) });
     rememberSession(next, { job_id: jobId, draft: prompt, context: sourceSelection(context) });
-    setMode(next); setMissionView(false); setGroupsView(false); setAgentsView(false); setPlatformView(false); setProjectView(false); setTodoView(false); setNavigationTab('tools'); setSidebarOpen(false); setModeMenu(false); setSettingsOpen(false); setError('');
+    setMode(next); openWorkspace('tools'); setSettingsOpen(false); setError('');
     artifactRequest.current += 1; setArtifactJob(null);
-    localStorage.setItem('modeldesk.view', 'tools');
   };
   const selectJob = (item, { focusResult = false } = {}) => {
     initialModeSet.current = true;
@@ -262,7 +277,7 @@ function ModelDeskWorkspace() {
     const workspace = workspacesRef.current[projectDraftKey(item.project_id, item.conversation_id || item.id)];
     const draft = item.id === jobId ? prompt : workspace?.draft ?? conversationDraft(conversationDraftsRef.current, item);
     rememberSession(item.mode, { job_id: item.id, draft, context: workspace?.context || sourceSelection(item) }, item.project_id);
-    setSidebarOpen(false); setMissionView(false); setGroupsView(false); setAgentsView(false); setPlatformView(false); setTodoView(false); setNavigationTab('tools'); setProjectView(false); localStorage.setItem('modeldesk.view', 'tools');
+    openWorkspace('tools');
     artifactRequest.current += 1; setArtifactJob(null);
     if (item.id === jobId) return;
     setMode(item.mode); setJob(null); setArtifactJob(null); setJobId(item.id); setPrompt(draft); setContext(workspace?.context || sourceSelection(item)); setError('');
@@ -317,6 +332,11 @@ function ModelDeskWorkspace() {
     return () => { if (typeof unsubscribe === 'function') unsubscribe(); };
   }, []);
   const newTask = (nextMode) => { const target = typeof nextMode === 'string' && Object.hasOwn(MODES, nextMode) ? nextMode : mode; artifactRequest.current += 1; rememberSession(target, { job_id: null, draft: '' }); setJobId(null); setJob(null); setArtifactJob(null); setPrompt(''); setContext((previous) => ({ ...previous, attachment_ids: [] })); setError(''); setStreamError(false); localStorage.removeItem('modeldesk.lastJob'); inputRef.current?.focus(); };
+  const openNewConversation = () => {
+    focusNewConversation.current = workspace !== 'tools' || sidebarOpen || commandPaletteOpen;
+    selectMode(mode);
+    newTask(mode);
+  };
   const chooseModels = (next) => { setModels(next); localStorage.setItem('modeldesk.models', JSON.stringify(next)); };
   const tool = status?.tools?.[mode];
   const toolAvailable = typeof tool === 'boolean' ? tool : tool?.available !== false;
@@ -359,19 +379,67 @@ function ModelDeskWorkspace() {
   const activeJobs = jobs.filter(active);
   const config = MODES[mode];
   const lastLog = [...(job?.events || [])].reverse().find((e) => e.type === 'log')?.text;
-  const openAgentSettings = (section = 'agents') => { artifactRequest.current += 1; setArtifactJob(null); setAgentSettingsSection(section); setMissionView(false); setGroupsView(false); setPlatformView(false); setProjectView(false); setTodoView(false); setAgentsView(true); setSidebarOpen(false); setMobileArtifactsOpen(false); localStorage.setItem('modeldesk.view', 'agents'); };
-  const openGroups = () => { artifactRequest.current += 1; setArtifactJob(null); setGroupTarget(null); setGroupsView(true); setAgentsView(false); setMissionView(false); setPlatformView(false); setProjectView(false); setTodoView(false); setSidebarOpen(false); setMobileArtifactsOpen(false); localStorage.setItem('modeldesk.view', 'groups'); };
+  const openAgentSettings = (section = 'agents') => { artifactRequest.current += 1; setArtifactJob(null); setAgentSettingsSection(section); openWorkspace('agents'); setMobileArtifactsOpen(false); };
+  const openGroups = () => { artifactRequest.current += 1; setArtifactJob(null); setGroupTarget(null); openWorkspace('groups'); setMobileArtifactsOpen(false); };
   const openGroupWithTeam = (team) => { openGroups(); setGroupTarget({ projectId: activeProjectId, initialTeam: team }); };
-  const openMissions = () => { if (missionView) { setSidebarOpen(false); return; } artifactRequest.current += 1; setArtifactJob(null); setMissionView(true); setGroupsView(false); setAgentsView(false); setPlatformView(false); setProjectView(false); setTodoView(false); setSidebarOpen(false); setMobileArtifactsOpen(false); localStorage.setItem('modeldesk.view', 'missions'); };
-  const openTodo = () => { if (todoView) { setSidebarOpen(false); return; } artifactRequest.current += 1; setArtifactJob(null); setTodoView(true); setMissionView(false); setGroupsView(false); setAgentsView(false); setPlatformView(false); setProjectView(false); setSidebarOpen(false); setMobileArtifactsOpen(false); localStorage.setItem('modeldesk.view', 'todo'); };
+  const openMissions = () => { if (missionView) { setSidebarOpen(false); return; } artifactRequest.current += 1; setArtifactJob(null); openWorkspace('missions'); setMobileArtifactsOpen(false); };
+  const openTodo = () => { if (todoView) { setSidebarOpen(false); return; } artifactRequest.current += 1; setArtifactJob(null); openWorkspace('todo'); setMobileArtifactsOpen(false); };
   const showMissionArtifact = useCallback((next, reveal = false) => { setArtifactJob(next); if (reveal) { setArtifactsOpen(true); setMobileArtifactsOpen(true); } }, []);
   const clearMissionArtifact = useCallback(() => { setArtifactJob(null); }, []);
-  const openPlatform = (section) => { setMissionView(false); setGroupsView(false); setAgentsView(false); setTodoView(false); artifactRequest.current += 1; setArtifactJob(null); setPlatformView(true); setProjectView(false); setPlatformSection(section); setNavigationTab('platform'); setSidebarOpen(false); localStorage.setItem('modeldesk.view', 'platform'); localStorage.setItem('modeldesk.platformSection', section); };
-  const openProjects = (target) => { setMissionView(false); setGroupsView(false); setAgentsView(false); setTodoView(false); artifactRequest.current += 1; setArtifactJob(null); setProjectTarget(target?.project_id ? target : null); setPlatformView(false); setProjectView(true); setNavigationTab('tools'); setSidebarOpen(false); localStorage.setItem('modeldesk.view', 'projects'); };
+  const openPlatform = (section) => { artifactRequest.current += 1; setArtifactJob(null); openWorkspace('platform'); setPlatformSection(section); localStorage.setItem('modeldesk.platformSection', section); };
+  const openProjects = (target) => { artifactRequest.current += 1; setArtifactJob(null); setProjectTarget(target?.project_id ? target : null); openWorkspace('projects'); };
   const usePrompt = (resource) => { const next = Object.hasOwn(MODES, resource.mode) ? resource.mode : 'chat'; selectMode(next); newTask(next); setPrompt(resource.content); };
   const useAgent = (agent) => { selectMode('crewai'); newTask('crewai'); setModels([agent.model]); const workflow = { agents: [{ id: 'agent1', role: agent.role, goal: agent.goal, backstory: agent.backstory || '', model: agent.model, tools: agent.tools || [] }], tasks: [{ id: 'task1', description: '完成用户在任务输入中提出的要求。', expected_output: '符合用户要求、注明依据与限制的结果。', agent: 'agent1', context: [] }], process: 'sequential', manager_model: null, max_iter: 3 }; const updated = { ...workflows, [projectSessionKey(activeProjectId, 'crewai')]: workflow }; setWorkflows(updated); localStorage.setItem('modeldesk.workflows', JSON.stringify(updated)); };
   const onPlatformRun = (created) => { setJobs((previous) => [created, ...previous.filter((item) => item.id !== created.id)]); refresh(); };
   const savePrompt = async () => { if (!prompt.trim()) return; try { await platformApi.create('prompts', { name: prompt.trim().slice(0, 35), content: prompt.trim(), category: config.label, tags: [], mode, project_id: activeProjectId }); openPlatform('prompts'); } catch (failure) { setError(failure.message); } };
+  const openNavigation = (event) => {
+    navigationTrigger.current = event.currentTarget;
+    setSidebarOpen(true);
+  };
+  const closeNavigation = () => setSidebarOpen(false);
+  const openProjectMaterials = () => {
+    closeNavigation();
+    projectHub.openManager();
+  };
+  useLayoutEffect(() => {
+    if (commandPaletteOpen) return;
+    if (sidebarOpen) {
+      sidebarCloseRef.current?.focus();
+      return;
+    }
+    const trigger = navigationTrigger.current;
+    navigationTrigger.current = null;
+    if (focusNewConversation.current) {
+      focusNewConversation.current = false;
+      inputRef.current?.focus();
+    } else if (trigger) {
+      const next = trigger.isConnected ? trigger : mainRef.current?.querySelector('.workspace-shell .mobile-menu');
+      next?.focus();
+    }
+  }, [commandPaletteOpen, sidebarOpen, workspace, platformSection]);
+  useEffect(() => {
+    if (!sidebarOpen) return;
+    const mobile = window.matchMedia('(max-width: 820px)');
+    const closeOnDesktop = (event) => { if (!event.matches) setSidebarOpen(false); };
+    mobile.addEventListener('change', closeOnDesktop);
+    return () => mobile.removeEventListener('change', closeOnDesktop);
+  }, [sidebarOpen]);
+  const handleSidebarKeys = (event) => {
+    if (!sidebarOpen) return;
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      closeNavigation();
+    }
+    if (event.key !== 'Tab') return;
+    const controls = [...event.currentTarget.querySelectorAll('button:not(:disabled), input:not(:disabled)')]
+      .filter((control) => control.getClientRects().length && getComputedStyle(control).visibility !== 'hidden');
+    const first = controls[0];
+    const last = controls.at(-1);
+    if ((event.shiftKey && document.activeElement === first) || (!event.shiftKey && document.activeElement === last)) {
+      event.preventDefault();
+      (event.shiftKey ? last : first)?.focus();
+    }
+  };
   const toggleSidebarCollapsed = useCallback(() => {
     setSidebarCollapsed((current) => {
       const next = !current;
@@ -379,14 +447,25 @@ function ModelDeskWorkspace() {
       return next;
     });
   }, []);
+  const singleWorkspace = !agentsView && !groupsView && !missionView && !todoView && !platformView && !projectView;
+  const previewJob = artifactJob || (singleWorkspace ? job : null);
+  const previewVisible = Boolean(previewJob && artifactsOpen && (!compactResults || mobileArtifactsOpen));
+  const canOpenPreview = Boolean(previewJob || groupResultShortcut);
+  const closeArtifacts = useCallback(() => {
+    setMobileArtifactsOpen(false);
+    if (!compactResults) {
+      setArtifactsOpen(false);
+      localStorage.setItem('modeldesk.artifactsOpen', 'off');
+    }
+  }, [compactResults]);
   const toggleArtifacts = useCallback(() => {
-    if (window.innerWidth <= 1600) { setArtifactsOpen(true); setMobileArtifactsOpen((current) => !current); return; }
-    setArtifactsOpen((current) => {
-      const next = !current;
-      localStorage.setItem('modeldesk.artifactsOpen', next ? 'on' : 'off');
-      return next;
-    });
-  }, []);
+    if (previewVisible) return closeArtifacts();
+    if (groupResultShortcut) return groupResultShortcut();
+    if (!previewJob) return;
+    setArtifactsOpen(true);
+    if (compactResults) setMobileArtifactsOpen(true);
+    else localStorage.setItem('modeldesk.artifactsOpen', 'on');
+  }, [closeArtifacts, compactResults, groupResultShortcut, previewJob, previewVisible]);
   const toggleTheme = useCallback(() => {
     setTheme((current) => {
       const next = current === 'light' ? 'dark' : 'light';
@@ -396,7 +475,9 @@ function ModelDeskWorkspace() {
   }, []);
   useEffect(() => {
     const onKeyDown = (event) => {
-      if (!(event.metaKey || event.ctrlKey)) return;
+      if (!(event.metaKey || event.ctrlKey) || event.isComposing || event.defaultPrevented) return;
+      const dialog = document.querySelector('dialog:modal');
+      if (dialog && !(dialog.classList.contains('command-palette-modal') && event.key.toLowerCase() === 'k')) return;
       const key = event.key.toLowerCase();
       if (key === 'k') {
         event.preventDefault();
@@ -426,16 +507,18 @@ function ModelDeskWorkspace() {
       mode={mode}
       theme={theme}
       sidebarCollapsed={sidebarCollapsed}
-      artifactsOpen={artifactsOpen}
-      history={allHistory}
+      artifactsOpen={previewVisible}
+      canOpenArtifacts={canOpenPreview}
+      history={commandPaletteOpen && historyQuery.trim() ? conversationGroups(scopedJobs.filter((item) => !item.harness_run_id)) : allHistory}
       projects={projectHub.projects || []}
       activeProjectId={activeProjectId}
       onOpenGroups={openGroups}
       onOpenMissions={openMissions}
+      onOpenTodo={openTodo}
       onOpenProjects={projectHub.openManager}
       onOpenAgentSettings={openAgentSettings}
       onSelectMode={selectMode}
-      onNewConversation={() => { setMissionView(false); setGroupsView(false); setAgentsView(false); setPlatformView(false); setProjectView(false); setTodoView(false); localStorage.setItem('modeldesk.view', 'tools'); newTask(); }}
+      onNewConversation={openNewConversation}
       onToggleSidebar={toggleSidebarCollapsed}
       onToggleArtifacts={toggleArtifacts}
       onToggleTheme={toggleTheme}
@@ -444,17 +527,18 @@ function ModelDeskWorkspace() {
       onSelectProject={(id) => projectHub.selectProject(id)}
     />
     {remotePanel && <RemoteAccessPanel onClose={() => setRemotePanel(false)} status={status} />}
-    {sidebarOpen && <button className="sidebar-backdrop" aria-label="关闭导航" onClick={() => setSidebarOpen(false)} />}
-    <aside className={`sidebar ${sidebarOpen ? 'sidebar-open' : ''}`}>
+    {sidebarOpen && <div className="sidebar-backdrop" aria-hidden="true" onClick={closeNavigation} />}
+    <aside className={`sidebar ${sidebarOpen ? 'sidebar-open' : ''}`} role={sidebarOpen ? 'dialog' : undefined} aria-modal={sidebarOpen || undefined} aria-label={sidebarOpen ? '工作台导航' : undefined} onKeyDown={handleSidebarKeys}>
       <div className="brand">
         <span className="brand-symbol"><i /><i /><i /><i /></span>
         <div><strong>ModelDesk</strong><span>多智能体平台</span></div>
         <div className="brand-actions">
+          {sidebarOpen && <button type="button" ref={sidebarCloseRef} className="icon-button sidebar-close-btn" aria-label="关闭导航" onClick={closeNavigation}><Icon name="close" size={16} /></button>}
           <button type="button" className="sidebar-quick-cmd" aria-label="打开快捷命令面板" title="全局快捷命令 (⌘K)" onClick={() => setCommandPaletteOpen(true)}>⌘K</button>
           <button type="button" className="icon-button sidebar-collapse-btn" aria-label="收起左侧导航栏" title="收起左侧导航栏 (⌘B)" onClick={toggleSidebarCollapsed}><Icon name="panel" size={14} /></button>
         </div>
       </div>
-      <WorkspaceNavigation agentsView={agentsView} onAgents={() => openAgentSettings()} groupsView={groupsView} onGroups={openGroups} missionView={missionView} todoView={todoView} navigationTab={navigationTab} platformView={platformView} projectView={projectView} platformSection={platformSection} mode={mode} modeMenu={modeMenu} activeJobs={activeJobs} onMissions={openMissions} onTodo={openTodo} onMode={selectMode} onPlatform={openPlatform} onModeMenu={() => setModeMenu(!modeMenu)} onNewConversation={() => { setMissionView(false); setGroupsView(false); setAgentsView(false); setPlatformView(false); setProjectView(false); setTodoView(false); localStorage.setItem('modeldesk.view', 'tools'); newTask(); }} onProjects={projectHub.openManager} />
+      <WorkspaceNavigation workspace={workspace} platformSection={platformSection} mode={mode} activeJobs={activeJobs} onAgents={() => openAgentSettings()} onGroups={openGroups} onMissions={openMissions} onTodo={openTodo} onMode={selectMode} onPlatform={openPlatform} onNewConversation={openNewConversation} onProjects={openProjectMaterials} />
       <div className="history-heading">
         <span>最近会话 ({history.length})</span>
         <div className="history-filter-pills" role="group" aria-label="筛选会话类型">
@@ -467,16 +551,26 @@ function ModelDeskWorkspace() {
       <div className="history-list">{history.length ? history.map((group) => <button key={group.id} className={`history-item ${group.jobs.some((item) => item.id === jobId) ? 'selected' : ''}`} onClick={() => selectJob(group.latest)} title={group.title}><span className="history-title">{group.title}</span><span className="history-meta"><span className={`history-status status-${group.latest.status}`}>{STATUS_LABELS[group.latest.status] || group.latest.status}</span><span>{group.jobs.length} 轮</span><time>{dateLabel(group.latest.created_at)}</time></span><small className="history-mode">{group.latest?.group_room_id ? '项目群聊' : group.modes.map((id) => MODES[id]?.label || id).join(' / ')}</small></button>) : <p className="history-empty">{historyQuery ? '没有找到匹配的会话。' : '会话会自动保存，随时回来继续。'}</p>}</div>
       <div className="sidebar-footer"><button className="phone-connect" type="button" onClick={() => { setRemotePanel(true); setSidebarOpen(false); }}><Icon name="phone" size={17} /><span>{REMOTE_CLIENT ? '远程连接' : '手机连接'}</span><Icon name="chevron" size={13} /></button><button className="theme-toggle" onClick={toggleTheme}><span><Icon name={theme === 'light' ? 'moon' : 'sun'} size={14} />{theme === 'light' ? '切换深色模式' : '切换浅色模式'}</span><small>{theme === 'light' ? '浅色' : '深色'}</small></button><div className="gateway-indicator"><span className={`status-dot ${status?.gateway?.online ? 'online' : 'offline'}`} /><strong>{status ? status.gateway?.online ? '本地网关已连接' : '本地网关未连接' : '正在检查连接'}</strong></div><span>认证信息保留在本机</span><button onClick={() => openAgentSettings("connections")}>模型与 API 连接<Icon name="settings" size={14} /></button></div>
     </aside>
-    <div className="modeldesk-main">
+    <div className="modeldesk-main" ref={mainRef} inert={sidebarOpen}>
       {sidebarCollapsed && (
         <div className="sidebar-expand-rail" role="toolbar" aria-label="快捷导航栏">
           <button type="button" className="subtle-button" onClick={toggleSidebarCollapsed} title="展开左侧导航栏 (⌘B)"><Icon name="panel" size={14} />展开导航</button>
           <button type="button" className="subtle-button" onClick={() => setCommandPaletteOpen(true)} title="打开快捷命令面板 (⌘K)"><Icon name="search" size={14} />快捷跳转 ⌘K</button>
         </div>
       )}
-      <ProjectHub status={status} onOpenFeishu={() => openAgentSettings('feishu')} onOpenAutonomyTask={openAutonomyTask} jobs={jobs} attachmentIds={(groupsView ? groupContext : context).attachment_ids} onAttachmentIds={(ids) => (groupsView ? setGroupContext : setContext)((previous) => ({ ...previous, attachment_ids: ids }))} includeShared={(groupsView ? groupContext : context).include_project_assets} onIncludeShared={(enabled) => (groupsView ? setGroupContext : setContext)((previous) => ({ ...previous, include_project_assets: enabled }))} onOpenJob={selectJob} onOpenReview={(id) => openProjects({ project_id: id })} /><div className={`workspace-shell ${artifactsOpen && (artifactJob || (!agentsView && !groupsView && !missionView && !todoView && !platformView && !projectView && job)) ? 'artifacts-visible' : ''} ${mobileArtifactsOpen ? 'mobile-artifacts-open' : ''}`} style={{ '--artifact-width': `${artifactWidth}px` }}><>{agentsView ? <AgentSettings key={`${activeProjectId || "unassigned"}:${agentSettingsSection}`} initialSection={agentSettingsSection} status={status} models={models} onOpenNavigation={() => setSidebarOpen(true)} onOpenGroups={openGroups} onStartGroup={openGroupWithTeam} onOpenLibrary={() => openPlatform("agents")} onRefresh={refresh} /> : groupsView ? <GroupWorkspace onOpenAgentSettings={openAgentSettings} key={`${activeProjectId || "unassigned"}:${groupTarget?.projectId === activeProjectId ? groupTarget?.initialTeam?.id || groupTarget?.roomId || "saved" : "saved"}`} initialRoomId={groupTarget?.projectId === activeProjectId ? groupTarget?.roomId : undefined} initialJob={groupTarget?.projectId === activeProjectId ? groupTarget?.initialJob : undefined} initialTeam={groupTarget?.projectId === activeProjectId ? groupTarget?.initialTeam : undefined} renderIntegration={(props) => hostIsMacos(status) ? (REMOTE_CLIENT ? <p className="group-remote-muse-note">Muse 原生窗口操作请在{machineShort(status)}完成。项目讨论与 Agent 任务可在此继续。</p> : <MuseDesktopPanel key={`${props.projectId || "unassigned"}:${props.roomId}`} {...props} />) : <p className="group-remote-muse-note">Muse 原生窗口操作仅在 Mac 上可用；当前主机不是 Mac。项目讨论与 Agent 任务可在此继续。</p>} status={status} models={models} context={groupContext} onContextChange={setGroupContext} onOpenNavigation={() => setSidebarOpen(true)} onOpenProjects={() => openProjects({ project_id: activeProjectId })} onOpenArtifacts={showMissionArtifact} onClearArtifacts={clearMissionArtifact} onToggleArtifacts={toggleArtifacts} /> : missionView ? <MissionWorkspace key={activeProjectId || 'unassigned'} status={status} models={models} onModelsChange={setModels} context={context} onContextChange={setContext} jobs={scopedJobs} onOpenNavigation={() => setSidebarOpen(true)} onOpenProjects={() => openProjects({ project_id: activeProjectId })} onOpenArtifacts={showMissionArtifact} onClearArtifacts={clearMissionArtifact} onToggleArtifacts={toggleArtifacts} /> : todoView ? <TodoBoard onOpenResult={openTodoResult} /> : platformView ? <PlatformWorkspace key={platformSection} section={platformSection} onSection={openPlatform} status={status} jobs={scopedJobs} models={models} context={context} onContextChange={setContext} onUsePrompt={usePrompt} onUseAgent={useAgent} onRunJob={onPlatformRun} onOpenArtifacts={(next) => { artifactRequest.current += 1; setArtifactJob(hydrateJob(next)); setArtifactsOpen(true); setMobileArtifactsOpen(true); }} onOpenProjects={projectHub.openCreate} onStartCollaboration={openMissions} onOpenJob={selectJob} onOpenNavigation={() => setSidebarOpen(true)} /> : projectView ? <ProjectWorkspace key={`${activeProjectId || 'default'}:${projectTarget?.review_id || 'latest'}`} addRequested={0} activeProjectId={activeProjectId} onSelectSharedProject={projectHub.selectProject} attachmentContext={context} onAttachmentContextChange={setContext} initialProjectId={activeProjectId} initialReviewId={projectTarget?.project_id === activeProjectId ? projectTarget.review_id : undefined} onOpenArtifacts={(next) => { artifactRequest.current += 1; setArtifactJob(hydrateJob(next)); setArtifactsOpen(true); setMobileArtifactsOpen(true); }} status={status} jobs={jobs} models={reviewModels.length ? reviewModels : models} onModelsChange={(next) => { setReviewModels(next); localStorage.setItem('modeldesk.reviewModels', JSON.stringify(next)); }} onRefresh={refresh} onOpenNavigation={() => setSidebarOpen(true)} /> : <main className="workspace">
-      <header className="workspace-header"><div className="header-title"><button className="mobile-menu icon-button" aria-label="打开导航" onClick={() => setSidebarOpen(true)}><Icon name="menu" /></button><span className="mode-header-icon"><Icon name={config.icon} size={22} /></span><div><h1 title={job ? taskTitle(job.prompt) : undefined}>{job ? taskTitle(job.prompt) : '协作工作台'}</h1><span>{job && job.mode !== mode ? '下一轮：' : ''}{config.label} · {config.source}</span></div></div><div className="header-actions"><button className="subtle-button" aria-expanded={settingsOpen} onClick={() => setSettingsOpen(!settingsOpen)}><Icon name="settings" size={16} />设置</button><button disabled={!job && !artifactJob} className={`subtle-button ${artifactsOpen ? 'selected' : ''}`} aria-expanded={artifactsOpen} onClick={toggleArtifacts}><Icon name="layers" size={16} />最终产物</button><button className={`account-toggle ${accountPanel ? 'selected' : ''}`} onClick={() => setAccountPanel(!accountPanel)}><span className={`status-dot ${status?.providers?.some((p) => p.authenticated) ? 'online' : 'offline'}`} />已有账户<Icon name="chevron" size={14} /></button><button className="subtle-button" disabled={!prompt.trim()} onClick={savePrompt}>保存提示</button><div className="export-control"><button className="subtle-button" disabled={!job} onClick={() => setExportMenu(!exportMenu)}><Icon name="export" size={17} />导出</button>{exportMenu && job && <div className="small-menu"><button onClick={() => { exportJob(job, 'md'); setExportMenu(false); }}>导出 Markdown</button><button onClick={() => { exportJob(job, 'json'); setExportMenu(false); }}>导出完整 JSON</button></div>}</div></div></header>
-      {accountPanel && <section className="account-panel" aria-label="账户与连接状态"><div className="account-panel-title"><div><strong>账户与连接</strong><span>凭据存在与模型调用验证分别显示</span></div><button className="icon-button" aria-label="刷新连接状态" disabled={refreshing} onClick={manualRefresh}><Icon name="refresh" size={18} /></button><button className="icon-button" aria-label="关闭账户面板" onClick={() => setAccountPanel(false)}><Icon name="close" size={18} /></button></div><div className="provider-list">{status?.providers?.length ? status.providers.map((provider) => <div className="provider-row" key={provider.id}><span className={`status-dot ${provider.authenticated ? 'online' : 'offline'}`} /><strong>{provider.label}</strong><span>{provider.authenticated ? '已发现登录凭据' : '未接入'}</span><span className="provider-verification">{provider.verified_models?.length ? `${provider.verified_models.length} 个模型已验证` : '尚无已验证调用'}</span>{provider.reason && <p>{provider.reason}</p>}</div>) : <p className="result-note">{status?.gateway?.error || '正在读取本地登录状态…'}</p>}</div><button type="button" className="subtle-button" onClick={() => openAgentSettings("connections")}><Icon name="plus" size={15} />添加 Grok / 自定义 API</button><p className="account-footnote">Claude 订阅登录未接入第三方网关。当前工作台共享 ChatGPT 与 Google / Antigravity 的已有认证。</p></section>}
+      <ProjectHub status={status} onOpenFeishu={() => openAgentSettings('feishu')} onOpenAutonomyTask={openAutonomyTask} jobs={jobs} attachmentIds={(groupsView ? groupContext : context).attachment_ids} onAttachmentIds={(ids) => (groupsView ? setGroupContext : setContext)((previous) => ({ ...previous, attachment_ids: ids }))} includeShared={(groupsView ? groupContext : context).include_project_assets} onIncludeShared={(enabled) => (groupsView ? setGroupContext : setContext)((previous) => ({ ...previous, include_project_assets: enabled }))} onOpenJob={selectJob} onOpenReview={(id) => openProjects({ project_id: id })} /><div className={`workspace-shell ${artifactsOpen && previewJob ? 'artifacts-visible' : ''} ${previewJob && artifactsOpen && mobileArtifactsOpen ? 'mobile-artifacts-open' : ''}`} style={{ '--artifact-width': `${artifactWidth}px` }}><>{agentsView ? <AgentSettings key={`${activeProjectId || "unassigned"}:${agentSettingsSection}`} initialSection={agentSettingsSection} status={status} models={models} onOpenNavigation={openNavigation} onOpenGroups={openGroups} onStartGroup={openGroupWithTeam} onOpenLibrary={() => openPlatform("agents")} onRefresh={refresh} /> : groupsView ? <GroupWorkspace onOpenAgentSettings={openAgentSettings} key={`${activeProjectId || "unassigned"}:${groupTarget?.projectId === activeProjectId ? groupTarget?.initialTeam?.id || groupTarget?.roomId || "saved" : "saved"}`} initialRoomId={groupTarget?.projectId === activeProjectId ? groupTarget?.roomId : undefined} initialJob={groupTarget?.projectId === activeProjectId ? groupTarget?.initialJob : undefined} initialTeam={groupTarget?.projectId === activeProjectId ? groupTarget?.initialTeam : undefined} renderIntegration={(props) => hostIsMacos(status) ? (REMOTE_CLIENT ? <p className="group-remote-muse-note">Muse 原生窗口操作请在{machineShort(status)}完成。项目讨论与 Agent 任务可在此继续。</p> : <MuseDesktopPanel key={`${props.projectId || "unassigned"}:${props.roomId}`} {...props} />) : <p className="group-remote-muse-note">Muse 原生窗口操作仅在 Mac 上可用；当前主机不是 Mac。项目讨论与 Agent 任务可在此继续。</p>} status={status} models={models} context={groupContext} onContextChange={setGroupContext} onOpenNavigation={openNavigation} onOpenProjects={() => openProjects({ project_id: activeProjectId })} onOpenArtifacts={showMissionArtifact} onClearArtifacts={clearMissionArtifact} artifactsVisible={previewVisible} onCloseArtifacts={closeArtifacts} onResultShortcutChange={registerGroupResultShortcut} onToggleArtifacts={toggleArtifacts} /> : missionView ? <MissionWorkspace key={activeProjectId || 'unassigned'} status={status} models={models} onModelsChange={setModels} context={context} onContextChange={setContext} jobs={scopedJobs} onOpenNavigation={openNavigation} onOpenProjects={() => openProjects({ project_id: activeProjectId })} onOpenArtifacts={showMissionArtifact} onClearArtifacts={clearMissionArtifact} artifactsVisible={previewVisible} onCloseArtifacts={closeArtifacts} onResultShortcutChange={registerGroupResultShortcut} onToggleArtifacts={toggleArtifacts} /> : todoView ? <TodoBoard onOpenResult={openTodoResult} onOpenNavigation={openNavigation} /> : platformView ? <PlatformWorkspace key={platformSection} section={platformSection} onSection={openPlatform} status={status} jobs={scopedJobs} models={models} context={context} onContextChange={setContext} onUsePrompt={usePrompt} onUseAgent={useAgent} onRunJob={onPlatformRun} onOpenArtifacts={(next) => { artifactRequest.current += 1; setArtifactJob(hydrateJob(next)); setArtifactsOpen(true); setMobileArtifactsOpen(true); }} onOpenProjects={projectHub.openCreate} onStartCollaboration={openMissions} onOpenJob={selectJob} onOpenNavigation={openNavigation} /> : projectView ? <ProjectWorkspace key={`${activeProjectId || 'default'}:${projectTarget?.review_id || 'latest'}`} addRequested={0} activeProjectId={activeProjectId} onSelectSharedProject={projectHub.selectProject} attachmentContext={context} onAttachmentContextChange={setContext} initialProjectId={activeProjectId} initialReviewId={projectTarget?.project_id === activeProjectId ? projectTarget.review_id : undefined} onOpenArtifacts={(next) => { artifactRequest.current += 1; setArtifactJob(hydrateJob(next)); setArtifactsOpen(true); setMobileArtifactsOpen(true); }} status={status} jobs={jobs} models={reviewModels.length ? reviewModels : models} onModelsChange={(next) => { setReviewModels(next); localStorage.setItem('modeldesk.reviewModels', JSON.stringify(next)); }} onRefresh={refresh} onOpenNavigation={openNavigation} /> : <main className="workspace">
+      <header className="workspace-header conversation-header">
+        <div className="header-title">
+          <button type="button" className="mobile-menu icon-button" aria-label="打开导航" onClick={openNavigation}><Icon name="menu" /></button>
+          <span className="mode-header-icon"><Icon name={config.icon} size={22} /></span>
+          <div><h1 title={job ? taskTitle(job.prompt) : undefined}>{job ? taskTitle(job.prompt) : '协作工作台'}</h1><span>{job && job.mode !== mode ? '下一轮：' : ''}{config.label} · {config.source}</span></div>
+        </div>
+        <div className="header-actions">
+          <button type="button" className="subtle-button header-icon-action" aria-label="设置" title="设置" aria-expanded={settingsOpen} onClick={() => setSettingsOpen(!settingsOpen)}><Icon name="settings" size={16} /><span className="header-action-label">设置</span></button>
+          <button type="button" disabled={!canOpenPreview} className={`subtle-button header-icon-action ${previewVisible ? 'selected' : ''}`} aria-label="最终产物" title="最终产物" aria-expanded={previewVisible} onClick={toggleArtifacts}><Icon name="layers" size={16} /><span className="header-action-label">最终产物</span></button>
+          <ConversationMoreActions job={job} status={status} refreshing={refreshing} canSavePrompt={Boolean(prompt.trim())} onRefresh={manualRefresh} onConnections={() => openAgentSettings('connections')} onSavePrompt={savePrompt} />
+        </div>
+      </header>
       <div className="context-toolbar"><label className="conversation-memory"><input type="checkbox" checked={rememberConversation} disabled={running || starting} onChange={(event) => { setRememberConversation(event.target.checked); localStorage.setItem('modeldesk.conversationMemory', event.target.checked ? 'on' : 'off'); }} /><Icon name="memory" size={16} /><span>{rememberConversation ? '会话记忆已开启' : '本轮不引用历史'}</span></label><span className="conversation-turns">{job ? `${priorTurns.length + 1} 轮记录` : '新会话'}</span><button className="context-source-trigger" onClick={() => setSettingsOpen(!settingsOpen)}><Icon name="folder" size={15} />资料与工具{context.knowledge_ids.length + context.memory_ids.length + (context.snapshot_id ? 1 : 0) > 0 && <b>{context.knowledge_ids.length + context.memory_ids.length + (context.snapshot_id ? 1 : 0)}</b>}</button><button className="current-models" title={models.join(' + ')} onClick={() => { setSettingsOpen(true); setModelMenu(true); }} disabled={running || starting}>{models.length ? `${models.length} 个模型` : '选择模型'}<Icon name="chevron" size={14} /></button></div>
       {settingsOpen && <section className="workbench-settings" aria-label="协作设置"><div className="settings-heading"><strong>本会话设置</strong><span>默认配置即可开始，高级功能按需启用。</span><button className="icon-button" aria-label="收起协作设置" onClick={() => setSettingsOpen(false)}><Icon name="close" size={16} /></button></div>
       <section className="configuration-bar" aria-label="模型与任务设置"><div className="model-control"><span className="control-label">参与模型</span><ModelPicker label="选择参与模型" value={models} onChange={chooseModels} multiple disabled={running || starting} open={modelMenu} onOpenChange={setModelMenu} /></div>{mode === 'council' && <div className="inline-setting"><span>主席</span><ModelPicker label="Council 主席模型" value={chairman} onChange={setChairman} disabled={running} /></div>}{['camel', 'camel_workforce', 'group'].includes(mode) && <label className="inline-setting"><span>讨论轮数</span><select value={rounds} onChange={(e) => setRounds(Number(e.target.value))} disabled={running}>{[1, 2, 3, 4, 5, 6].map((n) => <option key={n} value={n}>{n} 轮</option>)}</select></label>}{roleMode && <span className="role-assignment">{configuration.agents.map((agent) => agent.role || '未命名角色').join(' / ')}，可编辑分工</span>}</section>
@@ -492,6 +586,6 @@ function ModelDeskWorkspace() {
         {jobId && !job ? <StagePending text="正在读取保存的记录" running /> : job ? <article className="job-detail"><div className="prompt-heading"><span className="prompt-label">{job.mode === 'chat' ? '你的问题' : '任务要求'}</span><div className={`job-status status-${job.status}`}>{running && <span className="activity-dot" />}{STATUS_LABELS[job.status] || job.status}</div><time>{dateLabel(job.created_at)}</time></div><div className="prompt-text"><Markdown>{job.prompt}</Markdown><JobAttachments job={job} /><div className="prompt-actions"><CopyTextButton text={job.prompt} label="复制提问" /><button className="subtle-button" onClick={() => { setPrompt(job.prompt); inputRef.current?.focus(); }}>编辑再用</button></div></div>{running && <div className="run-progress"><span className="small-spinner" /><span>{lastLog || (mode === 'chat' ? '各模型正在独立回答，可随时停止' : mode === 'council' ? '正在执行独立回答、匿名评审与主席综合' : mode === 'group' ? '群聊模型正在依次阅读记录并发言' : '正在执行角色分工与协作')}</span></div>}{streamError && running && <div className="stream-warning">实时连接暂时中断，正在重连。后台任务继续运行。</div>}<WorkflowFailureNotice job={job} onPrepare={roleMode && !running ? prepareFailedTask : undefined} />{job.status === 'cancelled' && !['camel', 'crewai'].includes(job.mode) && <p className="result-note">任务已停止。已收到的内容保留在记录中。</p>}<JobOutput key={job.id} job={job} conversationView /><ResultProvenance job={job} /></article> : <div className="empty-workspace"><div className="workspace-illustration" aria-hidden="true"><div className="illustration-input"><span /><span /></div><div className="illustration-lines"><i /><i /></div><div className="illustration-responses"><div><b className="illustration-model">O</b><span /><span /><span /></div><div><b className="illustration-model gemini-mark">G</b><span /><span /><span /></div></div></div><h2>{mode === 'chat' ? '一个问题，多种思路' : mode === 'council' ? '让回答接受另一轮审视' : mode === 'camel' ? '把想法放进一场讨论' : mode === 'group' ? '让不同模型接着聊' : '把任务交给一个协作团队'}</h2><p>{config.description}</p><button className="example-prompt" onClick={() => { setPrompt(config.example); inputRef.current?.focus(); }}><span>试一试</span>{config.example}<Icon name="plus" size={17} /></button><div className="empty-flow">{mode === 'chat' ? <><span>统一提问</span><i /><span>同时回答</span><i /><span>并排比较</span></> : mode === 'council' ? <><span>独立回答</span><i /><span>匿名互评</span><i /><span>主席综合</span></> : mode === 'camel' ? <><span>研究员提出</span><i /><span>审稿人质询</span><i /><span>多轮完善</span></> : mode === 'group' ? <><span>共享话题</span><i /><span>依次接话</span><i /><span>多轮讨论</span></> : <><span>明确任务</span><i /><span>起草方案</span><i /><span>审查交付</span></>}</div></div>}
       </div>
       <div className="composer-wrap"><form className="composer" onSubmit={send} onDragOver={(event) => { if (event.dataTransfer.types.includes("Files")) event.preventDefault(); }} onDrop={(event) => attachmentRef.current?.handleDrop(event)}><AttachmentComposer ref={attachmentRef} attachmentIds={context.attachment_ids} onChange={(ids) => setContext((previous) => ({ ...previous, attachment_ids: ids }))} includeShared={context.include_project_assets} onIncludeShared={(enabled) => setContext((previous) => ({ ...previous, include_project_assets: enabled }))} onPendingChange={setAttachmentPending} disabled={running || starting} /><textarea onPaste={(event) => attachmentRef.current?.handlePaste(event)} ref={inputRef} aria-label={mode === 'chat' ? '输入问题' : '输入任务要求'} value={prompt} onChange={(e) => setPrompt(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); send(e); } }} rows={3} placeholder={job && rememberConversation ? '继续当前会话，例如：根据上面的结果，再完善一下…' : '描述你希望团队完成的任务…'} disabled={running || starting} /><div className="composer-footer"><span>{job && rememberConversation ? '接续当前会话 · Enter 发送，Shift + Enter 换行' : 'Enter 发送，Shift + Enter 换行'}{!selectionValid && <strong>{configurationErrors[0] || (mode === 'camel' ? '请选择恰好两个模型' : `请至少选择 ${minimum} 个模型`)}</strong>}</span>{running ? <button className="stop-button" type="button" disabled={canceling} onClick={cancel}><Icon name="stop" size={16} />{canceling ? '正在停止' : '停止运行'}</button> : <button className="primary-button" type="submit" disabled={!canSubmit}><Icon name="send" size={16} />{starting ? '正在启动' : config.action}</button>}</div></form><div className="composer-note"><span>会话和草稿自动保存在本机</span><button type="button" onClick={newTask} disabled={running || starting}>新建独立会话</button><button type="button" disabled={!prompt} onClick={savePrompt}>存为提示</button><button type="button" disabled={!prompt} onClick={() => setPrompt('')}>清空输入</button></div></div>
-    </main>}</>{artifactsOpen && (artifactJob || (!agentsView && !groupsView && !missionView && !todoView && !platformView && !projectView && job)) && <div className="artifact-dock"><div className="artifact-resizer" role="separator" aria-label="调整成果面板宽度" aria-orientation="vertical" aria-valuemin={320} aria-valuemax={Math.max(320, Math.min(680, window.innerWidth - 744))} aria-valuenow={artifactWidth} tabIndex={0} onPointerDown={resizeArtifacts} onKeyDown={(event) => { if (['ArrowLeft', 'ArrowRight'].includes(event.key)) { event.preventDefault(); const next = Math.max(320, Math.min(Math.max(320, Math.min(680, window.innerWidth - 744)), artifactWidth + (event.key === 'ArrowLeft' ? 24 : -24))); setArtifactWidth(next); localStorage.setItem('modeldesk.artifactWidth', String(next)); } }} /><ArtifactPanel job={artifactJob || job} onClose={toggleArtifacts} /></div>}</div></div>
+    </main>}</>{artifactsOpen && previewJob && <div className="artifact-dock"><div className="artifact-resizer" role="separator" aria-label="调整成果面板宽度" aria-orientation="vertical" aria-valuemin={320} aria-valuemax={Math.max(320, Math.min(680, window.innerWidth - 744))} aria-valuenow={artifactWidth} tabIndex={0} onPointerDown={resizeArtifacts} onKeyDown={(event) => { if (['ArrowLeft', 'ArrowRight'].includes(event.key)) { event.preventDefault(); const next = Math.max(320, Math.min(Math.max(320, Math.min(680, window.innerWidth - 744)), artifactWidth + (event.key === 'ArrowLeft' ? 24 : -24))); setArtifactWidth(next); localStorage.setItem('modeldesk.artifactWidth', String(next)); } }} /><ArtifactPanel key={previewJob.id} job={previewJob} onClose={closeArtifacts} /></div>}</div></div>
   </div></ModelCatalogProvider>;
 }

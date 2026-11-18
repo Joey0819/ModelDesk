@@ -1,0 +1,31 @@
+.workspace-destinations { flex-shrink: 0; }
+.sidebar-workspace-grid .todo-entry { grid-column: 1 / -1; }
+.modeldesk .workspace-destinations .sidebar-workspace-grid .sidebar-grid-tile {
+  gap: 5px;
+  padding-inline: 7px;
+}
+.modeldesk .workspace-destinations .sidebar-navigation-tabs button { white-space: nowrap; }
+.modeldesk .workspace-destinations .new-task.new-task-inline {
+  flex: 0 0 auto;
+  gap: 4px;
+  color: var(--accent);
+}
+.modeldesk .workspace-destinations .sidebar-navigation-tabs button:not(.new-task) { color: var(--ink); }
+.modeldesk .workspace-destinations .sidebar-navigation-tabs button[aria-current] { color: var(--accent); }
+.modeldesk[data-theme=dark] .workspace-destinations .sidebar-navigation-tabs button[aria-current] { color: #c0cbff; }
+.modeldesk .navigation-disclosure > button[aria-expanded=true] > svg:last-child { transform: rotate(90deg); }
+.modeldesk .workspace-destinations button:focus-visible,
+.modeldesk .sidebar-primary-navigation button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+@media (max-width: 820px) {
+  .modeldesk > .sidebar:not(.sidebar-open) { visibility: hidden; }
+  .modeldesk > .sidebar.sidebar-open { overflow-y: auto; }
+  .modeldesk > .sidebar .sidebar-collapse-btn { display: none; }
+  .modeldesk.sidebar-collapsed > .sidebar.sidebar-open { display: flex; }
+  .modeldesk.sidebar-collapsed .sidebar-expand-rail { display: none; }
+  .modeldesk .workspace-destinations button,
+  .modeldesk .sidebar-primary-navigation button { min-height: 38px; }
+}

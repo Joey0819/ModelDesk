@@ -155,6 +155,8 @@
 .platform-tool-catalog button.selected { background: #f4f7ff; border-color: #cad7ed; }
 .platform-tool-catalog strong { font-size: 12px; font-weight: 450; color: #849ab8; }
 .platform-tool-catalog p { font-size: 10px; line-height: 1.9; color: #a4b6d0; margin: 6px 0 0; }
+.platform-catalog-error { flex-wrap: wrap; overflow-wrap: anywhere; }
+.mcp-manager aside > :is(.platform-catalog-error, .resource-empty) { flex-shrink: 0; max-width: 100%; }
 .tool-invoke-panel { border: 1px solid #e1e8f2; background: #fff; padding: 23px; border-radius: 8px; }
 .tool-invoke-panel > header strong { display: block; font-size: 14px; font-weight: 500; color: #88a0bf; }
 .tool-invoke-panel header span { display: block; font-size: 10px; color: #aabdd7; margin: 7px 0 15px; }

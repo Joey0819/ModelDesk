@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { REMOTE_CLIENT } from '../api-base';
 import { todoApi } from '../todo-api';
+import { Icon } from './WorkbenchResults';
 import { COLUMNS, groupByStatus, computeReorder, filterTasks, countByStatus, validateTask, buildTaskPayload, isFleetReassignment, todoResultRef } from '../todo-state';
 import './TodoBoard.css';
 import './TodoBoardTheme.css';
@@ -157,7 +158,7 @@ function TaskModal({ task, onClose, onSave, onDelete, saving }) {
   );
 }
 
-export default function TodoBoard({ onOpenResult }) {
+export default function TodoBoard({ onOpenResult, onOpenNavigation }) {
   const [tasks, setTasks] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -370,9 +371,18 @@ export default function TodoBoard({ onOpenResult }) {
     setModalOpen(true);
   };
 
+  const header = <header className="workspace-header">
+    <div className="header-title">
+      {onOpenNavigation && <button type="button" className="mobile-menu icon-button" aria-label="打开导航" onClick={onOpenNavigation}><Icon name="menu" /></button>}
+      <span className="mode-header-icon"><Icon name="dashboard" size={22} /></span>
+      <h1>任务看板</h1>
+    </div>
+  </header>;
+
   if (loading) {
     return (
       <main className="workspace todo-board">
+        {header}
         <div className="todo-loading"><div className="todo-spinner" /><span>加载任务看板…</span></div>
       </main>
     );
@@ -381,6 +391,7 @@ export default function TodoBoard({ onOpenResult }) {
   if (error && tasks.length === 0) {
     return (
       <main className="workspace todo-board">
+        {header}
         <div className="todo-error">
           <span>{error}</span>
           <button onClick={loadTasks}>重试</button>
@@ -391,6 +402,7 @@ export default function TodoBoard({ onOpenResult }) {
 
   return (
     <main className="workspace todo-board">
+      {header}
       <div className="todo-toolbar">
         <button type="button" className="todo-new-task" onClick={() => openNewTask()}>+ 新建任务</button>
         <input type="text" placeholder="搜索任务…" value={search} onChange={(e) => setSearch(e.target.value)} />

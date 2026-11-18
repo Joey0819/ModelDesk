@@ -98,11 +98,14 @@ export function buildCommandItems({
   theme = 'light',
   sidebarCollapsed = false,
   artifactsOpen = true,
+  canOpenArtifacts = true,
+  includeOlder = false,
   history = [],
   projects = [],
   activeProjectId = null,
   onOpenGroups,
   onOpenMissions,
+  onOpenTodo,
   onOpenProjects,
   onOpenAgentSettings,
   onSelectMode,
@@ -122,7 +125,6 @@ export function buildCommandItems({
       subtitle: '固定成员、@点名、自动交付与 Muse / Codex 协同',
       keywords: 'group chat room 项目群聊 群组 muse codex claude',
       icon: 'group',
-      shortcut: 'G',
       action: onOpenGroups,
     },
     {
@@ -132,8 +134,16 @@ export function buildCommandItems({
       subtitle: '多引擎接力执行与人工审阅关卡',
       keywords: 'mission tasks 协作任务 流水线',
       icon: 'tasks',
-      shortcut: 'M',
       action: onOpenMissions,
+    },
+    {
+      id: 'nav:todo',
+      category: '核心工作区',
+      title: '打开任务看板',
+      subtitle: '查看待办、进行中和已完成的任务',
+      keywords: 'todo kanban board 任务看板 待办',
+      icon: 'dashboard',
+      action: onOpenTodo,
     },
     {
       id: 'nav:projects',
@@ -142,7 +152,6 @@ export function buildCommandItems({
       subtitle: '管理共享文件、图片、Git 快照与代码评审',
       keywords: 'project files assets 项目 资料 文件夹',
       icon: 'folder',
-      shortcut: 'P',
       action: onOpenProjects,
     },
     {
@@ -152,7 +161,6 @@ export function buildCommandItems({
       subtitle: '配置协作组、外部 API Key、Grok 与 Muse 桥接',
       keywords: 'agents settings api key connection 模型 连接 设置',
       icon: 'settings',
-      shortcut: 'A',
       action: () => onOpenAgentSettings?.('agents'),
     },
     {
@@ -171,7 +179,6 @@ export function buildCommandItems({
       subtitle: `在当前模式（${modes[mode]?.label || mode}）下开始新任务`,
       keywords: 'new chat task 新建会话 清空',
       icon: 'plus',
-      shortcut: 'N',
       action: onNewConversation,
     },
     {
@@ -184,7 +191,7 @@ export function buildCommandItems({
       shortcut: '⌘B',
       action: onToggleSidebar,
     },
-    {
+    ...(canOpenArtifacts ? [{
       id: 'action:toggle-artifacts',
       category: '界面与视图',
       title: artifactsOpen ? '收起右侧成果预览栏' : '展开右侧成果预览栏',
@@ -193,7 +200,7 @@ export function buildCommandItems({
       icon: 'layers',
       shortcut: '⌘.',
       action: onToggleArtifacts,
-    },
+    }] : []),
     {
       id: 'action:toggle-theme',
       category: '界面与视图',
@@ -226,7 +233,7 @@ export function buildCommandItems({
     });
   });
 
-  projects.slice(0, 8).forEach((project) => {
+  (includeOlder ? projects : projects.slice(0, 8)).forEach((project) => {
     const isCurrent = project.id === activeProjectId;
     items.push({
       id: `project:${project.id}`,
@@ -239,7 +246,7 @@ export function buildCommandItems({
     });
   });
 
-  history.slice(0, 12).forEach((group) => {
+  (includeOlder ? history : history.slice(0, 12)).forEach((group) => {
     const latest = group.latest;
     if (!latest) return;
     const isGroupRoom = Boolean(latest.group_room_id);

@@ -7,10 +7,19 @@ import { buildSync } from 'esbuild';
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const compiled = buildSync({ stdin: { contents: 'export {ApprovalCard,TaskCard} from "./src/components/GroupAgentTasks.jsx";', resolveDir: root }, bundle: true, platform: 'node', format: 'cjs', jsx: 'automatic', write: false, external: ['react', 'react/jsx-runtime'], define: { 'import.meta.env': '{}' }, loader: { '.css': 'empty' } });
+const compiled = buildSync({ stdin: { contents: 'export {default as GroupAgentTasks,ApprovalCard,TaskCard} from "./src/components/GroupAgentTasks.jsx";', resolveDir: root }, bundle: true, platform: 'node', format: 'cjs', jsx: 'automatic', write: false, external: ['react', 'react/jsx-runtime'], define: { 'import.meta.env': '{}' }, loader: { '.css': 'empty' } });
 const filename = path.join(root, 'tests/group-task-virtual.cjs');
 const module = new Module(filename); module.paths = Module._nodeModulePaths(path.dirname(filename)); module._compile(compiled.outputFiles[0].text, filename);
-const { ApprovalCard, TaskCard } = module.exports;
+const { GroupAgentTasks, ApprovalCard, TaskCard } = module.exports;
+
+test('unassigned rooms show a project action without mounting task loading or the composer', () => {
+  for (const kind of ['code', 'review']) {
+    const html = renderToStaticMarkup(React.createElement(GroupAgentTasks, { projectId: null, room: { id: 'unassigned-room' }, kind, onOpenProjects() {} }));
+    assert.match(html, /先为这个协作群选择项目/);
+    assert.match(html, /<button[^>]*>选择本地项目<\/button>/);
+    assert.doesNotMatch(html, /正在读取成员任务|正在检测本机|<form|role="alert"/);
+  }
+});
 
 test('actual approval card exposes local destination and pinned evidence without pretending to push GitHub', () => {
   const html = renderToStaticMarkup(React.createElement(ApprovalCard, { card: { id: 'approval', status: 'pending', title: 'Fix the export', target_branch: 'main', base_sha: 'base123', patch_sha256: 'patch123', changed_files: [{ path: 'a.py' }], review_output: 'Tests were not available.' }, onDecision() {} }));

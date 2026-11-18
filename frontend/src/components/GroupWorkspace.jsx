@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { workbenchApi } from '../api';
 import { API_BASE, REMOTE_CLIENT } from '../api-base';
-import { managedDeliveryMedia, managedWorkerDocuments } from '../delivery-media';
+import { artifactCategory, deriveArtifacts, deriveRoomArtifacts } from '../artifacts';
 import { groupApi } from '../group-api';
 import { groupTaskApi } from '../group-task-api';
-import { TASK_LABELS, taskActive, taskDraftKey, taskEngineLabel, readTaskDraft } from '../group-task-state';
+import { TASK_LABELS, taskActive, taskDraftKey, taskEngineLabel, readTaskDraft, withFetchedPatch } from '../group-task-state';
 import {
   MUSE_STATUS,
   canUseMuseReply,
@@ -40,6 +41,8 @@ import {
   groupTimeline,
   groupMessageRequest,
   groupScopeKey,
+  groupSubmissionMatches,
+  mergeRoomJobs,
   readGroupDraft,
   readGroupSelection,
   scopedRooms,
@@ -69,6 +72,8 @@ import './GroupWorkspace.css';
 
 const statuses = { queued: '等待发言', running: '正在讨论', complete: '本轮已完成', error: '本轮失败', cancelled: '已停止', interrupted: '已中断' };
 const dateLabel = (date) => date ? new Date(date).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : '';
+const workModes = [['discussion', '群聊与协同', 'chat'], ['code', '代码 Agent', 'tasks'], ['review', '补丁审阅', 'council']];
+const compactModeLabels = { discussion: '群聊', code: '代码', review: '审阅' };
 
 function GroupTaskPrompt({ task, name, engine, copyLabel }) {
   const automatic = Boolean(task.parent_job_id);
@@ -130,8 +135,7 @@ export function GroupDeliveryModeSelector({ value, onChange, disabled = false })
 export function GroupDeliveryProgress({ job, onOpenArtifacts }) {
   const delivery = job.result?.delivery || {};
   const active = groupActive(job);
-  const content = typeof delivery.content === 'string' && delivery.content.trim();
-  const hasOutput = Boolean(content || managedDeliveryMedia(job, API_BASE).length || managedWorkerDocuments(job, API_BASE).length);
+  const hasOutput = deriveArtifacts({ ...job, mode: 'group' }, API_BASE).length > 0;
   const stopped = ['cancelled', 'interrupted', 'error'].includes(job.status);
   const state = stopped ? hasOutput ? 'partial' : 'blocked' : delivery.status || (active ? 'planning' : 'blocked');
   const filesAwaitReview = state === 'partial' && delivery.media?.length > 0 && delivery.validation?.mechanical_checks?.length > 0 && delivery.validation.mechanical_checks.every((check) => check.met === true) && delivery.steps?.every((step) => step.status === 'complete');
@@ -141,7 +145,7 @@ export function GroupDeliveryProgress({ job, onOpenArtifacts }) {
   const plannerLabel = { pending: '正在等待 MCP 统筹计划', accepted: 'MCP 统筹计划已通过校验', rejected: 'MCP 统筹计划未通过校验', blocked: 'MCP 统筹未完成', cancelled: 'MCP 统筹已停止' }[planner?.status];
   const limitations = Array.isArray(delivery.limitations) ? delivery.limitations.filter((item) => typeof item === 'string') : [];
   return <section className={`group-delivery-progress group-delivery-${state}`} aria-label="自动交付进度" aria-live={active ? 'polite' : 'off'}>
-    <header>{active ? <span className="small-spinner" /> : <Icon name="file" size={16} />}<strong>{label || '正在同步交付进度'}</strong>{hasOutput && <button className="subtle-button" type="button" onClick={() => onOpenArtifacts(job, true)}><Icon name="panel" size={14} />{state === 'complete' ? '查看完整成果' : filesAwaitReview ? '查看文件与验收意见' : '查看部分成果'}</button>}</header>
+    <header>{active ? <span className="small-spinner" /> : <Icon name="file" size={16} />}<strong>{label || '正在同步交付进度'}</strong>{hasOutput && <button className="subtle-button group-delivery-action" type="button" onClick={() => onOpenArtifacts(job, true)}><Icon name="panel" size={14} />{state === 'complete' ? '查看完整成果' : filesAwaitReview ? '查看文件与验收意见' : '查看部分成果'}</button>}</header>
     {delivery.title && <p className="group-delivery-title">{delivery.title}</p>}
     {plannerLabel && <p className="group-delivery-title">{plannerLabel}</p>}
     {steps.length > 0 && <details className="group-execution-details"><summary>分工与执行 · {steps.filter((step) => step.status === 'complete').length}/{steps.length} 已完成{steps.some((step) => step.status === 'error') ? ' · 有步骤失败' : ''}</summary><ol>{steps.map((step, index) => <li key={step.id || index} className={`group-delivery-step-${step.status}`}><div><strong>{step.member_name || step.member_id || '协作成员'}</strong><span>{GROUP_DELIVERY_STEP_STATUS[step.status] || '状态待同步'}</span></div>{step.instruction && <p>{step.instruction}</p>}<HandoffReceipt step={step} />{step.kind === 'mcp' && step.task_id && step.task_observation && <McpTaskControls step={step} />}{step.error && <p className="output-error">{step.error}</p>}</li>)}</ol></details>}
@@ -152,38 +156,34 @@ export function GroupDeliveryProgress({ job, onOpenArtifacts }) {
   </section>;
 }
 
-export function GroupLiveActivityBar({ activeJob, museTasks = [], agentTasks = [], onScrollToLatest, onOpenMuse, onOpenCodeTasks, onCancelJob }) {
+export function GroupLiveActivityBar({ activeJob, museTasks = [], agentTasks = [], onScrollToLatest, onOpenMuse, onOpenCodeTasks }) {
   const activeMuse = (Array.isArray(museTasks) ? museTasks : []).filter((task) => task.monitoring || ['queued', 'running'].includes(task.status));
   const activeAgents = (Array.isArray(agentTasks) ? agentTasks : []).filter(taskActive);
   const jobRunning = groupActive(activeJob);
   if (!jobRunning && !activeMuse.length && !activeAgents.length) return null;
   const deliverySteps = Array.isArray(activeJob?.result?.delivery?.steps) ? activeJob.result.delivery.steps : [];
   const runningStep = deliverySteps.find((step) => step.status === 'running');
-  return <div className="group-live-activity-bar" role="status" aria-label="实时协作状态条">
-    <span className="small-spinner" />
-    <strong>实时协同中</strong>
-    <div className="group-live-badges">
+  return <div className="group-live-activity-bar">
+    <div className="group-live-badges" role="status" aria-label="实时协同中">
+      <span className="small-spinner" aria-hidden="true" />
       {jobRunning && (
         <span className="group-live-badge group-live-llm">
           {runningStep ? `${runningStep.member_name || '成员'} 正在执行` : groupDeliveryMode(activeJob) === 'auto' ? '自动统筹与交付中' : '群内模型依次发言中'}
         </span>
       )}
       {activeMuse.length > 0 && (
-        <span className="group-live-badge group-live-muse">
+        <button type="button" className="group-live-badge group-live-muse" onClick={onOpenMuse} disabled={!onOpenMuse}>
           Muse 窗口同步中 ({activeMuse.length})
-        </span>
+        </button>
       )}
       {activeAgents.length > 0 && (
-        <span className="group-live-badge group-live-agent">
-          代码 Agent 运行中 ({activeAgents.map((task) => task.member?.name || taskEngineLabel(task)).join('、')})
-        </span>
+        <button type="button" className="group-live-badge group-live-agent" onClick={() => onOpenCodeTasks(activeAgents[0].kind === 'review' ? 'review' : 'code')} disabled={!onOpenCodeTasks}>
+          代码 Agent 运行中 ({activeAgents.length})
+        </button>
       )}
     </div>
     <div className="group-live-actions">
       {onScrollToLatest && <button type="button" className="subtle-button" onClick={onScrollToLatest}>定位进度 ↓</button>}
-      {activeMuse.length > 0 && onOpenMuse && <button type="button" className="subtle-button" onClick={onOpenMuse}>查看 Muse</button>}
-      {activeAgents.length > 0 && onOpenCodeTasks && <button type="button" className="subtle-button" onClick={() => onOpenCodeTasks('code')}>查看代码任务</button>}
-      {jobRunning && onCancelJob && <button type="button" className="subtle-button" onClick={onCancelJob}>停止本轮</button>}
     </div>
   </div>;
 }
@@ -198,16 +198,18 @@ export function GroupTurn({ job, room, onOpenArtifacts, onSendToMuse, onHandOffT
   const recipients = groupRecipients(job, room);
   const automatic = groupDeliveryMode(job) === 'auto';
   const MessageContainer = automatic ? 'details' : 'div';
-  return <article className="group-room-turn" aria-label={`群聊记录 ${dateLabel(job.created_at)}`}>
+  const hasDiscussionOutput = !automatic && deriveArtifacts({ ...job, mode: 'group' }).length > 0;
+  return <article className="group-room-turn" data-group-job={job.id} tabIndex={-1} aria-label={`群聊记录 ${dateLabel(job.created_at)}`}>
     <div className="group-user-message"><header><strong>你</strong><time>{dateLabel(job.created_at)}</time><CopyTextButton text={job.prompt} label="复制这条提问" /></header><div className="group-turn-recipients">{recipients.map((member) => <span key={member.id}>@{member.name}</span>)}{job.rounds > 1 && <span>共 {job.rounds} 轮深研</span>}</div><TaskPrompt text={job.prompt} /><JobAttachments job={job} />{job.group_muse_source && <details className="group-muse-provenance"><summary>引用了 Muse 实际回复</summary><p>{job.group_muse_source.prompt}</p>{safeMuseThreadUrl(job.group_muse_source.thread_url) && <a href={safeMuseThreadUrl(job.group_muse_source.thread_url)} target="_blank" rel="noopener noreferrer">打开原始 Muse 会话 ↗</a>}<Markdown>{job.group_muse_source.response}</Markdown>{job.group_muse_source.truncated && <p>引用超过保存预算，完整回复保留在原始 Muse 任务中。</p>}<p>{job.group_muse_source.verification}</p><CopyTextButton text={job.group_muse_source.response} label="复制引用的 Muse 回复" /></details>}</div>
     {automatic && <GroupDeliveryProgress job={job} onOpenArtifacts={onOpenArtifacts} />}
-    <MessageContainer className={automatic ? "group-delivery-discussion" : "group-discussion-messages"}>
+    {messages.length > 0 && <MessageContainer className={automatic ? "group-delivery-discussion" : "group-discussion-messages"}>
     {automatic && <summary>查看讨论与规划记录（{messages.length} 条）</summary>}
     {messages.map((message, index) => {
       const handoff = detectMessageHandoffIntent(message.content || '');
-      return <section className="group-member-message" style={{ '--member-color': groupMemberColor(message.member_id || message.model) }} key={`${message.member_id || message.model}-${message.round}-${index}`}><span className="group-member-avatar" aria-hidden="true">{message.member_name?.slice(0, 1) || 'A'}</span><div><header><strong>{message.member_name}</strong><small>{message.model}</small>{message.phase && <small className="group-phase-badge">{message.phase === 'plan' ? '统筹规划' : message.phase === 'synthesis' ? '统筹汇总' : '成员讨论'}</small>}{message.round > 1 && <small>第 {message.round} 轮</small>}</header>{message.error && <p className="output-error">发言失败：{message.error}</p>}{message.content && <Markdown>{message.content}</Markdown>}{message.incomplete && <p className="result-note">发言达到输出长度限制，内容可能不完整。</p>}<div className="group-message-actions"><CopyTextButton text={message.content || ''} label={`复制 ${message.member_name} 的发言`} /><button className="subtle-button" type="button" onClick={() => onOpenArtifacts(job, true)}><Icon name="panel" size={14} />查看本轮成果</button>{message.content && onQuoteReply && <button className="subtle-button" type="button" onClick={() => onQuoteReply(message, job)}>@{message.member_name} 追问</button>}{!automatic && message.content && onSendToMuse && handoff.isVideoStoryboard && <button className="subtle-button group-inline-muse-btn group-smart-handoff" type="button" onClick={() => onSendToMuse(message.content, job)}><span className="group-muse-mark">M</span>一键交给 @Muse 生成视频</button>}{!automatic && message.content && onSendToMuse && <button className="subtle-button group-inline-muse-btn" type="button" onClick={() => onSendToMuse(message.content, job)}><span className="group-muse-mark">M</span>准备 Muse 任务</button>}{!automatic && message.content && onHandOffToAgent && handoff.isCodeProposal && <button className="subtle-button group-smart-handoff" type="button" onClick={() => onHandOffToAgent(message.content, message.member_id, job.id)}>交给 @Codex 执行修改</button>}{!automatic && message.content && onHandOffToAgent && <button className="subtle-button" type="button" onClick={() => onHandOffToAgent(message.content, message.member_id, job.id)}>交由代码 Agent</button>}</div></div></section>;
+      return <section className="group-member-message" style={{ '--member-color': groupMemberColor(message.member_id || message.model) }} key={`${message.member_id || message.model}-${message.round}-${index}`}><span className="group-member-avatar" aria-hidden="true">{message.member_name?.slice(0, 1) || 'A'}</span><div><header><strong>{message.member_name}</strong><small>{message.model}</small>{message.phase && <small className="group-phase-badge">{message.phase === 'plan' ? '统筹规划' : message.phase === 'synthesis' ? '统筹汇总' : '成员讨论'}</small>}{message.round > 1 && <small>第 {message.round} 轮</small>}</header>{message.error && <p className="output-error">发言失败：{message.error}</p>}{message.content && <Markdown>{message.content}</Markdown>}{message.incomplete && <p className="result-note">发言达到输出长度限制，内容可能不完整。</p>}<div className="group-message-actions"><CopyTextButton text={message.content || ''} label={`复制 ${message.member_name} 的发言`} />{message.content && onQuoteReply && <button className="subtle-button" type="button" onClick={() => onQuoteReply(message, job)}>@{message.member_name} 追问</button>}{!automatic && message.content && onSendToMuse && handoff.isVideoStoryboard && <button className="subtle-button group-inline-muse-btn group-smart-handoff" type="button" onClick={() => onSendToMuse(message.content, job)}><span className="group-muse-mark">M</span>一键交给 @Muse 生成视频</button>}{!automatic && message.content && onSendToMuse && !handoff.isVideoStoryboard && <button className="subtle-button group-inline-muse-btn" type="button" onClick={() => onSendToMuse(message.content, job)}><span className="group-muse-mark">M</span>准备 Muse 任务</button>}{!automatic && message.content && onHandOffToAgent && handoff.isCodeProposal && <button className="subtle-button group-smart-handoff" type="button" onClick={() => onHandOffToAgent(message.content, message.member_id, job.id)}>交给 @Codex 执行修改</button>}{!automatic && message.content && onHandOffToAgent && !handoff.isCodeProposal && <button className="subtle-button" type="button" onClick={() => onHandOffToAgent(message.content, message.member_id, job.id)}>交由代码 Agent</button>}</div></div></section>;
     })}
-    </MessageContainer>
+    </MessageContainer>}
+    {hasDiscussionOutput && <button className="subtle-button group-discussion-preview" type="button" onClick={() => onOpenArtifacts(job, true)}><Icon name="panel" size={14} />查看本轮发言</button>}
     {!automatic && groupActive(job) && <p className="group-turn-running" role="status"><span className="small-spinner" />成员正在依次阅读上下文并发言…</p>}
     {job.error && <p className="output-error" role="alert">{job.error}</p>}
     {!automatic && !groupActive(job) && !messages.length && <p className="result-note">本轮没有收到模型发言。记录已保存，可以继续发送消息。</p>}
@@ -240,7 +242,49 @@ function GroupTeamSettings({ room, models, catalog, addRequested, onOpenAgentSet
   </dialog>;
 }
 
-function GroupRoom({ roomId, projectId, initialJob, status, models, context, onContextChange, onOpenArtifacts, onClearArtifacts, onOpenProjects, onOpenAgentSettings, renderIntegration, focusHistory, onToggleFocusHistory }) {
+function GroupHeader({ rooms, roomId, roomTitle, selectRoom, onOpenNavigation, workMode, onWorkModeChange, memberCount, onOpenRoster, onOpenMuse, focusHistory, onToggleFocusHistory, artifactsVisible, onToggleResults, resultAvailable }) {
+  const moreDialog = useRef(null);
+  const hasRoom = Boolean(roomId);
+  return <header className="workspace-header group-compact-header">
+    <button className="mobile-menu icon-button" aria-label="打开导航" onClick={onOpenNavigation}><Icon name="menu" /></button>
+    <h1 className="group-sr-only">{roomTitle || '项目群聊'}</h1>
+    <div className="group-room-switcher">
+      <Icon name="group" size={17} />
+      <select aria-label="打开项目群聊" title={roomTitle} value={roomId || ''} onChange={(event) => selectRoom(event.target.value || null)}>
+        <option value="">{hasRoom ? '＋ 新建群聊' : '新建项目群聊'}</option>
+        {hasRoom && !rooms.some((room) => room.id === roomId) && <option value={roomId}>{roomTitle || '正在读取群聊'}</option>}
+        {rooms.map((room) => <option key={room.id} value={room.id}>{room.title}</option>)}
+      </select>
+    </div>
+    {hasRoom && <>
+      <nav className="group-work-mode" aria-label="群聊协作方式">
+        {workModes.map(([id, label, icon]) => <button key={id} type="button" className={workMode === id ? 'selected' : ''} aria-current={workMode === id ? 'page' : undefined} onClick={() => onWorkModeChange(id)}>
+          <Icon name={icon} size={15} />{label}
+        </button>)}
+      </nav>
+      <div className="group-header-actions">
+        {onOpenRoster && <button type="button" className="subtle-button group-roster-trigger" aria-haspopup="dialog" aria-label={`成员与分工，${memberCount} 位成员`} onClick={onOpenRoster}><Icon name="group" size={16} /><span>成员 {memberCount}</span></button>}
+        <button type="button" className="subtle-button group-result-trigger" disabled={!resultAvailable && !artifactsVisible} aria-expanded={artifactsVisible} onClick={onToggleResults}><Icon name="panel" size={15} />成果</button>
+        <button type="button" className={`subtle-button group-more-trigger${focusHistory ? ' selected' : ''}`} aria-haspopup="dialog" aria-label="更多群聊操作" onClick={() => moreDialog.current?.showModal()}><Icon name="settings" size={15} /><span className="group-more-label">更多</span><span className="group-current-mode">{compactModeLabels[workMode]}<Icon name="chevron" size={11} /></span></button>
+      </div>
+      <dialog ref={moreDialog} className="group-options-dialog group-more-dialog" aria-labelledby="group-more-heading">
+        <header><h2 id="group-more-heading">群聊操作</h2><button className="icon-button" type="button" aria-label="关闭群聊操作" onClick={() => moreDialog.current?.close()}><Icon name="close" size={18} /></button></header>
+        <div className="group-options-body">
+          <div className="group-more-modes" role="group" aria-label="群聊协作方式">
+            {workModes.map(([id, label, icon]) => <button key={id} type="button" className="subtle-button" aria-pressed={workMode === id} onClick={() => { moreDialog.current?.close(); onWorkModeChange(id); }}><Icon name={icon} size={15} />{label}</button>)}
+          </div>
+          <div className="group-more-actions">
+            {onOpenMuse && <button type="button" className="subtle-button" onClick={() => { moreDialog.current?.close(); onOpenMuse(); }}><span className="group-muse-mark">M</span>Muse 面板</button>}
+            <button type="button" className="subtle-button" onClick={() => { moreDialog.current?.close(); onToggleFocusHistory(); }}><Icon name="expand" size={15} />{focusHistory ? '退出专注' : '专注阅读'}</button>
+            <button type="button" className="subtle-button" onClick={() => { moreDialog.current?.close(); selectRoom(null); }}><Icon name="plus" size={15} />新建群聊</button>
+          </div>
+        </div>
+      </dialog>
+    </>}
+  </header>;
+}
+
+function GroupRoom({ roomId, projectId, initialJob, header, status, models, context, onContextChange, onOpenArtifacts, onClearArtifacts, onCloseArtifacts, artifactsVisible, onResultShortcutChange, onOpenProjects, onOpenAgentSettings, renderIntegration, focusHistory, onToggleFocusHistory }) {
   const machine = machineInfo(status);
   const { assets, transfers } = useProjects();
   const [workMode, setWorkMode] = useState(() => { const value = localStorage.getItem(`modeldesk.group.mode.${projectId || 'none'}.${roomId}`); return !initialJob && ['code', 'review'].includes(value) ? value : 'discussion'; });
@@ -254,22 +298,27 @@ function GroupRoom({ roomId, projectId, initialJob, status, models, context, onC
   const [outputOptions, setOutputOptions] = useState({ outputFormat: saved.outputFormat, imageCount: saved.imageCount, mediaProvider: saved.mediaProvider });
   const [documentOptions, setDocumentOptions] = useState({ documentFormats: saved.documentFormats, documentLayout: saved.documentLayout });
   const [contextTurns, setContextTurns] = useState(saved.contextTurns);
-  const [contextMode, setContextMode] = useState('continue');
+  const [contextMode, setContextMode] = useState(saved.contextMode);
   const [attachmentPending, setAttachmentPending] = useState(false);
   const settingsDialog = useRef(null);
   const museDialog = useRef(null);
+  const rosterDialog = useRef(null);
   const [showLatest, setShowLatest] = useState(false);
-  const [selectedArtifactId, setSelectedArtifactId] = useState(() => initialJob?.id || localStorage.getItem(`modeldesk.group.artifact.${projectId || 'none'}.${roomId}`) || null);
+  const artifactKey = `modeldesk.group.artifact.${projectId || 'none'}.${roomId}`;
+  const [selectedArtifactId, setSelectedArtifactId] = useState(() => initialJob?.id || localStorage.getItem(artifactKey));
+  const [restoredResult, setRestoredResult] = useState(null);
   useEffect(() => {
-    const key = `modeldesk.group.artifact.${projectId || 'none'}.${roomId}`;
-    if (selectedArtifactId) localStorage.setItem(key, selectedArtifactId);
-    else localStorage.removeItem(key);
-  }, [selectedArtifactId, projectId, roomId]);
+    if (selectedArtifactId) localStorage.setItem(artifactKey, selectedArtifactId);
+    else localStorage.removeItem(artifactKey);
+  }, [selectedArtifactId, artifactKey]);
   const [memberSettings, setMemberSettings] = useState(null);
   const [museTasks, setMuseTasks] = useState([]);
   const [agentTasks, setAgentTasks] = useState([]);
+  const [openedPatch, setOpenedPatch] = useState(null);
+  const [patchError, setPatchError] = useState('');
   const [museHistoryError, setMuseHistoryError] = useState('');
   const [runtimeDispatching, setRuntimeDispatching] = useState(false);
+  const dispatchingRuntime = useRef(false);
   const [engines, setEngines] = useState([]);
   const [museProbe, setMuseProbe] = useState(null);
   const [harnessNotice, setHarnessNotice] = useState('');
@@ -279,8 +328,9 @@ function GroupRoom({ roomId, projectId, initialJob, status, models, context, onC
   const [dismissedTriggerKey, setDismissedTriggerKey] = useState('');
   const composerInputRef = useRef(null);
   const pendingHarnessJobRef = useRef(null);
-  const pendingDeliveryRevealRef = useRef(null);
   const initialResultRevealRef = useRef(Boolean(initialJob));
+  const explicitPreview = useRef(null);
+  const resultShortcut = useRef(null);
   const museMonitoring = museTasks.some((task) => task.monitoring);
 
   useEffect(() => {
@@ -320,27 +370,72 @@ function GroupRoom({ roomId, projectId, initialJob, status, models, context, onC
   const timelineRef = useRef(null);
   const nearBottom = useRef(true);
   const olderPosition = useRef(null);
-  const { room, jobs, activeJob, loading, busy, error } = roomState;
-  const lastJob = jobs.at(-1);
-  const latestMuseWithVideo = museTasks.find((item) => item.status === 'complete' && resolveMuseVideoUrl(item));
-  const artifactJob = selectedArtifactId ? jobs.find((job) => job.id === selectedArtifactId) : lastJob;
+  const { room, jobs, activeJob, loading, busy, error, accepted, submission, submissionError, acknowledge } = roomState;
+  const [appliedReceipt, setAppliedReceipt] = useState(null);
+  const appliedReceiptRef = useRef(null);
+  const restoredJob = restoredResult?.job;
+  const history = useMemo(() => ({
+    roomId,
+    roomTitle: room?.title || '项目群聊',
+    jobs: restoredJob ? mergeRoomJobs([restoredJob], jobs, projectId, roomId) : jobs,
+    museTasks: museTasks.map((task) => ({ ...task, video_url: resolveMuseVideoUrl(task) })),
+    agentTasks: agentTasks.map((task) => withFetchedPatch(task, openedPatch)),
+  }), [roomId, room?.title, jobs, projectId, restoredJob, museTasks, agentTasks, openedPatch]);
+  const roomResults = useMemo(() => deriveRoomArtifacts(history), [history]);
+  const selectedPreview = roomResults.find((artifact) => artifact.origin_job.id === selectedArtifactId)?.origin_job;
+  const latestResult = roomResults.find((artifact) => ['deliverable', 'media', 'code'].includes(artifactCategory(artifact))) || roomResults[0];
+  const missingSavedResult = Boolean(selectedArtifactId && !selectedPreview && !jobs.some((job) => job.id === selectedArtifactId) && restoredResult?.id !== selectedArtifactId);
+  useEffect(() => {
+    if (loading || !missingSavedResult) return;
+    let disposed = false;
+    workbenchApi.getJob(selectedArtifactId).then((job) => {
+      const inRoom = job.id === selectedArtifactId && job.group_room_id === roomId && (job.project_id || null) === (projectId || null);
+      if (!disposed) setRestoredResult({ id: selectedArtifactId, job: inRoom ? job : null });
+    }).catch(() => {
+      if (!disposed) setRestoredResult({ id: selectedArtifactId, job: null });
+    });
+    return () => { disposed = true; };
+  }, [loading, missingSavedResult, selectedArtifactId, projectId, roomId]);
   const withRoomHistory = useCallback((target) => {
-    if (!target) return null;
-    return {
-      ...target,
-      room_history: {
-        roomId,
-        roomTitle: room?.title || '项目群聊',
-        jobs,
-        museTasks,
-        agentTasks,
-      },
-    };
-  }, [roomId, room?.title, jobs, museTasks, agentTasks]);
-  const openTurnArtifact = (job, reveal) => {
-    pendingDeliveryRevealRef.current = null;
-    setSelectedArtifactId(job.id);
-    onOpenArtifacts(withRoomHistory(job), reveal);
+    return { ...target, room_history: history };
+  }, [history]);
+  const showResult = useCallback((target) => {
+    explicitPreview.current = target;
+    setPatchError('');
+    setSelectedArtifactId(target.id);
+    onOpenArtifacts(target, true);
+    if (target.mode === 'group_agent' && target.diff_sha256 && !target.diff) {
+      groupTaskApi.get(target.id, projectId, roomId).then((detail) => {
+        if (explicitPreview.current === target) setOpenedPatch(detail);
+      }).catch((failure) => {
+        if (explicitPreview.current === target) setPatchError(failure.message);
+      });
+    }
+  }, [onOpenArtifacts, projectId, roomId]);
+  const openTurnArtifact = (job) => showResult(withRoomHistory(job));
+  const availableResult = selectedPreview || (missingSavedResult ? null : latestResult?.origin_job);
+  const resultAvailable = Boolean(availableResult);
+  useEffect(() => {
+    resultShortcut.current = availableResult ? withRoomHistory(availableResult) : null;
+  }, [availableResult, withRoomHistory]);
+  const openResultShortcut = useCallback(() => {
+    if (!resultShortcut.current) return false;
+    showResult(resultShortcut.current);
+    return true;
+  }, [showResult]);
+  useEffect(() => {
+    if (!resultAvailable || !onResultShortcutChange) return;
+    onResultShortcutChange(openResultShortcut);
+    return () => onResultShortcutChange(null);
+  }, [onResultShortcutChange, openResultShortcut, resultAvailable]);
+  const closeTurnArtifact = () => {
+    explicitPreview.current = null;
+    setPatchError('');
+    onCloseArtifacts?.();
+  };
+  const toggleResults = () => {
+    if (artifactsVisible) closeTurnArtifact();
+    else if (availableResult) openTurnArtifact(availableResult);
   };
   const members = useMemo(() => room?.team_snapshot?.members || [], [room]);
   const deliveryMembers = useMemo(() => members.filter((member) => member.mcp_can_plan !== true), [members]);
@@ -416,38 +511,25 @@ function GroupRoom({ roomId, projectId, initialJob, status, models, context, onC
   useEffect(() => { onContextChange(saved.context); onClearArtifacts(); }, [saved, onContextChange, onClearArtifacts]);
   useEffect(() => {
     if ((context.project_id || null) === (projectId || null)) {
-      localStorage.setItem(groupDraftKey(projectId, roomId), JSON.stringify({ prompt, recipientIds, harnessMode, deliveryMode, backgroundMode, ...outputOptions, ...documentOptions, contextTurns, context }));
+      localStorage.setItem(groupDraftKey(projectId, roomId), JSON.stringify({ prompt, recipientIds, harnessMode, deliveryMode, backgroundMode, ...outputOptions, ...documentOptions, contextTurns, contextMode, context }));
+      if (appliedReceipt) acknowledge(appliedReceipt);
     }
-  }, [prompt, recipientIds, harnessMode, deliveryMode, backgroundMode, outputOptions, documentOptions, contextTurns, context, projectId, roomId]);
+  }, [prompt, recipientIds, harnessMode, deliveryMode, backgroundMode, outputOptions, documentOptions, contextTurns, contextMode, context, projectId, roomId, appliedReceipt, acknowledge]);
   useEffect(() => {
-    if (workMode !== 'discussion') return;
-    if (!selectedArtifactId && groupDeliveryMode(artifactJob) !== 'auto' && latestMuseWithVideo && (!artifactJob || String(latestMuseWithVideo.created_at || '') >= String(artifactJob.created_at || ''))) {
-      onOpenArtifacts(withRoomHistory({ ...latestMuseWithVideo, video_url: resolveMuseVideoUrl(latestMuseWithVideo), mode: 'muse_task' }), false);
-    } else if (artifactJob) {
-      onOpenArtifacts(withRoomHistory(artifactJob), false);
-    }
-  }, [artifactJob, latestMuseWithVideo, onOpenArtifacts, workMode, selectedArtifactId, withRoomHistory]);
-  useEffect(() => {
-    const pendingId = pendingDeliveryRevealRef.current;
-    if (!pendingId || workMode !== 'discussion') return;
-    const completed = jobs.find((item) => item.id === pendingId);
-    if (!completed || groupActive(completed)) return;
-    pendingDeliveryRevealRef.current = null;
-    if (selectedArtifactId === pendingId && completed.status === 'complete' && completed.result?.delivery?.content?.trim()) onOpenArtifacts(withRoomHistory(completed), true);
-  }, [jobs, onOpenArtifacts, selectedArtifactId, workMode, withRoomHistory]);
-  useEffect(() => {
-    if (initialResultRevealRef.current && initialJob?.id === artifactJob?.id && workMode === 'discussion') {
+    if (initialResultRevealRef.current && initialJob && workMode === 'discussion') {
       initialResultRevealRef.current = false;
-      onOpenArtifacts(withRoomHistory(artifactJob), true);
+      explicitPreview.current = initialJob;
+      onOpenArtifacts(withRoomHistory(initialJob), true);
+    } else if (artifactsVisible && explicitPreview.current) {
+      onOpenArtifacts(withRoomHistory(selectedPreview || withFetchedPatch(explicitPreview.current, openedPatch)), false);
     }
-  }, [artifactJob, initialJob, workMode, onOpenArtifacts, withRoomHistory]);
-  useEffect(() => { if (workMode !== 'discussion') onClearArtifacts(); }, [workMode, onClearArtifacts]);
+  }, [artifactsVisible, selectedPreview, initialJob, workMode, onOpenArtifacts, withRoomHistory, openedPatch]);
   useEffect(() => {
     const element = timelineRef.current;
     if (!element) return;
     if (olderPosition.current) { element.scrollTop = element.scrollHeight - olderPosition.current.height + olderPosition.current.top; olderPosition.current = null; }
     else if (nearBottom.current) element.scrollTop = element.scrollHeight;
-  }, [jobs, museTasks, agentTasks]);
+  }, [jobs, museTasks, agentTasks, workMode]);
 
   const prepareMuseDraft = useCallback((text, sourceJob = null) => {
     const member = members.find((item) => groupMemberKind(item) === 'muse');
@@ -458,7 +540,8 @@ function GroupRoom({ roomId, projectId, initialJob, status, models, context, onC
   }, [members, room]);
 
   const dispatchRuntime = async (text) => {
-    if (!runtimeMember || runtimeDispatching) return null;
+    if (!runtimeMember || dispatchingRuntime.current) return null;
+    dispatchingRuntime.current = true;
     setRuntimeDispatching(true);
     try {
       const finalPrompt = buildGroupRuntimePrompt(text, jobs, room, agentTasks, museTasks, contextTurns);
@@ -476,7 +559,7 @@ function GroupRoom({ roomId, projectId, initialJob, status, models, context, onC
       await refreshMuseAndAgents();
       return true;
     } catch (failure) { setHarnessNotice(`派发失败：${failure.message}`); return false; }
-    finally { setRuntimeDispatching(false); }
+    finally { dispatchingRuntime.current = false; setRuntimeDispatching(false); }
   };
 
   const handOffToAgent = useCallback((specText, preferredMemberId, sourceRunId) => {
@@ -524,10 +607,48 @@ function GroupRoom({ roomId, projectId, initialJob, status, models, context, onC
     ...(!runtimeMember && !status ? ['正在读取模型连接状态。'] : []),
     ...(room && !loading && !runtimeMember && !selectedMembers.length && !(deliveryMode === 'auto' && deliveryMembers.some((member) => ['image', 'mcp'].includes(groupMemberKind(member)) && (!recipientIds.length || recipientIds.includes(member.id)))) && !(coordinatorModel && !recipientIds.length) ? ['本群还没有 LLM 成员，请添加模型成员，或明确选择一位运行时 Agent。'] : []),
   ];
-  const canSend = Boolean(room && prompt.trim() && (runtimeMember ? runtimeReady : !errors.length) && !loading && !busy && !runtimeDispatching && !activeJob && !attachmentPending && !transfers);
+  const canSend = Boolean(room && !submission && prompt.trim() && (runtimeMember ? runtimeReady : !errors.length) && !loading && !busy && !runtimeDispatching && !activeJob && !attachmentPending && !transfers);
+  const canRetry = Boolean(room && submission && !accepted && !busy);
+  const activeHarness = GROUP_HARNESS_MODES.find((item) => item.id === harnessMode) || GROUP_HARNESS_MODES[0];
+  const messageBody = useMemo(() => groupMessageRequest({
+    prompt, recipientIds, context, contextTurns, contextMode,
+    rounds: deliveryMode === 'discussion' ? activeHarness.rounds || 1 : 1,
+    deliveryMode, backgroundMode, ...outputOptions, ...documentOptions,
+  }), [prompt, recipientIds, context, contextTurns, contextMode, activeHarness, deliveryMode, backgroundMode, outputOptions, documentOptions]);
+
+  useEffect(() => {
+    if (!accepted || !submission || appliedReceiptRef.current === submission.id || (context.project_id || null) !== (projectId || null)) return;
+    appliedReceiptRef.current = submission.id;
+    const { body, harnessMode: sentHarness } = submission;
+    const sameDraft = groupSubmissionMatches(submission, messageBody, harnessMode);
+    if (sameDraft) {
+      setPrompt((current) => current.trim() === body.prompt ? '' : current);
+      setContextMode('continue');
+      onContextChange((current) => ({
+        ...current,
+        attachment_ids: current.attachment_ids.filter((id) => !body.attachment_ids?.includes(id)),
+        ...(current.muse_task_id === body.muse_task_id ? { muse_task_id: null, muse_task_label: '', muse_harness_response: '' } : {}),
+      }));
+    }
+    if (body.delivery_mode === 'auto') globalThis.dispatchEvent?.(new Event('modeldesk-autonomy-changed'));
+    if (!sameDraft) {
+      setHarnessNotice('上次发送已确认，可在群聊记录查看。当前草稿已保留。');
+    } else if (groupActive(accepted) && body.delivery_mode === 'auto') {
+      setHarnessNotice(body.background_mode ? `后台任务已收到，可在“后台任务”查看。${machine.short}需保持唤醒并联网。` : '任务已收到，可在本轮查看进度。');
+    } else if (body.delivery_mode === 'discussion' && ['discuss_muse', 'discuss_agent'].includes(sentHarness) && (groupActive(accepted) || accepted.status === 'complete')) {
+      pendingHarnessJobRef.current = { jobId: accepted.id, mode: sentHarness, userPrompt: body.prompt };
+      setHarnessNotice(sentHarness === 'discuss_muse' ? '群聊已收到消息。讨论结束后会准备 Muse 草稿，由你确认派发。' : '群聊已收到消息。讨论结束后会准备代码 Agent 草稿，由你确认派发。');
+    } else {
+      setHarnessNotice('发送已确认，可在群聊记录查看。');
+    }
+    nearBottom.current = true;
+    setShowLatest(false);
+    setAppliedReceipt(submission.id);
+  }, [accepted, submission, context.project_id, projectId, messageBody, harnessMode, onContextChange, machine.short]);
 
   const send = async (event) => {
-    event.preventDefault(); if (!canSend) return;
+    event.preventDefault();
+    if (!canSend) return;
     const sentPrompt = prompt.trim();
     setHarnessNotice('');
     if (runtimeMember) {
@@ -538,42 +659,7 @@ function GroupRoom({ roomId, projectId, initialJob, status, models, context, onC
       }
       return;
     }
-    const activeHarness = GROUP_HARNESS_MODES.find((item) => item.id === harnessMode) || GROUP_HARNESS_MODES[0];
-    const job = await roomState.send(groupMessageRequest({
-      prompt: sentPrompt,
-      recipientIds,
-      context,
-      contextTurns,
-      contextMode,
-      rounds: deliveryMode === 'discussion' ? activeHarness.rounds || 1 : 1,
-      deliveryMode,
-      backgroundMode,
-      ...outputOptions,
-      ...documentOptions,
-    }));
-    if (job) {
-      setContextMode('continue');
-      if (deliveryMode === 'auto') {
-        pendingDeliveryRevealRef.current = job.id;
-        setHarnessNotice(backgroundMode ? `后台托管已启动。你可以离开本页面，在顶部“后台任务”查看进度、成果和待处理通知。${machine.short}需保持唤醒并联网。` : '任务已启动。系统会按要求安排群内成员，执行后整理完整成果；请在本轮进度中查看实际状态。');
-        globalThis.dispatchEvent?.(new Event('modeldesk-autonomy-changed'));
-      } else if (harnessMode === 'discuss_muse') {
-        pendingHarnessJobRef.current = { jobId: job.id, mode: 'discuss_muse', userPrompt: sentPrompt };
-        setHarnessNotice('群内模型正在讨论，完成后准备 Muse 草稿；需要你点击派发才会执行。');
-      } else if (harnessMode === 'discuss_agent') {
-        pendingHarnessJobRef.current = { jobId: job.id, mode: 'discuss_agent', userPrompt: sentPrompt };
-        setHarnessNotice('群内模型正在制定方案，完成后准备代码 Agent 草稿；需要你确认派发。');
-      }
-      setPrompt((current) => current.trim() === sentPrompt ? '' : current);
-      onContextChange((current) => ({
-        ...current,
-        attachment_ids: current.attachment_ids.filter((id) => !context.attachment_ids.includes(id)),
-        ...(current.muse_task_id === context.muse_task_id ? { muse_task_id: null, muse_task_label: '', muse_harness_response: '' } : {}),
-      }));
-      setSelectedArtifactId(job.id);
-      nearBottom.current = true;
-      setShowLatest(false);
-    }
+    await roomState.send(messageBody, harnessMode);
   };
 
   const useMuseReply = (task) => {
@@ -617,6 +703,18 @@ function GroupRoom({ roomId, projectId, initialJob, status, models, context, onC
     nearBottom.current = true;
     setShowLatest(false);
   };
+  const locateProgress = () => {
+    if (!activeJob) { scrollToLatest(); return; }
+    setTimelineFilter('all');
+    requestAnimationFrame(() => {
+      const turn = timelineRef.current?.querySelector(`[data-group-job="${CSS.escape(activeJob.id)}"]`);
+      if (turn) {
+        turn.scrollIntoView({ block: 'start' });
+        turn.focus({ preventScroll: true });
+      }
+      else scrollToLatest();
+    });
+  };
   const loadOlder = async () => {
     const element = timelineRef.current;
     if (element) olderPosition.current = { height: element.scrollHeight, top: element.scrollTop };
@@ -629,32 +727,38 @@ function GroupRoom({ roomId, projectId, initialJob, status, models, context, onC
     ? allTimelineItems
     : allTimelineItems.filter((item) => item.type === timelineFilter);
 
-  return <>
-    <div className="group-unified-bar">
-      <nav className="group-work-mode" aria-label="群聊协作方式">
-        {[['discussion', '群聊与协同', 'chat'], ['code', '代码 Agent', 'tasks'], ['review', '补丁审阅', 'council']].map(([id, label, icon]) => (
-          <button key={id} type="button" className={workMode === id ? 'selected' : ''} aria-current={workMode === id ? 'page' : undefined} onClick={() => setWorkMode(id)}>
-            <Icon name={icon} size={14} />{label}
-          </button>
-        ))}
-      </nav>
-      {room && <div className="group-member-toolbar">
+  const openMemberSettings = (add) => {
+    rosterDialog.current?.close();
+    setMemberSettings({ room, add });
+  };
+  const toggleReading = () => {
+    if (!focusHistory && artifactsVisible) closeTurnArtifact();
+    onToggleFocusHistory();
+  };
+  const targetLabel = recipientIds.length ? deliveryMembers.filter((member) => recipientIds.includes(member.id)).map((member) => `@${member.name}`).join('、') || '重新选择成员' : '全组协作';
+  const modeLabel = runtimeMember ? '单独派发' : deliveryMode === 'auto' ? backgroundMode ? '自动完成 · 后台托管' : '自动完成' : '仅讨论';
+  const contextLabel = contextMode === 'fresh' ? '新任务' : '继续任务';
 
-        <details className="group-roster-popover">
-          <summary title="查看本群成员与职责分工"><Icon name="group" size={14} /><strong>成员与分工</strong><span>{members.length}</span><Icon name="chevron" size={12} /></summary>
-          <div className="group-roster-dropdown"><div className="group-roster-actions">        <button type="button" className="subtle-button" onClick={() => setMemberSettings({ room, add: true })}><Icon name="plus" size={13} />添加 Agent</button>
-        <button type="button" className="subtle-button" onClick={() => setMemberSettings({ room, add: false })}><Icon name="settings" size={13} />管理成员</button>
-</div>{(coordinatorMember || coordinatorModel) && <p className="group-roster-footnote">统筹：{coordinatorMember?.name || coordinatorModel}{coordinatorMember && coordinatorModel ? ` · 编辑与验收：${coordinatorModel}` : ''}</p>}
-            <div className="group-roster-grid">{members.map((member) => <article key={member.id}><strong>{member.name}</strong><small className="group-member-kind">{groupMemberKindLabel(member)}</small><small>{member.model && (status?.models?.find((model) => model.id === member.model)?.label || member.model)}</small><p>{member.role}</p></article>)}</div>
-            <p className="group-roster-footnote">自动完成会按任务安排群内可用成员并整理成果；也可明确选择 Codex、Claude Code 或 Muse 单独派发。</p>
-          </div>
-        </details>
-        {renderIntegration && <button type="button" className="subtle-button" onClick={openMuse}><span className="group-muse-mark">M</span>Muse 面板</button>}
-        <button type="button" className={`subtle-button ${focusHistory ? 'selected' : ''}`} onClick={onToggleFocusHistory} title="收起辅助栏，最大化聊天历史视窗">{focusHistory ? '退出专注' : '专注阅读'}</button>
-      </div>}
-    </div>
+  return <>
+    <GroupHeader {...header} roomId={roomId} roomTitle={room?.title || header.roomTitle} workMode={workMode} onWorkModeChange={setWorkMode} memberCount={members.length} onOpenRoster={room ? () => rosterDialog.current?.showModal() : undefined} onOpenMuse={renderIntegration ? openMuse : undefined} focusHistory={focusHistory} onToggleFocusHistory={toggleReading} artifactsVisible={artifactsVisible} onToggleResults={toggleResults} resultAvailable={resultAvailable} />
+    {header.error && <div className="error-banner" role="alert">{header.error}<button type="button" className="subtle-button" onClick={header.refresh}>重试</button></div>}
+    {artifactsVisible && patchError && <div className="error-banner" role="alert">读取补丁失败：{patchError}<button type="button" className="subtle-button" onClick={() => showResult(explicitPreview.current)}>重新读取补丁</button></div>}
+    {room && <dialog className="group-options-dialog group-roster-dialog" ref={rosterDialog} aria-labelledby="group-roster-heading">
+      <header><div><h2 id="group-roster-heading">成员与分工</h2>{(coordinatorMember || coordinatorModel) && <p>统筹 {coordinatorMember?.name || coordinatorModel}{coordinatorMember && coordinatorModel ? ` · 编辑与验收 ${coordinatorModel}` : ''}</p>}</div><button type="button" className="icon-button" aria-label="关闭成员与分工" onClick={() => rosterDialog.current?.close()}><Icon name="close" size={18} /></button></header>
+      <div className="group-options-body">
+        <div className="group-roster-actions">
+          <button type="button" className="subtle-button" onClick={() => openMemberSettings(true)}><Icon name="plus" size={14} />添加 Agent</button>
+          <button type="button" className="subtle-button" onClick={() => openMemberSettings(false)}><Icon name="settings" size={14} />管理成员</button>
+        </div>
+        <div className="group-roster-grid">{members.map((member) => <article key={member.id}>
+          <strong>{member.name}</strong>
+          <small>{groupMemberKindLabel(member)}{member.model && ` · ${status?.models?.find((model) => model.id === member.model)?.label || member.model}`}</small>
+          {member.role && <p>{member.role}</p>}
+        </article>)}</div>
+      </div>
+    </dialog>}
     {memberSettings && <GroupTeamSettings room={memberSettings.room} models={models} catalog={status?.models || []} addRequested={memberSettings.add} onOpenAgentSettings={onOpenAgentSettings} onApplied={applyMembers} onClose={() => setMemberSettings(null)} />}
-    {workMode !== 'discussion' && room ? <GroupAgentTasks projectId={projectId} room={room} kind={workMode} onKindChange={setWorkMode} onOpenProjects={onOpenProjects} onOpenArtifacts={onOpenArtifacts} status={status} /> : <>
+    {workMode !== 'discussion' && room ? <GroupAgentTasks projectId={projectId} room={room} kind={workMode} onKindChange={setWorkMode} onOpenProjects={onOpenProjects} onOpenArtifacts={openTurnArtifact} status={status} /> : <>
       {renderIntegration && <dialog ref={museDialog} className="group-options-dialog group-muse-dialog" aria-label="Muse 任务与连接">
         <header><div><strong>Muse 任务与连接</strong><p>查看原生任务、实际回复和媒体。</p></div><button type="button" className="subtle-button" onClick={() => museDialog.current?.close()}>关闭</button></header>
         <div ref={integrationRef} className="group-options-body">{renderIntegration({ projectId, roomId, onUseReply: useMuseReply })}</div>
@@ -670,46 +774,46 @@ function GroupRoom({ roomId, projectId, initialJob, status, models, context, onC
               ...(museTasks.length ? [['muse', `Muse (${museTasks.length})`]] : []),
               ...(agentTasks.length ? [['agent_task', `代码 Agent (${agentTasks.length})`]] : []),
             ].map(([id, label]) => (
-              <button key={id} type="button" className={timelineFilter === id ? 'selected' : ''} onClick={() => setTimelineFilter(id)}>{label}</button>
+              <button key={id} type="button" className={timelineFilter === id ? 'selected' : ''} aria-pressed={timelineFilter === id} onClick={() => setTimelineFilter(id)}>{label}</button>
             ))}
           </div>
         )}
         {loading ? <p className="mission-loading" role="status"><span className="small-spinner" />正在读取群聊记录…</p> : <>
           {roomState.before && <button className="group-load-older subtle-button" type="button" disabled={roomState.olderLoading} onClick={loadOlder}>{roomState.olderLoading ? '正在加载' : '查看更早的消息'}</button>}
-          {!allTimelineItems.length && room && <div className="group-empty-conversation"><Icon name="group" size={28} /><h2>多智能体团队已就位，开始协作吧。</h2><p>描述你要的成果，自动安排模型与可用 Agent 执行，再将完整结果呈现在右侧；执行过程保留在本群。</p></div>}
+          {!allTimelineItems.length && room && <div className="group-empty-conversation"><Icon name="group" size={28} /><h2>给项目群发第一条消息</h2><p>描述你要的成果，或输入 @ 点名成员。完成后可以从对应消息打开成果。</p></div>}
           {museHistoryError && <p className="result-note" role="status">Muse 历史暂未同步：{museHistoryError}</p>}
           {timelineItems.map(({ type, value }) => {
             if (type === 'muse') {
               return <GroupMuseTurn key={`muse-${value.id}`} task={value} projectId={projectId} roomId={roomId} onUseReply={useMuseReply} onOpenMuse={openMuse} onOpenArtifacts={openTurnArtifact} onRetryMuse={(failedTask) => prepareMuseDraft(failedTask.prompt)} />;
             }
             if (type === 'agent_task') {
-              return <GroupAgentTaskTurn key={`agent-${value.id}`} task={value} onOpenTaskMode={setWorkMode} onUseAgentOutput={useAgentOutput} onOpenCreative={jobs.some((job) => job.id === value.parent_job_id) ? () => onOpenArtifacts(jobs.find((job) => job.id === value.parent_job_id), true) : undefined} />;
+              const parentJob = history.jobs.find((job) => job.id === value.parent_job_id);
+              return <GroupAgentTaskTurn key={`agent-${value.id}`} task={value} onOpenTaskMode={setWorkMode} onUseAgentOutput={useAgentOutput} onOpenCreative={parentJob && deriveArtifacts(parentJob).length ? () => openTurnArtifact(parentJob) : undefined} />;
             }
             return <GroupTurn key={value.id} job={value} room={room || { team_snapshot: { members: [] } }} onOpenArtifacts={openTurnArtifact} onSendToMuse={prepareMuseDraft} onHandOffToAgent={handOffToAgent} onQuoteReply={quoteReplyToMember} />;
           })}
         </>}
       </div>
-      <div className={`group-room-compose ${focusHistory ? 'group-compose-compact' : ''}`}>
+      <div className="group-room-compose">
         <GroupLiveActivityBar
           activeJob={activeJob}
           museTasks={museTasks}
           agentTasks={agentTasks}
-          onScrollToLatest={scrollToLatest}
-          onOpenMuse={openMuse}
+          onScrollToLatest={locateProgress}
+          onOpenMuse={renderIntegration ? openMuse : undefined}
           onOpenCodeTasks={setWorkMode}
-          onCancelJob={roomState.cancel}
         />
-        {showLatest && <button type="button" className="group-jump-latest subtle-button" onClick={scrollToLatest}>回到最新消息 ↓</button>}
+        {showLatest && composerSuggestions.length === 0 && <button type="button" className="group-jump-latest subtle-button" onClick={scrollToLatest}>回到最新消息 ↓</button>}
         {roomState.streamError && activeJob && <p className="stream-warning">实时连接暂时中断，正在通过后台记录同步。</p>}
         {context.muse_task_id && <div className="group-muse-source-chip"><strong>Muse 回复待引用</strong><span>{context.muse_task_label || '已选定本群的已完成回复'}</span><button type="button" className="icon-button" aria-label="移除 Muse 回复引用" onClick={() => onContextChange((current) => ({ ...current, muse_task_id: null, muse_task_label: '', muse_harness_response: '' }))}><Icon name="close" size={14} /></button></div>}
-        <div className="group-compose-summary" aria-label="本轮任务设置摘要">
-          <button type="button" className="subtle-button group-target-summary" aria-haspopup="dialog" onClick={() => settingsDialog.current?.showModal()} title="选择参与成员、分配 Agent 或调整协作方式"><Icon name="group" size={15} /><span>{recipientIds.length ? deliveryMembers.filter((member) => recipientIds.includes(member.id)).map((member) => `@${member.name}`).join('、') : '全组协作'}</span><Icon name="chevron" size={12} /></button>
-          <span className="group-mode-summary">{runtimeMember ? '单独派发' : deliveryMode === 'auto' ? backgroundMode ? '自动完成 · 后台托管' : '自动完成' : '仅讨论'}</span>
-          <button type="button" className="subtle-button group-memory-summary" aria-haspopup="dialog" onClick={() => settingsDialog.current?.showModal()}><Icon name="memory" size={14} />{contextMode === 'fresh' ? '新任务 · 不带旧对话' : `继续任务${lastJob?.task_context?.requests?.length ? ` · ${lastJob.task_context.requests.length} 条记忆` : ''}`}</button>
-          <ProjectMemoryDialog /><button type="button" className="subtle-button" aria-haspopup="dialog" onClick={() => settingsDialog.current?.showModal()}><Icon name="settings" size={14} />任务设置</button>
+        <div className="group-compose-summary">
+          <button type="button" className="subtle-button group-config-summary" aria-haspopup="dialog" aria-label={`任务设置，${targetLabel}，${modeLabel}，${contextLabel}`} title={`${targetLabel} · ${modeLabel} · ${contextLabel}`} onClick={() => settingsDialog.current?.showModal()}>
+            <Icon name="settings" size={15} /><span>任务设置</span><small>{targetLabel} · {modeLabel}{!runtimeMember && contextMode === 'fresh' ? ' · 新任务' : ''}</small>
+          </button>
+          {!runtimeMember && <AttachmentComposer compact ref={attachmentRef} attachmentIds={context.attachment_ids} onChange={(ids) => onContextChange({ ...context, attachment_ids: ids })} includeShared={context.include_project_assets} onIncludeShared={(include) => onContextChange({ ...context, include_project_assets: include })} disabled={busy || Boolean(activeJob)} onPendingChange={setAttachmentPending} />}
         </div>
-        <dialog ref={settingsDialog} className="group-options-dialog" aria-label="协作任务设置">
-          <header><div><strong>协作任务设置</strong><p>选成员、定成果，保留同一任务的上下文。</p></div><button type="button" className="subtle-button" onClick={() => settingsDialog.current?.close()}>完成</button></header>
+        <dialog ref={settingsDialog} className="group-options-dialog" aria-labelledby="group-options-heading">
+          <header><h2 id="group-options-heading">任务设置</h2><button type="button" className="subtle-button" onClick={() => settingsDialog.current?.close()}>完成</button></header>
           <div className="group-options-body">
             <h3>参与成员与成果</h3>
         <div className="group-compose-top-row">
@@ -752,7 +856,7 @@ function GroupRoom({ roomId, projectId, initialJob, status, models, context, onC
             </button>
           ))}
         </div>
-            {!runtimeMember && <><h3>任务记忆</h3><TaskContextControl value={contextMode} onChange={setContextMode} disabled={busy || Boolean(activeJob)} jobs={jobs} /></>}
+            {!runtimeMember && <><div className="group-context-heading"><h3>任务记忆</h3><ProjectMemoryDialog /></div><TaskContextControl value={contextMode} onChange={setContextMode} disabled={busy || Boolean(activeJob)} jobs={jobs} /></>}
             <details className="group-advanced-context"><summary>工具与更多上下文</summary>
               <section className="group-message-settings"><label>最近对话上下文<select aria-label="群聊上下文轮数" value={contextTurns} onChange={(event) => setContextTurns(Number(event.target.value))}>{[1, 4, 6, 8, 12].map((count) => <option key={count} value={count}>{count} 轮</option>)}</select></label><p>仅引用当前群聊的实际记录；过长内容按模型上下文预算截断。</p><ContextAttachments mode="group" value={context} onChange={onContextChange} jobs={jobs} disabled={busy || Boolean(activeJob)} onOpenProjects={onOpenProjects} /></section>
             </details>
@@ -760,40 +864,41 @@ function GroupRoom({ roomId, projectId, initialJob, status, models, context, onC
           </div>
         </dialog>
         {composerSuggestions.length > 0 && (
-          <div className="group-autocomplete-popover" role="listbox" aria-label={activeTrigger?.type === 'mention' ? '点名成员候选列表' : '快捷配方候选列表'}>
+          <div className="group-autocomplete-popover">
             <div className="group-autocomplete-header">
               <strong>{activeTrigger?.type === 'mention' ? '选择要 @点名的成员（↑↓ 选择，Enter 确认）' : '选择 /快捷协作配方（↑↓ 选择，Enter 应用）'}</strong>
               <button type="button" className="icon-button" aria-label="关闭候选菜单" onClick={() => setDismissedTriggerKey(triggerKey)}>
                 <Icon name="close" size={12} />
               </button>
             </div>
-            {composerSuggestions.map((item, index) => {
+            <div id="group-composer-suggestions" role="listbox" aria-label={activeTrigger?.type === 'mention' ? '点名成员候选列表' : '快捷配方候选列表'}>{composerSuggestions.map((item, index) => {
               const selected = index === Math.min(suggestionIndex, composerSuggestions.length - 1);
               return (
                 <button
                   key={item.id}
+                  id={`group-composer-option-${index}`}
                   type="button"
                   role="option"
                   aria-selected={selected}
                   className={`group-autocomplete-option ${selected ? 'selected' : ''}`}
                   onMouseEnter={() => setSuggestionIndex(index)}
-                  onMouseDown={(event) => {
-                    event.preventDefault();
-                    selectComposerSuggestion(item);
-                  }}
+                  onMouseDown={(event) => event.preventDefault()}
+                  onClick={() => selectComposerSuggestion(item)}
                 >
                   <strong>{item.type === 'mention' ? `@${item.name}` : item.name}</strong>
                   <small>{item.badge}</small>
                 </button>
               );
-            })}
+            })}</div>
           </div>
         )}
         <form className="composer group-composer" onSubmit={send} onDragOver={(event) => { if (event.dataTransfer.types.includes('Files')) event.preventDefault(); }} onDrop={(event) => attachmentRef.current?.handleDrop(event)}>
-          {!runtimeMember && <AttachmentComposer compact ref={attachmentRef} attachmentIds={context.attachment_ids} onChange={(ids) => onContextChange({ ...context, attachment_ids: ids })} includeShared={context.include_project_assets} onIncludeShared={(include) => onContextChange({ ...context, include_project_assets: include })} disabled={busy || Boolean(activeJob)} onPendingChange={setAttachmentPending} />}
           <textarea
             ref={composerInputRef}
             aria-label="群聊消息"
+            aria-autocomplete="list"
+            aria-controls={composerSuggestions.length ? 'group-composer-suggestions' : undefined}
+            aria-activedescendant={composerSuggestions.length ? `group-composer-option-${Math.min(suggestionIndex, composerSuggestions.length - 1)}` : undefined}
             maxLength={12000}
             value={prompt}
             onChange={(event) => {
@@ -834,15 +939,19 @@ function GroupRoom({ roomId, projectId, initialJob, status, models, context, onC
                 send(event);
               }
             }}
-            rows={2}
-            placeholder={runtimeMember ? `交给 ${runtimeMember.name} 的任务。选择成员并点击派发才会执行…` : deliveryMode === 'auto' ? '输入 @ 点名成员，或输入 / 选择快捷配方；描述你需要的完整成果…' : recipientIds.length ? `请 ${selectedMembers.map((member) => member.name).join('、')} 接着讨论（支持 @点名 与 /配方）…` : '给项目群发消息（输入 @ 点名成员，输入 / 唤起快捷协作配方）…'}
+            rows={focusHistory ? 1 : 2}
+            placeholder={runtimeMember ? `描述要交给 ${runtimeMember.name} 的任务…` : deliveryMode === 'auto' ? '描述你需要的成果…' : '给项目群发消息…'}
           />
           <div className="composer-footer">
             <span className="group-input-hint">@ 点名 · / 配方</span>
-            <span>{activeJob ? '可先写下一条消息' : runtimeMember ? `${groupMemberKindLabel(runtimeMember)} · 明确派发 · 引用本群实际上下文` : `${deliveryMode === 'auto' && !recipientIds.length && (coordinatorMember || coordinatorModel) ? `统筹：${coordinatorMember?.name || coordinatorModel} · ` : ''}${deliveryMode === 'auto' ? '自动安排执行并整理成果' : `${selectedMembers.length} 名 LLM 讨论`}`}</span>
+            {activeJob && <span>可先写下一条消息</span>}
             {activeJob ? <button className="stop-button" type="button" disabled={busy} onClick={roomState.cancel}><Icon name="stop" size={15} />停止本轮</button> : <button className="primary-button" type="submit" disabled={!canSend}><Icon name="send" size={15} />{busy || runtimeDispatching ? '正在提交' : runtimeMember ? `派发 ${runtimeKind === 'muse' ? 'Muse' : runtimeKind === 'codex' ? 'Codex' : 'Claude Code'}` : deliveryMode === 'auto' ? '开始完成任务' : '发送消息'}</button>}
           </div>
         </form>
+        {(submissionError || canRetry) && <div className="error-banner" role={submissionError ? 'alert' : 'status'}>
+          <span>{submissionError || '上次发送仍待确认。'}</span>
+          {canRetry && <button className="subtle-button" type="button" onClick={() => roomState.send()}>重试上次发送</button>}
+        </div>}
         {(!runtimeMember && (errors.length > 0 || attachmentPending || transfers > 0)) && <p className="mission-form-note">{attachmentPending || transfers > 0 ? '请等待资料准备完成。' : errors[0]}</p>}
         {runtimeMember && <p className="group-runtime-boundary">{runtimeKind === 'muse' ? (hostIsMacos(status) ? (REMOTE_CLIENT ? 'Muse 原生窗口操作需要在 Mac 端派发。' : runtimeReadiness.ready ? '将操作本机 Muse。回复与文件仅在桥接实际读取后显示；附件不会自动传入原生应用。' : `${runtimeReadiness.label}：${runtimeReadiness.detail} 请打开 Muse 面板检查连接。`) : 'Muse 原生窗口操作仅在 Mac 上可用；当前主机不是 Mac，无法派发 Muse 任务。') : !projectId ? '代码 Agent 需要选择本地 Git 项目。' : !runtimeReady ? (runtimeEngine?.error || '请在“Agent 与连接”检查本机执行器安装与登录状态。') : '将在隔离 Git 工作区执行，改动需要独立审阅和你的合入审批。附件不会自动传入执行器。'} <button type="button" className="subtle-button" onClick={refreshRuntimeStatus}>重新检查执行器</button></p>}
 
@@ -851,7 +960,7 @@ function GroupRoom({ roomId, projectId, initialJob, status, models, context, onC
   </>;
 }
 
-export default function GroupWorkspace({ initialRoomId, initialTeam, initialJob, renderIntegration, status, models, context, onContextChange, onOpenNavigation, onOpenProjects, onOpenAgentSettings, onOpenArtifacts, onClearArtifacts, onToggleArtifacts }) {
+export default function GroupWorkspace({ initialRoomId, initialTeam, initialJob, renderIntegration, status, models, context, onContextChange, onOpenNavigation, onOpenProjects, onOpenAgentSettings, onOpenArtifacts, onClearArtifacts, onCloseArtifacts, onResultShortcutChange, artifactsVisible = false }) {
   const { activeProjectId, activeProject } = useProjects();
   const initialProjectTeam = initialTeam?.id && (initialTeam.project_id || null) === activeProjectId ? initialTeam : null;
   const [roomId, setRoomId] = useState(() => initialProjectTeam ? null : initialRoomId || readGroupSelection(localStorage, activeProjectId));
@@ -890,31 +999,12 @@ export default function GroupWorkspace({ initialRoomId, initialTeam, initialJob,
     finally { if (alive.current) setCreating(false); }
   };
   const selectedRoom = rooms.find((room) => room.id === roomId);
+  const header = { rooms, roomTitle: selectedRoom?.title, selectRoom, onOpenNavigation, error, refresh };
   return <main className={`workspace group-workspace ${focusHistory ? 'group-focus-mode' : ''}`}>
-    <header className="workspace-header group-compact-header">
-      <div className="header-title">
-        <button className="mobile-menu icon-button" aria-label="打开导航" onClick={onOpenNavigation}><Icon name="menu" /></button>
-        <span className="mode-header-icon"><Icon name="group" size={18} /></span>
-        <div>
-          <h1 title={selectedRoom?.title}>{selectedRoom?.title || '项目群聊'}</h1>
-          <span>{activeProject?.name || '独立项目'} · 多智能体协同群</span>
-        </div>
-      </div>
-      <div className="group-room-switcher">
-        <Icon name="chat" size={14} />
-        <select aria-label="打开项目群聊" value={roomId || ''} onChange={(event) => selectRoom(event.target.value || null)}>
-          <option value="">+ 新建群聊</option>
-          {roomId && !selectedRoom && <option value={roomId}>正在读取已保存群聊</option>}
-          {rooms.map((room) => <option key={room.id} value={room.id}>{room.title} · {room.team_snapshot?.name || '协作组'}</option>)}
-        </select>
-        <span>{rooms.length} 个群</span>
-      </div>
-      <div className="mission-header-actions">
-        <button className="subtle-button" type="button" onClick={() => selectRoom(null)}><Icon name="plus" size={14} />新建群聊</button>
-        {roomId && <button className="subtle-button" type="button" onClick={onToggleArtifacts}><Icon name="panel" size={14} />成果</button>}
-      </div>
-    </header>
-    {error && <div className="error-banner" role="alert">{error}<button type="button" className="subtle-button" onClick={refresh}>重试</button></div>}
-    {roomId ? <GroupRoom key={`${activeProjectId || 'unassigned'}:${roomId}:${initialJob?.group_room_id === roomId ? initialJob.id : ''}`} initialJob={initialJob?.group_room_id === roomId && (initialJob.project_id || null) === (activeProjectId || null) ? initialJob : null} roomId={roomId} projectId={activeProjectId} status={status} models={models} onOpenAgentSettings={onOpenAgentSettings} context={context} onContextChange={onContextChange} onOpenArtifacts={onOpenArtifacts} onClearArtifacts={onClearArtifacts} onOpenProjects={onOpenProjects} renderIntegration={renderIntegration} focusHistory={focusHistory} onToggleFocusHistory={toggleFocusHistory} /> : <div className="group-create-scroll"><form className="group-create-room" onSubmit={createRoom}><div className="mission-introduction"><h2>一个项目，多个多智能体协作群。</h2><p>把不同 LLM 模型、Muse 与 Codex/Claude 组成研究组、代码审查组或内容创作团队，在同一个群里由自研 Harness 持续协同。</p></div><label className="group-title-input"><span>群聊名称</span><input aria-label="群聊名称" value={title} maxLength={100} placeholder="例如：产品方案讨论、发布前审查" onChange={(event) => setTitle(event.target.value)} /></label><MissionTeamPicker projectId={activeProjectId} team={team} models={models} catalog={status?.models || []} onChange={chooseTeam} onPending={setTeamPending} onOpenAgentSettings={onOpenAgentSettings} requireSaved /><div className="group-create-actions"><p>{team?.id ? '建群后会保存当前成员与分工，已有讨论不受后续编辑影响。' : '选择已有协作组，或新建并保存协作组后开始。'}</p><button type="submit" className="primary-button" disabled={creating || loading || !title.trim() || !team?.id || teamPending}><Icon name="plus" size={15} />{creating ? '正在创建' : '创建群聊'}</button></div></form></div>}
+    {roomId ? <GroupRoom key={`${activeProjectId || 'unassigned'}:${roomId}:${initialJob?.group_room_id === roomId ? initialJob.id : ''}`} header={header} initialJob={initialJob?.group_room_id === roomId && (initialJob.project_id || null) === (activeProjectId || null) ? initialJob : null} roomId={roomId} projectId={activeProjectId} status={status} models={models} onOpenAgentSettings={onOpenAgentSettings} context={context} onContextChange={onContextChange} onOpenArtifacts={onOpenArtifacts} onClearArtifacts={onClearArtifacts} onCloseArtifacts={onCloseArtifacts} onResultShortcutChange={onResultShortcutChange} artifactsVisible={artifactsVisible} onOpenProjects={onOpenProjects} renderIntegration={renderIntegration} focusHistory={focusHistory} onToggleFocusHistory={toggleFocusHistory} /> : <>
+      <GroupHeader {...header} />
+      {error && <div className="error-banner" role="alert">{error}<button type="button" className="subtle-button" onClick={refresh}>重试</button></div>}
+      <div className="group-create-scroll"><form className="group-create-room" onSubmit={createRoom}><div className="mission-introduction"><h2>创建项目群聊</h2><p>{activeProject?.name || '独立项目'} · 选择一起讨论或执行任务的成员。</p></div><label className="group-title-input"><span>群聊名称</span><input aria-label="群聊名称" value={title} maxLength={100} placeholder="例如：产品方案讨论、发布前审查" onChange={(event) => setTitle(event.target.value)} /></label><MissionTeamPicker projectId={activeProjectId} team={team} models={models} catalog={status?.models || []} onChange={chooseTeam} onPending={setTeamPending} onOpenAgentSettings={onOpenAgentSettings} requireSaved /><div className="group-create-actions"><p>{team?.id ? '建群后会保存当前成员与分工，已有讨论不受后续编辑影响。' : '选择已有协作组，或新建并保存协作组后开始。'}</p><button type="submit" className="primary-button" disabled={creating || loading || !title.trim() || !team?.id || teamPending}><Icon name="plus" size={15} />{creating ? '正在创建' : '创建群聊'}</button></div></form></div>
+    </>}
   </main>;
 }

@@ -7,6 +7,7 @@ import hashlib
 import json
 import threading
 import uuid
+from weakref import WeakValueDictionary
 from datetime import datetime
 from typing import Literal
 
@@ -41,6 +42,7 @@ class RoomRequest(BaseModel):
 
 class MessageRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
+    client_request_id: uuid.UUID | None = None
     prompt: str = Field(min_length=1, max_length=12000)
     recipient_member_ids: list[str] = Field(default_factory=list, max_length=4)
     muse_task_id: uuid.UUID | None = None
@@ -101,6 +103,7 @@ class RoomStore:
     def __init__(self, directory=None):
         self.atomic = RunStore(directory or workbench.PROJECT / "data/groups")
         self.lock = threading.RLock()
+        self.submission_locks = WeakValueDictionary()
 
     def exists(self, identifier):
         path = self.atomic.directory / (checked_id(identifier) + ".json")
@@ -136,6 +139,14 @@ class RoomStore:
             if self.atomic.directory.is_symlink() or path.is_symlink() or path.with_suffix(".tmp").is_symlink():
                 raise HTTPException(409, "项目群保存路径无效")
             self.atomic.save(value)
+
+    def touch(self, identifier, project_id, updated_at):
+        """Record activity against the latest room without rewriting a frozen roster."""
+        with self.lock:
+            room = self.get(identifier, project_id)
+            if datetime.fromisoformat(updated_at) > datetime.fromisoformat(room["updated_at"]):
+                room["updated_at"] = updated_at
+                self.save(room)
 
     def list(self, project_id=None):
         project = checked_id(project_id) if project_id else None
@@ -340,7 +351,8 @@ async def update_room_team(identifier: str, request: RoomTeamRequest, project_id
                  for task in muse.records.values()):
             raise HTTPException(409, "本群仍有讨论或 Agent 任务运行，请等其完成或停止后再应用成员变更")
         snapshot = harness.teams.get(str(request.team_id), room["project_id"])
-        room.update(team_id=snapshot["id"], team_snapshot=copy.deepcopy(snapshot), team_revision=team_revision(snapshot), updated_at=workbench.now())
+        updated_at = max(room["updated_at"], workbench.now(), key=datetime.fromisoformat)
+        room.update(team_id=snapshot["id"], team_snapshot=copy.deepcopy(snapshot), team_revision=team_revision(snapshot), updated_at=updated_at)
         store.save(room)
         return room
 
@@ -397,6 +409,23 @@ async def submit_message(identifier: str, request: MessageRequest, project_id: s
     if request.background_mode and request.delivery_mode != "auto":
         raise HTTPException(422, "后台托管需要选择自动完成")
     room = await asyncio.to_thread(store.get, identifier, project_id)
+    options = {"native_allowed": native_allowed, "external_source": external_source, "admission_check": admission_check}
+    if request.client_request_id is None:
+        return await create_room_message(room, request, job_id=job_id, **options)
+    body = request.model_dump(mode="json", exclude={"client_request_id"})
+    # The saved roster controls the order of these recipients.
+    body["recipient_member_ids"].sort()
+    digest = hashlib.sha256(json.dumps(body, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+    receipt = {"group_client_request_id": str(request.client_request_id), "_group_request_sha256": digest}
+    job_id = str(uuid.uuid5(uuid.UUID(room["id"]), "group-message:" + str(request.client_request_id)))
+    lock = store.submission_locks.setdefault(job_id, asyncio.Lock())
+    async with lock:
+        if previous := replay_message(room, job_id, receipt):
+            return previous
+        return await create_room_message(room, request, job_id=job_id, receipt=receipt, **options)
+
+
+async def create_room_message(room, request, *, native_allowed, job_id, external_source, admission_check, receipt=None):
     muse_source = freeze_muse_source(room, request.muse_task_id)
     members = room["team_snapshot"]["members"]
     selected = request.recipient_member_ids or [member["id"] for member in members]
@@ -436,7 +465,7 @@ async def submit_message(identifier: str, request: MessageRequest, project_id: s
         raise HTTPException(422, "这些接收成员的模型尚未连接：" + "、".join(missing))
     from .readiness import preflight_connections
     await preflight_connections(requested_models)
-    body = request.model_dump(mode="json", exclude={"recipient_member_ids", "muse_task_id", "delivery_mode", "background_mode", "output_format", "image_count", "media_provider", "context_mode", "document_formats", "document_layout"})
+    body = request.model_dump(mode="json", exclude={"client_request_id", "recipient_member_ids", "muse_task_id", "delivery_mode", "background_mode", "output_format", "image_count", "media_provider", "context_mode", "document_formats", "document_layout"})
     try:
         job_request = workbench.JobRequest(**body, mode="group", project_id=room["project_id"], conversation_id=room["id"],
                                            models=room_models(room), roles=room_roles(room))
@@ -458,6 +487,8 @@ async def submit_message(identifier: str, request: MessageRequest, project_id: s
                 "group_native_allowed": request.delivery_mode == "auto" and native_allowed is True}
     if external_source:
         metadata["external_source"] = copy.deepcopy(external_source)
+    if receipt:
+        metadata.update(receipt)
     from .skill_library import frozen_skills
     metadata['_skill_snapshots'] = frozen_skills(members, writing_review=request.delivery_mode == "auto" and room["team_snapshot"].get("writing_review", False))
     if request.background_mode:
@@ -468,9 +499,18 @@ async def submit_message(identifier: str, request: MessageRequest, project_id: s
     if admission_check:
         admission_check()
     job = workbench.manager.create(job_request, job_id=job_id, metadata=metadata, group_authorization=_ROOM_WRITE)
-    room["updated_at"] = job["created_at"]
-    store.save(room)
+    store.touch(room["id"], room["project_id"], job["created_at"])
     return job
+
+
+def replay_message(room, job_id, receipt):
+    job = workbench.manager.jobs.get(job_id)
+    if job is None:
+        return None
+    if (job.get("group_room_id") != room["id"] or job.get("conversation_id") != room["id"]
+            or job.get("project_id") != room["project_id"] or any(job.get(key) != value for key, value in receipt.items())):
+        raise HTTPException(409, "这次发送的回执已用于其他内容，请检查草稿后重新发送")
+    return copy.deepcopy(job)
 
 
 @router.post("/{identifier}/messages/{job_id}/continue", status_code=202)

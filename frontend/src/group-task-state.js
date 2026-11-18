@@ -3,6 +3,13 @@ export const APPROVAL_LABELS = { pending: '等待你的决定', merged: '已合�
 export const taskActive = (task) => ['queued', 'running'].includes(task?.status);
 export const taskScope = (projectId, roomId) => new URLSearchParams({ ...(projectId ? { project_id: projectId } : {}), room_id: roomId || '' }).toString();
 export const taskDraftKey = (projectId, roomId) => `modeldesk.group.task-draft.${projectId || 'none'}.${roomId}`;
+// Polling returns task summaries. A fetched patch belongs to one exact task revision.
+export function withFetchedPatch(task, detail) {
+  if (!detail?.diff || !task.diff_sha256 || task.diff !== undefined) return task;
+  if (task.id !== detail.id || task.project_id !== detail.project_id || task.room_id !== detail.room_id ||
+      task.status !== detail.status || task.diff_sha256 !== detail.diff_sha256) return task;
+  return { ...task, diff: detail.diff };
+}
 export function eligibleReviews(task, tasks) {
   if (task?.kind !== 'code' || task.status !== 'complete' || !task.diff_sha256) return [];
   return tasks.filter((review) => review.kind === 'review' && review.status === 'complete' && review.source_task_id === task.id && review.member_id !== task.member_id && review.review_of_patch_sha256 === task.diff_sha256 && review.project_id === task.project_id && review.room_id === task.room_id);

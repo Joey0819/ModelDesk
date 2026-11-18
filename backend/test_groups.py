@@ -12,6 +12,7 @@ from unittest.mock import AsyncMock, patch
 
 import httpx
 from fastapi import FastAPI, HTTPException
+from fastapi.testclient import TestClient
 
 from backend import attachments, group_chat, groups, projects, super_platform, workbench
 from backend.harness.manager import manager as harness
@@ -86,6 +87,81 @@ class GroupRoomTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(job["status"], "complete", job.get("error"))
         return job
 
+    async def test_concurrent_message_retries_dispatch_once_and_replay_after_restart(self):
+        room = await self.room()
+        receipt = str(uuid.uuid4())
+        first, second = await asyncio.gather(*(
+            self.send(room, wait=False, recipient_member_ids=["writer"], client_request_id=receipt)
+            for _ in range(2)
+        ))
+        self.assertEqual(first["id"], second["id"])
+        self.assertEqual(first["group_client_request_id"], receipt)
+        self.assertEqual(self.catalog.await_count, 1)
+        if self.jobs.tasks:
+            await asyncio.gather(*self.jobs.tasks.values())
+        self.assertEqual(len(self.calls), 1)
+        self.assertEqual(len(groups.room_jobs(room)), 1)
+
+        restored = workbench.JobManager(self.root / "jobs")
+        restored.recover()
+        self.catalog.side_effect = RuntimeError("model connection unavailable")
+        with patch.object(workbench, "manager", restored):
+            replayed = await self.send(room, wait=False, recipient_member_ids=["writer"], client_request_id=receipt)
+            self.assertEqual(replayed["id"], first["id"])
+            self.assertEqual(replayed["status"], "complete")
+            self.assertEqual(self.catalog.await_count, 1)
+            path = f"/api/groups/{room['id']}/messages"
+            conflicting = await self.client.post(path, params=self.params(room), json={"prompt": "不同的消息", "client_request_id": receipt})
+            self.assertEqual(conflicting.status_code, 409, conflicting.text)
+            foreign = await self.client.post(path, params={"project_id": self.other["id"]}, json={"prompt": "继续讨论", "client_request_id": receipt})
+            self.assertEqual(foreign.status_code, 403, foreign.text)
+        self.assertEqual(len(self.calls), 1)
+
+    async def test_message_receipt_is_scoped_to_room_and_legacy_sends_remain_distinct(self):
+        room = await self.room()
+        other_room = await self.room()
+        receipt = str(uuid.uuid4())
+        first = await self.send(room, recipient_member_ids=["writer"], client_request_id=receipt)
+        second = await self.send(other_room, recipient_member_ids=["writer"], client_request_id=receipt)
+        third = await self.send(room, recipient_member_ids=["writer"])
+        fourth = await self.send(room, recipient_member_ids=["writer"])
+        self.assertEqual(len({job["id"] for job in (first, second, third, fourth)}), 4)
+        self.assertTrue(all("group_client_request_id" not in job for job in (third, fourth)))
+        self.assertEqual(len(self.calls), 4)
+
+    async def test_scheduling_failure_does_not_leave_a_queued_receipt(self):
+        room = await self.room()
+        receipt = str(uuid.uuid4())
+        path = f"/api/groups/{room['id']}/messages"
+        async with self.client_type(transport=httpx.ASGITransport(app=self.api, raise_app_exceptions=False), base_url="http://local") as client:
+            with patch.object(workbench.asyncio, "create_task", side_effect=RuntimeError("scheduler unavailable")):
+                failed = await client.post(path, params=self.params(room), json={"prompt": "继续讨论", "client_request_id": receipt, "recipient_member_ids": ["writer"]})
+        self.assertEqual(failed.status_code, 500, failed.text)
+        self.assertEqual(self.jobs.jobs, {})
+        self.assertEqual(self.jobs.tasks, {})
+        self.assertEqual(self.jobs.wakeups, {})
+        self.assertEqual(list(self.jobs.directory.glob("*.json")), [])
+        self.assertEqual(self.calls, [])
+        job = await self.send(room, recipient_member_ids=["writer"], client_request_id=receipt)
+        self.assertEqual(job["group_client_request_id"], receipt)
+        self.assertEqual(len(self.calls), 1)
+
+    async def test_failure_after_job_admission_recovers_original_receipt(self):
+        room = await self.room()
+        receipt = str(uuid.uuid4())
+        path = f"/api/groups/{room['id']}/messages"
+        body = {"prompt": "继续讨论", "client_request_id": receipt, "recipient_member_ids": ["writer"]}
+        async with self.client_type(transport=httpx.ASGITransport(app=self.api, raise_app_exceptions=False), base_url="http://local") as client:
+            with patch.object(self.rooms, "save", side_effect=OSError("room timestamp write failed")):
+                response = await client.post(path, params=self.params(room), json=body)
+        self.assertEqual(response.status_code, 500)
+        accepted, = self.jobs.jobs.values()
+        self.catalog.side_effect = RuntimeError("model connection unavailable")
+        replayed = await self.send(room, **body)
+        self.assertEqual(replayed["id"], accepted["id"])
+        self.assertEqual(self.catalog.await_count, 1)
+        self.assertEqual(len(self.calls), 1)
+
     async def test_qualified_mcp_group_http_delivers_scoped_verified_worker_bytes(self):
         import socket
         import subprocess
@@ -150,9 +226,15 @@ class GroupRoomTests(unittest.IsolatedAsyncioTestCase):
         ):
             discovered = await self.client.post(f"/api/platform/mcp/{resource['id']}/discover")
             self.assertEqual(discovered.status_code, 200, discovered.text)
-            created = await self.client.post(path, params=self.params(room), json=body, headers=headers)
+            request_body = {**body, "client_request_id": str(uuid.uuid4())}
+            created, replayed = await asyncio.gather(*(
+                self.client.post(path, params=self.params(room), json=request_body, headers=headers) for _ in range(2)
+            ))
             self.assertEqual(created.status_code, 202, created.text)
+            self.assertEqual(replayed.status_code, 202, replayed.text)
             identifier = created.json()["id"]
+            self.assertEqual(replayed.json()["id"], identifier)
+            self.assertEqual(len(groups.room_jobs(room)), 1)
             task = self.jobs.tasks.get(identifier)
             if task:
                 async with asyncio.timeout(20):
@@ -543,6 +625,47 @@ class GroupRoomTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status_code, 409, response.text)
         self.assertEqual(self.calls, [])
         self.assertEqual(self.jobs.jobs, {})
+
+    async def test_admitted_message_touch_cannot_overwrite_newer_http_roster(self):
+        room = await self.room()
+        updated = self.teams.put(TeamRequest(name="new writers", project_id=self.project["id"], members=[
+            {"id": "writer", "name": "新作者", "model": "a", "role": "准备第二版"},
+            {"id": "reviewer", "name": "审稿人", "model": "b", "role": "检查第二版"},
+        ]))
+        create = self.jobs.create
+        updates = []
+
+        def admit_then_update(*args, **kwargs):
+            job = create(*args, **kwargs)
+            record = self.jobs.get(job["id"])
+            record["status"] = "complete"
+            self.jobs.save(record)
+            # Run the roster route on a separate ASGI loop after the job has
+            # finished, while the first request still owns its older snapshot.
+            with TestClient(self.api) as client:
+                response = client.put(f"/api/groups/{room['id']}/team", params=self.params(room),
+                                      json={"team_id": updated["id"], "expected_revision": room["team_revision"]})
+            self.assertEqual(response.status_code, 200, response.text)
+            updates.append(response.json())
+            return job
+
+        receipt = str(uuid.uuid4())
+        with patch.object(self.jobs, "create", side_effect=admit_then_update), patch.object(self.jobs, "run", AsyncMock()):
+            job = await self.send(room, wait=False, recipient_member_ids=["writer"], client_request_id=receipt)
+            await self.jobs.tasks[job["id"]]
+        latest = (await self.client.get(f"/api/groups/{room['id']}", params=self.params(room))).json()
+        self.assertEqual(job["group_team_snapshot"], room["team_snapshot"])
+        self.assertEqual(latest["team_id"], updated["id"])
+        self.assertEqual(latest["team_revision"], updates[0]["team_revision"])
+        self.assertEqual(latest["updated_at"], updates[0]["updated_at"])
+        self.assertGreater(latest["updated_at"], job["created_at"])
+        self.assertEqual(latest["created_at"], room["created_at"])
+        replay = await self.send(latest, wait=False, recipient_member_ids=["writer"], client_request_id=receipt)
+        self.assertEqual(replay["id"], job["id"])
+        self.assertEqual(replay["group_team_snapshot"], room["team_snapshot"])
+        subsequent = await self.send(latest, recipient_member_ids=["writer"])
+        self.assertEqual(subsequent["group_team_snapshot"], updated)
+        self.assertIn("准备第二版", str(self.calls[-1]))
 
     async def test_room_member_updates_wait_for_actual_muse_dispatch(self):
         from backend import muse_bridge

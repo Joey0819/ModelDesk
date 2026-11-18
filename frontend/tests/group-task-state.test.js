@@ -1,10 +1,18 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { approvalDecision, eligibleReviews, memberEngineSupports, readTaskDraft, taskDraftKey, taskRequest, taskScope } from '../src/group-task-state.js';
+import { approvalDecision, eligibleReviews, memberEngineSupports, readTaskDraft, taskDraftKey, taskRequest, taskScope, withFetchedPatch } from '../src/group-task-state.js';
 import { isRemoteLocation, resolveApiBase } from '../src/api-base.js';
 
 const task = { id: 'code-1', kind: 'code', status: 'complete', diff_sha256: 'patch-exact', member_id: 'writer', project_id: 'p1', room_id: 'r1' };
 const review = { id: 'review-1', kind: 'review', status: 'complete', source_task_id: task.id, review_of_patch_sha256: task.diff_sha256, member_id: 'reviewer', project_id: 'p1', room_id: 'r1' };
+test('polling keeps the opened patch only for the same scoped task revision', () => {
+  const detail = { ...task, diff: '+actual change' };
+  assert.deepEqual(withFetchedPatch(task, detail), detail);
+  for (const change of [{ id: 'another' }, { room_id: 'r2' }, { project_id: 'p2' }, { status: 'running' }, { diff_sha256: 'new' }, { diff: '' }]) {
+    const incoming = { ...task, ...change };
+    assert.equal(withFetchedPatch(incoming, detail), incoming);
+  }
+});
 test('approval selection requires completed independent review of the exact scoped patch', () => {
   const rejected = [{ ...review, id: 'self', member_id: 'writer' }, { ...review, id: 'stale', review_of_patch_sha256: 'old' }, { ...review, id: 'running', status: 'running' }, { ...review, id: 'foreign', room_id: 'r2' }, { ...review, id: 'other', project_id: 'p2' }];
   assert.deepEqual(eligibleReviews(task, [...rejected, review]), [review]);

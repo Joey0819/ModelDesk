@@ -17,8 +17,12 @@ import {
   extractGroupDeliverable,
   groupScopeKey,
   groupDraftKey,
+  groupSubmissionKey,
+  createGroupSubmission,
+  groupSubmissionMatches,
   readGroupSelection,
   readGroupDraft,
+  readGroupSubmission,
   documentOutputOptions,
   scopedRooms,
   mergeRoomJobs,
@@ -54,6 +58,22 @@ test('group rooms and drafts remain isolated by project and room', () => {
   assert.equal(readGroupDraft(storage, 'project-a', 'room-a').deliveryMode, 'auto');
   assert.equal(readGroupDraft({ getItem: () => JSON.stringify({ deliveryMode: 'discussion' }) }, 'p', 'r').deliveryMode, 'discussion');
   assert.deepEqual(scopedRooms([room, { id: 'other', project_id: 'project-b' }, { id: 'standalone' }], 'project-a'), [room]);
+});
+
+test('a pending send retains its frozen settings through reload and recognizes edits to the room draft', () => {
+  const body = groupMessageRequest({ prompt: 'Original request', deliveryMode: 'discussion', contextMode: 'fresh', context: { attachment_ids: ['file-1'] } });
+  const pending = createGroupSubmission(body, 'discuss_agent');
+  assert.match(pending.id, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+  assert.notEqual(pending.id, createGroupSubmission(body, 'discuss_agent').id);
+  const storage = { getItem: (key) => key === groupSubmissionKey('project-a', 'room-a') ? JSON.stringify(pending) : '{invalid' };
+  const restored = readGroupSubmission(storage, 'project-a', 'room-a');
+  assert.deepEqual(restored, pending);
+  assert.equal(readGroupSubmission(storage, 'project-a', 'room-b'), null);
+  assert.equal(readGroupSubmission(storage, 'project-b', 'room-a'), null);
+  assert.equal(groupSubmissionMatches(restored, body, 'discuss_agent'), true);
+  assert.equal(groupSubmissionMatches(restored, { ...body, attachment_ids: ['file-2'] }, 'discuss_agent'), false);
+  assert.equal(groupSubmissionMatches(restored, body, 'relay'), false);
+  assert.equal(readGroupDraft({ getItem: () => JSON.stringify({ contextMode: 'fresh' }) }, 'p', 'r').contextMode, 'fresh');
 });
 
 test('document delivery choices survive room reload and map to exact backend fields without becoming shared context', () => {
@@ -186,7 +206,8 @@ test('automatic delivery replay and context retain real final content without tr
 test('actual continuous timeline exposes attributed full messages and useful actions including Muse and Agent handoff', () => {
   const html = renderToStaticMarkup(React.createElement(GroupTurn, { job, room, onOpenArtifacts() {}, onSendToMuse() {}, onHandOffToAgent() {} }));
   assert.match(html, /Discuss our project/); assert.match(html, /Actual answer/); assert.match(html, /Writer/); assert.match(html, /model-a/);
-  assert.match(html, /复制这条提问/); assert.match(html, /复制 Writer 的发言/); assert.match(html, /查看本轮成果/);
+  assert.match(html, /复制这条提问/); assert.match(html, /复制 Writer 的发言/);
+  assert.equal((html.match(/查看本轮发言/g) || []).length, 1);
   assert.match(html, /准备 Muse 任务/); assert.match(html, /交由代码 Agent/);
   assert.equal(html.includes('展开完整发言'), false);
   const agentHtml = renderToStaticMarkup(React.createElement(GroupAgentTaskTurn, { task: { id: 't1', member: { name: 'Engineer' }, engine: 'codex', status: 'complete', prompt: 'Implement feature', output: 'All tests passed' }, onOpenTaskMode() {}, onUseAgentOutput() {} }));
@@ -220,8 +241,10 @@ test('native Muse transcript distinguishes complete observed replies from partia
 });
 
 test('group navigation is a primary workspace while single tools and missions remain discoverable', () => {
-  const html = renderToStaticMarkup(React.createElement(WorkspaceNavigation, { groupsView: true, missionView: false, mode: 'chat', navigationTab: 'tools', activeJobs: [] }));
+  const html = renderToStaticMarkup(React.createElement(WorkspaceNavigation, { workspace: 'groups', platformSection: 'overview', mode: 'chat', activeJobs: [] }));
   assert.match(html, /项目群聊/); assert.match(html, /协作任务/); assert.match(html, /单项协作/); assert.match(html, /项目资源/);
+  assert.equal([...html.matchAll(/aria-current="page"/g)].length, 1);
+  assert.doesNotMatch(html, /aria-label="工作模式"/);
 });
 
 

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readSessions, readConversationDrafts, conversationDraft, reviewContinuation, sourceSelection, restoredSession, conversationGroups, previousTurns } from '../src/workbench-sessions.js';
+import { readSessions, readConversationDrafts, conversationDraft, reviewContinuation, sourceSelection, restoredSession, conversationGroups, previousTurns, buildCommandItems, filterCommandItems } from '../src/workbench-sessions.js';
 
 test('review continuity selects the latest completed conversation in exactly the same project', () => {
   const older = { id: 'old', mode: 'review', project_id: 'p', status: 'complete', conversation_id: 'old', created_at: '2026-10-10' };
@@ -63,4 +63,24 @@ test('visible previous turns stay within conversation and project and exclude fu
   const current = { id: 'now', conversation_id: 'c', project_id: 'p', created_at: '2026-10-12T02:00:00Z' };
   const jobs = [current, { ...current, id: 'old', created_at: '2026-10-12T01:00:00Z' }, { ...current, id: 'other', project_id: 'q', created_at: '2026-10-12T01:00:00Z' }, { ...current, id: 'new', created_at: '2026-10-12T03:00:00Z' }];
   assert.deepEqual(previousTurns(jobs, current).map((job) => job.id), ['old']);
+});
+
+
+test('command search reaches older loaded projects and conversations and only offers usable actions', () => {
+  const projects = Array.from({ length: 12 }, (_, i) => ({ id: String(i), name: `Project ${i}` }));
+  const history = Array.from({ length: 16 }, (_, i) => ({
+    id: String(i), title: `Conversation ${i}`, latest: { prompt: 'brief' }, jobs: [{}], modes: ['chat'],
+  }));
+  const context = { projects, history, canOpenArtifacts: false };
+  const suggested = buildCommandItems(context).map((item) => item.id);
+  assert.ok(!suggested.includes('project:11') && !suggested.includes('history:15'));
+  assert.ok(!suggested.includes('action:toggle-artifacts'));
+  let opened;
+  const searchable = buildCommandItems({ ...context, includeOlder: true,
+    onSelectProject: (id) => { opened = id; }, onOpenTodo: () => { opened = 'board'; } });
+  filterCommandItems(searchable, 'Project 11')[0].action();
+  assert.equal(opened, '11');
+  assert.equal(filterCommandItems(searchable, 'Conversation 15')[0].id, 'history:15');
+  filterCommandItems(searchable, 'kanban')[0].action();
+  assert.equal(opened, 'board');
 });

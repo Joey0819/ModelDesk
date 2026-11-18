@@ -4,7 +4,9 @@
 
 ModelDesk 把项目资料、协作成员和交付文件保存在同一处。统筹者（Ruler）负责分工，可以使用 LLM，或使用团队中能返回结构化计划的 MCP Agent。Codex、Claude Code、Muse、绘图模型和 MCP 成员按各自的能力执行任务。成果面板可以查看正文、图片和视频，也可以下载 Word、PDF 和独立网页。
 
-**当前桌面版本 2.25.0** · macOS / Apple Silicon · Linux x64（Beta） · 中文界面 · 本机服务与私有手机入口
+**当前桌面版本 2.26.0** · macOS / Apple Silicon · Linux x64（Beta） · 中文界面 · 本机服务与私有手机入口
+
+2.26 改进项目群聊的可读空间和断线重试。交付完成后，从对应消息打开成果。单项协作的账户与导出位于「更多操作」。[界面前后对比、实测和后续优先事项](docs/WORKSPACE_AUDIT_226.md)
 
 > **Linux 用户**：Backend API 和前端已支持 Linux。Muse 原生桥接仅在 macOS 可用。安装与部署指南见 [docs/LINUX.md](docs/LINUX.md)。
 

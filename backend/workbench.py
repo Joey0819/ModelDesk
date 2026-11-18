@@ -349,15 +349,34 @@ class JobManager:
             job.update(metadata)
         from .project_memory import capture as capture_project_memory
         job["project_memory"] = capture_project_memory(job.get("project_id"))
-        manifest = (assets.clone_frozen(attachment_source[0], attachment_source[1], job, self.directory / "attachment-inputs")
-                    if attachment_source else assets.freeze(job, self.directory / "attachment-inputs"))
-        if manifest:
-            job["attachment_manifest"] = manifest
-            job["attachments"] = manifest["items"]
+        # Reserve the worker first. It cannot start until the checkpoint has
+        # been saved, including with a loop that starts coroutines eagerly.
+        admitted = asyncio.Event()
+
+        async def run_after_admission():
+            await admitted.wait()
+            await self.run(job)
+
+        runner = run_after_admission()
+        try:
+            task = asyncio.create_task(runner)
+        except BaseException:
+            runner.close()
+            raise
+        try:
+            manifest = (assets.clone_frozen(attachment_source[0], attachment_source[1], job, self.directory / "attachment-inputs")
+                        if attachment_source else assets.freeze(job, self.directory / "attachment-inputs"))
+            if manifest:
+                job["attachment_manifest"] = manifest
+                job["attachments"] = manifest["items"]
+            self.save(job)
+        except BaseException:
+            task.cancel()
+            raise
         self.jobs[job_id] = job
         self.wakeups[job_id] = asyncio.Event()
-        self.save(job)
-        self.tasks[job_id] = asyncio.create_task(self.run(job))
+        self.tasks[job_id] = task
+        admitted.set()
         return copy.deepcopy(job)
 
     def chat_context(self, job, model):

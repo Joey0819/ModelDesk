@@ -13,6 +13,7 @@ async function request(path, method = 'GET', body) {
   return response.json();
 }
 export const groupApi = {
+  catalog: () => request('/catalog'),
   list: (projectId) => request(`?${scope(projectId)}`),
   create: (body) => request('', 'POST', body),
   get: (id, projectId) => request(`/${encodeURIComponent(id)}?${scope(projectId)}`),

@@ -91,6 +91,43 @@ class MuseTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("不证明", result["verification"])
         self.assertFalse(result["monitoring"])
 
+    async def test_personal_room_muse_card_tracks_only_the_saved_native_task(self):
+        from backend import groups, todo_board
+        from backend.harness.models import TeamRequest
+        from backend.harness.teams import TeamStore
+
+        rooms = groups.RoomStore(self.root / "rooms")
+        teams = TeamStore(self.root / "teams")
+        team = teams.put(TeamRequest(name="Native workers", members=[
+            {"id": "writer", "name": "作者", "model": "fixture-model", "role": "检查交付"},
+            {"id": "native", "name": "Muse", "kind": "muse", "role": "整理说明"},
+        ]))
+        room = rooms.create(groups.RoomRequest(title="Muse 个人房间", team_id=team["id"]), teams)
+        app = FastAPI()
+        app.include_router(todo_board.router)
+        with (patch.object(groups, "store", rooms), patch.object(todo_board, "BOARD_FILE", self.root / "board.json"),
+              patch.object(todo_board, "_cache", None), patch.object(self.manager, "_todo_sync_enabled", True),
+              patch.object(self.manager, "helper_call", self.driver())):
+            saved = await self.settle(await self.manager.create(self.request(room_id=room["id"], member_id="native")))
+            self.assertEqual(saved["completion_evidence"], "framed_assistant_reply")
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://local") as client:
+                cards = (await client.get("/api/todo")).json()
+                self.assertEqual(len(cards), 1)
+                card = cards[0]
+                self.assertEqual(card["external_source"]["platform"], "muse")
+                self.assertEqual(card["external_source"]["task_id"], saved["id"])
+                self.assertEqual((card["project_id"], card["room_id"], card["status"]), (None, room["id"], "done"))
+                self.assertNotIn(saved["response"], json.dumps(card, ensure_ascii=False))
+
+                restored = MuseManager(self.manager.store.directory)
+                restored._todo_sync_enabled = True
+                restored.recover()
+                self.assertEqual([item["id"] for item in (await client.get("/api/todo")).json()], [card["id"]])
+                todo_board._save_board({"schema_version": todo_board.SCHEMA_VERSION, "tasks": []})
+                restored.recover()
+                imported = (await client.get("/api/todo", params={"project_id": "none", "room_id": room["id"]})).json()
+                self.assertEqual([item["external_source"]["task_id"] for item in imported], [saved["id"]])
+
     async def test_only_confirmed_owned_unsent_draft_can_be_resumed_once(self):
         driver=self.driver()
         async def fail_then_resume(command,payload=None):

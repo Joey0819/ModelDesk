@@ -128,6 +128,7 @@ jobs:
           node frontend/tests/browser/check-conversation-actions.mjs
           node frontend/tests/browser/check-group-dispatch.mjs
           node frontend/tests/browser/check-muse-panel-dispatch.mjs
+          .venv/bin/python frontend/tests/browser/check-todo-board.py
 
       - name: Test and package the Linux desktop
         run: |

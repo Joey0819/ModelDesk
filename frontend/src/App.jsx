@@ -48,6 +48,17 @@ import './WorkbenchShell.css';
 
 const STATUS_LABELS = { queued: '等待开始', running: '运行中', complete: '已完成', completed: '已完成', failed: '失败', error: '失败', cancelled: '已停止', interrupted: '已中断' };
 const active = (job) => ['queued', 'running'].includes(job?.status);
+const TODO_SCOPE_KEY = 'modeldesk.todo.scope';
+
+function savedTodoScope() {
+  try {
+    const scope = JSON.parse(localStorage.getItem(TODO_SCOPE_KEY));
+    if (scope?.type === 'personal') return { type: 'personal' };
+    if (scope?.type === 'project' && typeof scope.projectId === 'string') return scope;
+    if (scope?.type === 'room' && typeof scope.roomId === 'string' && (scope.projectId === null || typeof scope.projectId === 'string')) return scope;
+  } catch { /* An invalid cached selection can be replaced from the board. */ }
+  return { type: 'all' };
+}
 
 const compactResultsQuery = '(max-width: 1600px)';
 function subscribeToResultsLayout(listener) {
@@ -66,7 +77,7 @@ export default function App() { return <RemoteAccessGate><ProjectProvider><Model
 
 function ModelDeskWorkspace() {
   const projectHub = useProjects();
-  const { activeProjectId, assets: projectAssets } = projectHub;
+  const { activeProjectId, assets: projectAssets, refreshProjects } = projectHub;
   const [mode, setMode] = useState(() => Object.hasOwn(MODES, localStorage.getItem('modeldesk.mode')) ? localStorage.getItem('modeldesk.mode') : 'chat');
   const [bootSession] = useState(() => sessionFor(readSessions(localStorage), mode, activeProjectId));
   const [bootPreferences] = useState(() => conversationPreferences(bootSession.preferences));
@@ -81,6 +92,9 @@ function ModelDeskWorkspace() {
   const projectView = workspace === 'projects';
   const todoView = workspace === 'todo';
   const platformView = workspace === 'platform';
+  const [todoScope, setTodoScope] = useState(savedTodoScope);
+  const [todoRoomCatalog, setTodoRoomCatalog] = useState({ rooms: [], loading: true, error: '' });
+  const [todoCatalogRevision, setTodoCatalogRevision] = useState(0);
   const [agentSettingsSection, setAgentSettingsSection] = useState('agents');
   const [groupTarget, setGroupTarget] = useState(null);
   const [groupContext, setGroupContext] = useState(() => ({ ...EMPTY_CONTEXT, project_id: activeProjectId }));
@@ -142,6 +156,18 @@ function ModelDeskWorkspace() {
   const modeRef = useRef(mode);
   modeRef.current = mode;
   const artifactRequest = useRef(0);
+  useEffect(() => { localStorage.setItem(TODO_SCOPE_KEY, JSON.stringify(todoScope)); }, [todoScope]);
+  useEffect(() => {
+    if (!todoView) return;
+    let disposed = false;
+    refreshProjects();
+    groupApi.catalog().then((rooms) => {
+      if (!disposed) setTodoRoomCatalog({ rooms, loading: false, error: '' });
+    }).catch((failure) => {
+      if (!disposed) setTodoRoomCatalog({ rooms: [], loading: false, error: failure.message });
+    });
+    return () => { disposed = true; };
+  }, [todoView, todoCatalogRevision, refreshProjects]);
   const sessionsRef = useRef(readSessions(localStorage));
   const conversationDraftsRef = useRef(readConversationDrafts(localStorage));
   const workspacesRef = useRef(readConversationWorkspaces(localStorage));
@@ -383,7 +409,43 @@ function ModelDeskWorkspace() {
   const openGroups = () => { artifactRequest.current += 1; setArtifactJob(null); setGroupTarget(null); openWorkspace('groups'); setMobileArtifactsOpen(false); };
   const openGroupWithTeam = (team) => { openGroups(); setGroupTarget({ projectId: activeProjectId, initialTeam: team }); };
   const openMissions = () => { if (missionView) { setSidebarOpen(false); return; } artifactRequest.current += 1; setArtifactJob(null); openWorkspace('missions'); setMobileArtifactsOpen(false); };
-  const openTodo = () => { if (todoView) { setSidebarOpen(false); return; } artifactRequest.current += 1; setArtifactJob(null); openWorkspace('todo'); setMobileArtifactsOpen(false); };
+  const changeTodoScope = (scope) => { artifactRequest.current += 1; setArtifactJob(null); setMobileArtifactsOpen(false); setTodoScope(scope); };
+  const openTodo = () => {
+    if (todoView) { setSidebarOpen(false); return; }
+    artifactRequest.current += 1;
+    setArtifactJob(null);
+    setTodoRoomCatalog({ rooms: [], loading: true, error: '' });
+    openWorkspace('todo');
+    setMobileArtifactsOpen(false);
+  };
+  const openProjectTodo = (projectId) => { changeTodoScope({ type: 'project', projectId }); openTodo(); };
+  const openRoomTodo = (room) => {
+    changeTodoScope({ type: 'room', projectId: room.project_id || null, roomId: room.id });
+    openTodo();
+    setTodoRoomCatalog({ rooms: [room], loading: true, error: '' });
+  };
+  const refreshTodoRooms = () => {
+    setTodoRoomCatalog((current) => ({ ...current, loading: true, error: '' }));
+    setTodoCatalogRevision((current) => current + 1);
+  };
+  const openTodoRoom = async ({ id, project_id }) => {
+    const request = ++artifactRequest.current;
+    const room = await groupApi.get(id, project_id);
+    if (room.id !== id || (room.project_id || null) !== (project_id || null)) throw new Error('群聊与所选项目不一致。请重新读取群聊列表。');
+    if (request !== artifactRequest.current) return;
+    if ((room.project_id || null) !== activeProjectId) projectHub.selectProject(room.project_id);
+    openGroups();
+    setGroupTarget({ projectId: room.project_id || null, roomId: room.id });
+  };
+  const openTodoProject = async (projectId) => {
+    const request = ++artifactRequest.current;
+    const listed = await workbenchApi.listProjects();
+    if (request !== artifactRequest.current) return;
+    const projects = Array.isArray(listed) ? listed : listed.projects || [];
+    if (!projects.some((project) => project.id === projectId)) throw new Error('项目已解除登记。请重新读取项目列表。');
+    if (projectId !== activeProjectId) projectHub.selectProject(projectId);
+    openProjectMaterials();
+  };
   const showMissionArtifact = useCallback((next, reveal = false) => { setArtifactJob(next); if (reveal) { setArtifactsOpen(true); setMobileArtifactsOpen(true); } }, []);
   const clearMissionArtifact = useCallback(() => { setArtifactJob(null); }, []);
   const openPlatform = (section) => { artifactRequest.current += 1; setArtifactJob(null); openWorkspace('platform'); setPlatformSection(section); localStorage.setItem('modeldesk.platformSection', section); };
@@ -558,7 +620,19 @@ function ModelDeskWorkspace() {
           <button type="button" className="subtle-button" onClick={() => setCommandPaletteOpen(true)} title="打开快捷命令面板 (⌘K)"><Icon name="search" size={14} />快捷跳转 ⌘K</button>
         </div>
       )}
-      <ProjectHub status={status} onOpenFeishu={() => openAgentSettings('feishu')} onOpenAutonomyTask={openAutonomyTask} jobs={jobs} attachmentIds={(groupsView ? groupContext : context).attachment_ids} onAttachmentIds={(ids) => (groupsView ? setGroupContext : setContext)((previous) => ({ ...previous, attachment_ids: ids }))} includeShared={(groupsView ? groupContext : context).include_project_assets} onIncludeShared={(enabled) => (groupsView ? setGroupContext : setContext)((previous) => ({ ...previous, include_project_assets: enabled }))} onOpenJob={selectJob} onOpenReview={(id) => openProjects({ project_id: id })} /><div className={`workspace-shell ${artifactsOpen && previewJob ? 'artifacts-visible' : ''} ${previewJob && artifactsOpen && mobileArtifactsOpen ? 'mobile-artifacts-open' : ''}`} style={{ '--artifact-width': `${artifactWidth}px` }}><>{agentsView ? <AgentSettings key={`${activeProjectId || "unassigned"}:${agentSettingsSection}`} initialSection={agentSettingsSection} status={status} models={models} onOpenNavigation={openNavigation} onOpenGroups={openGroups} onStartGroup={openGroupWithTeam} onOpenLibrary={() => openPlatform("agents")} onRefresh={refresh} /> : groupsView ? <GroupWorkspace onOpenAgentSettings={openAgentSettings} key={`${activeProjectId || "unassigned"}:${groupTarget?.projectId === activeProjectId ? groupTarget?.initialTeam?.id || groupTarget?.roomId || "saved" : "saved"}`} initialRoomId={groupTarget?.projectId === activeProjectId ? groupTarget?.roomId : undefined} initialJob={groupTarget?.projectId === activeProjectId ? groupTarget?.initialJob : undefined} initialTeam={groupTarget?.projectId === activeProjectId ? groupTarget?.initialTeam : undefined} renderIntegration={(props) => hostIsMacos(status) ? (REMOTE_CLIENT ? <p className="group-remote-muse-note">Muse 原生窗口操作请在{machineShort(status)}完成。项目讨论与 Agent 任务可在此继续。</p> : <MuseDesktopPanel key={`${props.projectId || "unassigned"}:${props.roomId}`} {...props} />) : <p className="group-remote-muse-note">Muse 原生窗口操作仅在 Mac 上可用；当前主机不是 Mac。项目讨论与 Agent 任务可在此继续。</p>} status={status} models={models} context={groupContext} onContextChange={setGroupContext} onOpenNavigation={openNavigation} onOpenProjects={() => openProjects({ project_id: activeProjectId })} onOpenArtifacts={showMissionArtifact} onClearArtifacts={clearMissionArtifact} artifactsVisible={previewVisible} onCloseArtifacts={closeArtifacts} onResultShortcutChange={registerGroupResultShortcut} onToggleArtifacts={toggleArtifacts} /> : missionView ? <MissionWorkspace key={activeProjectId || 'unassigned'} status={status} models={models} onModelsChange={setModels} context={context} onContextChange={setContext} jobs={scopedJobs} onOpenNavigation={openNavigation} onOpenProjects={() => openProjects({ project_id: activeProjectId })} onOpenArtifacts={showMissionArtifact} onClearArtifacts={clearMissionArtifact} artifactsVisible={previewVisible} onCloseArtifacts={closeArtifacts} onResultShortcutChange={registerGroupResultShortcut} onToggleArtifacts={toggleArtifacts} /> : todoView ? <TodoBoard onOpenResult={openTodoResult} onOpenNavigation={openNavigation} /> : platformView ? <PlatformWorkspace key={platformSection} section={platformSection} onSection={openPlatform} status={status} jobs={scopedJobs} models={models} context={context} onContextChange={setContext} onUsePrompt={usePrompt} onUseAgent={useAgent} onRunJob={onPlatformRun} onOpenArtifacts={(next) => { artifactRequest.current += 1; setArtifactJob(hydrateJob(next)); setArtifactsOpen(true); setMobileArtifactsOpen(true); }} onOpenProjects={projectHub.openCreate} onStartCollaboration={openMissions} onOpenJob={selectJob} onOpenNavigation={openNavigation} /> : projectView ? <ProjectWorkspace key={`${activeProjectId || 'default'}:${projectTarget?.review_id || 'latest'}`} addRequested={0} activeProjectId={activeProjectId} onSelectSharedProject={projectHub.selectProject} attachmentContext={context} onAttachmentContextChange={setContext} initialProjectId={activeProjectId} initialReviewId={projectTarget?.project_id === activeProjectId ? projectTarget.review_id : undefined} onOpenArtifacts={(next) => { artifactRequest.current += 1; setArtifactJob(hydrateJob(next)); setArtifactsOpen(true); setMobileArtifactsOpen(true); }} status={status} jobs={jobs} models={reviewModels.length ? reviewModels : models} onModelsChange={(next) => { setReviewModels(next); localStorage.setItem('modeldesk.reviewModels', JSON.stringify(next)); }} onRefresh={refresh} onOpenNavigation={openNavigation} /> : <main className="workspace">
+      <ProjectHub showProjectBar={!todoView} onOpenTodo={openProjectTodo} status={status} onOpenFeishu={() => openAgentSettings('feishu')} onOpenAutonomyTask={openAutonomyTask} jobs={jobs} attachmentIds={(groupsView ? groupContext : context).attachment_ids} onAttachmentIds={(ids) => (groupsView ? setGroupContext : setContext)((previous) => ({ ...previous, attachment_ids: ids }))} includeShared={(groupsView ? groupContext : context).include_project_assets} onIncludeShared={(enabled) => (groupsView ? setGroupContext : setContext)((previous) => ({ ...previous, include_project_assets: enabled }))} onOpenJob={selectJob} onOpenReview={(id) => openProjects({ project_id: id })} /><div className={`workspace-shell ${artifactsOpen && previewJob ? 'artifacts-visible' : ''} ${previewJob && artifactsOpen && mobileArtifactsOpen ? 'mobile-artifacts-open' : ''}`} style={{ '--artifact-width': `${artifactWidth}px` }}><>{agentsView ? <AgentSettings key={`${activeProjectId || "unassigned"}:${agentSettingsSection}`} initialSection={agentSettingsSection} status={status} models={models} onOpenNavigation={openNavigation} onOpenGroups={openGroups} onStartGroup={openGroupWithTeam} onOpenLibrary={() => openPlatform("agents")} onRefresh={refresh} /> : groupsView ? <GroupWorkspace onOpenTodo={openRoomTodo} onOpenAgentSettings={openAgentSettings} key={`${activeProjectId || "unassigned"}:${groupTarget?.projectId === activeProjectId ? groupTarget?.initialTeam?.id || groupTarget?.roomId || "saved" : "saved"}`} initialRoomId={groupTarget?.projectId === activeProjectId ? groupTarget?.roomId : undefined} initialJob={groupTarget?.projectId === activeProjectId ? groupTarget?.initialJob : undefined} initialTeam={groupTarget?.projectId === activeProjectId ? groupTarget?.initialTeam : undefined} renderIntegration={(props) => hostIsMacos(status) ? (REMOTE_CLIENT ? <p className="group-remote-muse-note">Muse 原生窗口操作请在{machineShort(status)}完成。项目讨论与 Agent 任务可在此继续。</p> : <MuseDesktopPanel key={`${props.projectId || "unassigned"}:${props.roomId}`} {...props} />) : <p className="group-remote-muse-note">Muse 原生窗口操作仅在 Mac 上可用；当前主机不是 Mac。项目讨论与 Agent 任务可在此继续。</p>} status={status} models={models} context={groupContext} onContextChange={setGroupContext} onOpenNavigation={openNavigation} onOpenProjects={() => openProjects({ project_id: activeProjectId })} onOpenArtifacts={showMissionArtifact} onClearArtifacts={clearMissionArtifact} artifactsVisible={previewVisible} onCloseArtifacts={closeArtifacts} onResultShortcutChange={registerGroupResultShortcut} onToggleArtifacts={toggleArtifacts} /> : missionView ? <MissionWorkspace key={activeProjectId || 'unassigned'} status={status} models={models} onModelsChange={setModels} context={context} onContextChange={setContext} jobs={scopedJobs} onOpenNavigation={openNavigation} onOpenProjects={() => openProjects({ project_id: activeProjectId })} onOpenArtifacts={showMissionArtifact} onClearArtifacts={clearMissionArtifact} artifactsVisible={previewVisible} onCloseArtifacts={closeArtifacts} onResultShortcutChange={registerGroupResultShortcut} onToggleArtifacts={toggleArtifacts} /> : todoView ? <TodoBoard
+        projects={projectHub.projects}
+        rooms={todoRoomCatalog.rooms}
+        roomsLoading={todoRoomCatalog.loading}
+        roomsError={todoRoomCatalog.error}
+        onRefreshRooms={refreshTodoRooms}
+        scope={todoScope}
+        onScopeChange={changeTodoScope}
+        onOpenRoom={openTodoRoom}
+        onOpenProject={openTodoProject}
+        onOpenResult={openTodoResult}
+        onOpenNavigation={openNavigation}
+      /> : platformView ? <PlatformWorkspace key={platformSection} section={platformSection} onSection={openPlatform} status={status} jobs={scopedJobs} models={models} context={context} onContextChange={setContext} onUsePrompt={usePrompt} onUseAgent={useAgent} onRunJob={onPlatformRun} onOpenArtifacts={(next) => { artifactRequest.current += 1; setArtifactJob(hydrateJob(next)); setArtifactsOpen(true); setMobileArtifactsOpen(true); }} onOpenProjects={projectHub.openCreate} onStartCollaboration={openMissions} onOpenJob={selectJob} onOpenNavigation={openNavigation} /> : projectView ? <ProjectWorkspace onOpenTodo={openProjectTodo} key={`${activeProjectId || 'default'}:${projectTarget?.review_id || 'latest'}`} addRequested={0} activeProjectId={activeProjectId} onSelectSharedProject={projectHub.selectProject} attachmentContext={context} onAttachmentContextChange={setContext} initialProjectId={activeProjectId} initialReviewId={projectTarget?.project_id === activeProjectId ? projectTarget.review_id : undefined} onOpenArtifacts={(next) => { artifactRequest.current += 1; setArtifactJob(hydrateJob(next)); setArtifactsOpen(true); setMobileArtifactsOpen(true); }} status={status} jobs={jobs} models={reviewModels.length ? reviewModels : models} onModelsChange={(next) => { setReviewModels(next); localStorage.setItem('modeldesk.reviewModels', JSON.stringify(next)); }} onRefresh={refresh} onOpenNavigation={openNavigation} /> : <main className="workspace">
       <header className="workspace-header conversation-header">
         <div className="header-title">
           <button type="button" className="mobile-menu icon-button" aria-label="打开导航" onClick={openNavigation}><Icon name="menu" /></button>

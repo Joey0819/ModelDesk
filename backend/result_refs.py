@@ -5,8 +5,11 @@ from .harness.store import checked_id
 
 
 def workbench_result_ref(job):
+    room_id = job.get("group_room_id")
+    if job.get("conversation_id", room_id) != room_id:
+        room_id = None
     return {"kind": "workbench", "id": job.get("id"), "project_id": job.get("project_id"),
-            "room_id": job.get("group_room_id"), "source_run_id": None}
+            "room_id": room_id, "source_run_id": None}
 
 
 def group_task_result_ref(task):
@@ -22,6 +25,8 @@ def card_result_ref(card, ref):
     kind = {"workbench": "workbench", "group": "group_agent"}.get(source.get("platform"))
     if not kind or (kind, source.get("task_id"), card.get("project_id")) != (
             ref.get("kind"), ref.get("id"), ref.get("project_id")):
+        return None
+    if "room_id" in card and card["room_id"] != ref.get("room_id"):
         return None
     if kind == "group_agent" and not (ref.get("project_id") and ref.get("room_id")):
         return None

@@ -10,6 +10,7 @@ export const COLUMNS = [
 
 const VALID_STATUSES = new Set(COLUMNS.map((c) => c.id));
 const VALID_PRIORITIES = new Set(['low', 'medium', 'high', 'urgent']);
+const RESULT_STATUSES = new Set(['review', 'blocked', 'done']);
 
 // C0 control characters (except tab/newline) plus DEL. Built from char codes so
 // the source file itself carries no literal control bytes.
@@ -34,75 +35,68 @@ export function groupByStatus(tasks) {
   return groups;
 }
 
-/**
- * Compute reorder result after dragging a task to a new position.
- * Returns { tasks: [...], reorderPayload: { ids, status, position_start } }
- */
-export function computeReorder(tasks, draggedId, targetStatus, targetIndex) {
-  const task = tasks.find((t) => t.id === draggedId);
-  if (!task) return { tasks, reorderPayload: null };
-  if (task.external_source && task.status !== targetStatus) return { tasks, reorderPayload: null };
-
-  // Remove dragged task from list
-  const without = tasks.filter((t) => t.id !== draggedId);
-  // Get tasks in target column (excluding dragged)
-  const inColumn = without.filter((t) => t.status === targetStatus).sort((a, b) => (a.position || 0) - (b.position || 0));
-  // Insert at target index
-  const clampedIndex = Math.max(0, Math.min(targetIndex, inColumn.length));
-  inColumn.splice(clampedIndex, 0, task);
-
-  // Build new positions
-  const reorderedIds = inColumn.map((t) => t.id);
-  const updatedTasks = without.map((t) => ({ ...t }));
-  // Update the dragged task
-  const draggedUpdated = { ...task, status: targetStatus, position: clampedIndex, updated_at: new Date().toISOString() };
-  updatedTasks.push(draggedUpdated);
-
-  // Update positions for all tasks in the target column
-  for (let i = 0; i < inColumn.length; i++) {
-    const id = inColumn[i].id;
-    if (id === draggedId) continue;
-    const existing = updatedTasks.find((t) => t.id === id);
-    if (existing) {
-      existing.position = i;
-      existing.updated_at = new Date().toISOString();
-    }
-  }
-
+/** Anchor the moved card to a visible neighbor so the server can preserve hidden cards' order. */
+export function computeMove(task, targetStatus, visibleCards, targetIndex) {
+  if (!task || task.archived || !VALID_STATUSES.has(targetStatus)) return null;
+  const currentIndex = visibleCards.findIndex((card) => card.id === task.id);
+  const neighbors = visibleCards.filter((card) => card.id !== task.id && !card.archived);
+  const index = Math.max(0, Math.min(targetIndex, neighbors.length));
+  if (task.status === targetStatus && currentIndex >= 0 && visibleCards.slice(0, currentIndex).filter((card) => !card.archived).length === index) return null;
+  const before = neighbors[index];
   return {
-    tasks: updatedTasks,
-    reorderPayload: {
-      ids: reorderedIds,
-      status: targetStatus,
-      position_start: 0,
-    },
+    id: task.id,
+    from_status: task.status,
+    status: targetStatus,
+    anchor_id: before?.id ?? neighbors.at(-1)?.id ?? null,
+    placement: before ? 'before' : 'after',
   };
 }
 
-export function isFleetReassignment(task, targetStatus) {
-  return task?.external_source?.platform === 'fleet' && !task.archived && task.status === 'blocked' && targetStatus === 'todo';
+export function sourceStatus(task) {
+  return task.source_status ?? task.status;
+}
+
+// Technical identifiers are available in card details. Keep the board preview focused on the work.
+export function cardPreview(task) {
+  const text = task.description || '';
+  const source = task.external_source;
+  if (!source) return text;
+  const lines = text.split('\n');
+  if (source.platform === 'workbench' && lines.at(-1) === `任务编号：${source.task_id}` && lines.at(-2)?.startsWith('模式：')) {
+    return lines.slice(0, -2).join('\n');
+  }
+  if (source.platform === 'muse' && text === `Muse 原生任务编号：${source.task_id}`) return '';
+  if (source.platform === 'group' && lines.length === 3 && lines[0].startsWith('Kind: ') &&
+      lines[1].startsWith('Engine: ') && lines[2] === `ID: ${source.task_id}`) {
+    return `执行器 · ${lines[1].slice('Engine: '.length)}`;
+  }
+  return text;
+}
+
+export function canReassignFleet(task) {
+  return task?.external_source?.platform === 'fleet' && Boolean(task.external_source.task_id) && !task.archived && sourceStatus(task) === 'blocked';
 }
 
 export function hasWorkbenchResult(task) {
   return Boolean(task.project_id && task.external_source?.platform === 'workbench' &&
-    task.external_source.task_id && ['review', 'blocked', 'done'].includes(task.status));
+    task.external_source.task_id && RESULT_STATUSES.has(sourceStatus(task)));
 }
 
 export function todoResultRef(task) {
-  if (!task?.project_id || !['review', 'blocked', 'done'].includes(task.status)) return null;
+  if (!task || !RESULT_STATUSES.has(sourceStatus(task))) return null;
   const source = task.external_source;
   const kind = source?.platform === 'workbench' ? 'workbench' : source?.platform === 'group' ? 'group_agent' : null;
   if (!kind || !source.task_id) return null;
   const ref = task.result_ref;
   if (!ref) return !Object.hasOwn(task, 'result_ref') && hasWorkbenchResult(task) ? { kind, id: source.task_id, project_id: task.project_id } : null;
-  if (ref.kind !== kind || ref.id !== source.task_id || ref.project_id !== task.project_id ||
-      (kind === 'group_agent' && !ref.room_id)) return null;
+  if (ref.kind !== kind || ref.id !== source.task_id || (ref.project_id || null) !== (task.project_id || null) ||
+      (task.room_id && ref.room_id !== task.room_id) || (kind === 'group_agent' && (!ref.project_id || !ref.room_id))) return null;
   return ref;
 }
 
 export function checkGroupTaskResult(ref, task) {
   const saved = task?.result_ref;
-  if (ref?.kind !== 'group_agent' || task?.id !== ref.id || task?.project_id !== ref.project_id || task?.room_id !== ref.room_id ||
+  if (ref?.kind !== 'group_agent' || !ref.project_id || !ref.room_id || task?.id !== ref.id || task.project_id !== ref.project_id || task.room_id !== ref.room_id ||
       saved?.kind !== ref.kind || saved.id !== ref.id || saved.project_id !== ref.project_id || saved.room_id !== ref.room_id ||
       (saved.source_run_id || null) !== (ref.source_run_id || null)) {
     throw new Error('此 Agent 成果与卡片上的项目、群聊或来源运行不一致，请刷新看板后重试。');
@@ -111,13 +105,20 @@ export function checkGroupTaskResult(ref, task) {
 
 export function checkWorkbenchResult(task, job) {
   const ref = todoResultRef(task);
-  if (ref?.kind !== 'workbench' || job?.id !== ref.id || job?.project_id !== ref.project_id ||
+  if (ref?.kind !== 'workbench' || job?.id !== ref.id || (job.project_id || null) !== (ref.project_id || null) ||
       (task.result_ref && (job.group_room_id || null) !== (ref.room_id || null))) {
     throw new Error('此任务记录与看板卡片的项目不一致，请刷新看板后重试。');
   }
 }
 
-/** Submit editable fields only, keeping the source's live state intact during edits. */
+export function taskLocation(scope) {
+  return {
+    project_id: scope.projectId || null,
+    room_id: scope.type === 'room' ? scope.roomId : null,
+  };
+}
+
+/** Submit editable fields only, keeping the source's execution and location intact during edits. */
 export function buildTaskPayload(fields, task) {
   const payload = {
     title: fields.title.trim(),
@@ -126,19 +127,29 @@ export function buildTaskPayload(fields, task) {
     assignee: fields.assignee || '',
     due_date: fields.due_date || null,
     tags: fields.tags || [],
-    project_id: fields.project_id || null,
   };
-  if (!task?.external_source) payload.status = fields.status;
-  if (!task?.id) return payload;
-  return Object.fromEntries(Object.entries(payload).filter(([key]) => fields[key] !== task[key]));
+  if (!task?.external_source) {
+    payload.project_id = fields.project_id || null;
+    payload.room_id = fields.room_id || null;
+  }
+  if (!task?.id) return { ...payload, status: fields.status };
+  const edited = Object.fromEntries(Object.entries(payload).filter(([key]) => fields[key] !== task[key]));
+  // The source's current lane may change while the editor is open. Only submit an explicit status change.
+  if (fields.status !== task.status) edited.board_status = fields.status;
+  return edited;
 }
 
 /**
  * Filter tasks by search, priority, showDone, showArchived.
  */
 export function filterTasks(tasks, filters = {}) {
-  const { search = '', priority = '', showDone = true, showArchived = false } = filters;
+  const { search = '', priority = '', showDone = true, showArchived = false, scope } = filters;
   let result = tasks;
+
+  if (scope && scope.type !== 'all') {
+    const { project_id, room_id } = taskLocation(scope);
+    result = result.filter((task) => (task.project_id || null) === project_id && (!room_id || task.room_id === room_id));
+  }
 
   if (!showArchived) {
     result = result.filter((t) => !t.archived);

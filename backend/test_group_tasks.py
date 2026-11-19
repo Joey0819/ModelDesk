@@ -295,12 +295,15 @@ print(json.dumps({'type':'turn.completed'}))
             self.manager._sync_to_todo(original)
             board = json.loads(board_path.read_text())
             self.assertEqual(board["tasks"][0]["result_ref"], expected_ref)
+            self.assertEqual(board["tasks"][0]["room_id"], room_id)
             board["tasks"][0].pop("result_ref")  # Simulate a legacy mirrored card on restart.
+            board["tasks"][0].pop("room_id")
             todo_board._save_board(board)
             todo_board.repair_group_task_result_refs(reloaded.records)
             async with httpx.AsyncClient(transport=httpx.ASGITransport(app=api), base_url="http://local") as client:
                 result = await client.get("/api/todo")
                 self.assertEqual(result.json()[0]["result_ref"], expected_ref)
+                self.assertEqual(result.json()[0]["room_id"], room_id)
                 resource = f"/api/group-tasks/{task_id}"
                 scope = {"project_id": project_id, "room_id": room_id}
                 self.assertEqual((await client.get(resource, params=scope)).json()["result_ref"], expected_ref)
@@ -309,6 +312,12 @@ print(json.dumps({'type':'turn.completed'}))
                 self.assertIn("Changed greeting; no tests run.", export.text)
                 self.assertIn('+print("changed")', export.text)
                 self.assertEqual((await client.get(resource + "/export", params={**scope, "room_id": other["id"]})).status_code, 403)
+                todo_board._save_board({**board, "tasks": []})
+                reloaded._todo_sync_enabled = True
+                reloaded.recover()
+                restored = (await client.get("/api/todo", params=scope)).json()
+                self.assertEqual(len(restored), 1)
+                self.assertEqual(restored[0]["result_ref"], expected_ref)
 
     async def test_member_change_during_engine_probe_rejects_stale_assignment(self):
         async def changing_engine_status():

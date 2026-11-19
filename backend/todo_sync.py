@@ -13,16 +13,20 @@ logger = logging.getLogger(__name__)
 # Status mapping: workbench/group status -> kanban status
 STATUS_MAP = {
     "queued": "todo",
+    "dispatching": "doing",
     "running": "doing",
     "error": "blocked",
     "interrupted": "blocked",
+    "waiting_user": "blocked",
+    "uncertain": "blocked",
+    "stopped_monitoring": "blocked",
     "complete": "done",
     "blocked": "blocked",
     "review": "review",
     "cancelled": "archived",
 }
 
-VALID_PLATFORMS = {"workbench", "group", "feishu", "fleet"}
+VALID_PLATFORMS = {"workbench", "group", "muse", "feishu", "fleet"}
 
 
 def workbench_card_state(job: dict) -> tuple[str, str]:
@@ -67,6 +71,23 @@ def _validate_external_source(platform: str, task_id: str) -> dict:
     return {"platform": platform, "task_id": task_id}
 
 
+def _board_card(platform, task_id, *, title, status, detail="", source_label="", project_id=None,
+                room_id=None, result_ref=None):
+    external_source = _validate_external_source(platform, task_id)
+    label = source_label or platform
+    title = title.strip() if isinstance(title, str) else ""
+    return {
+        "external_source": external_source,
+        "title": title[:200] or f"[{label}] {task_id}",
+        "status": STATUS_MAP.get(status, "todo"),
+        "description": (detail or "")[:4000],
+        "source_label": label,
+        "project_id": project_id,
+        "room_id": room_id,
+        "result_ref": result_ref,
+    }
+
+
 def sync_task(
     platform: str,
     task_id: str,
@@ -76,66 +97,103 @@ def sync_task(
     detail: str = "",
     source_label: str = "",
     project_id: Optional[str] = None,
+    room_id: str | None = None,
     result_ref: dict | None = None,
 ) -> None:
-    """Idempotent upsert: create or update a kanban card from an external task.
-
-    Args:
-        platform: Source system identifier (workbench/group/feishu).
-        task_id: Unique task ID within the source system.
-        title: Card title (truncated to 200 chars).
-        status: Source system status; mapped via STATUS_MAP.
-        detail: Optional description/detail text.
-        source_label: Display label for the source (e.g. "飞书", "工作台").
-        project_id: Optional project UUID to scope the card.
-
-    This function NEVER raises. All errors are caught and logged.
-    """
+    """Idempotently mirror a saved source task. Errors never interrupt the source."""
     try:
-        # Validate inputs
-        ext_src = _validate_external_source(platform, task_id)
-
-        # Map status
-        kanban_status = STATUS_MAP.get(status)
-        if kanban_status is None:
-            logger.warning(
-                "todo_sync: unknown status %r for %s/%s, defaulting to 'todo'",
-                status, platform, task_id,
-            )
-            kanban_status = "todo"
-
-        # Handle archived (soft delete) for cancelled
-        should_archive = kanban_status == "archived"
-        if should_archive:
-            kanban_status = "done"  # status field value before archiving
-
-        # Truncate title
-        title = (title or "").strip()[:200]
-        if not title:
-            title = f"[{source_label or platform}] {task_id}"
-
-        # Truncate detail
-        detail = (detail or "")[:4000]
-
-        # Import here to avoid circular imports at module level
         from .todo_board import upsert_external_task, archive_external_task
 
-        if should_archive:
-            archive_external_task(ext_src)
+        card = _board_card(platform, task_id, title=title, status=status, detail=detail, source_label=source_label,
+                           project_id=project_id, room_id=room_id, result_ref=result_ref)
+        if status not in STATUS_MAP:
+            logger.warning("todo_sync: unknown status %r for %s/%s, defaulting to 'todo'", status, platform, task_id)
+        if card["status"] == "archived":
+            archive_external_task(card["external_source"])
         else:
-            upsert_external_task(
-                external_source=ext_src,
-                title=title,
-                status=kanban_status,
-                description=detail,
-                source_label=source_label or platform,
-                project_id=project_id,
-                result_ref=result_ref,
-            )
+            upsert_external_task(**card)
     except Exception:
-        logger.exception(
-            "todo_sync: failed to sync task %s/%s", platform, task_id,
-        )
+        logger.exception("todo_sync: failed to sync task %s/%s", platform, task_id)
+
+
+def workbench_card(job, status, detail):
+    from .result_refs import workbench_result_ref
+
+    ref = workbench_result_ref(job)
+    external_source = job.get("external_source")
+    if isinstance(external_source, dict) and external_source.get("platform") == "feishu":
+        label = "飞书"
+    else:
+        label = "群聊任务" if ref["room_id"] else "工作台"
+    return {
+        "title": job.get("prompt") or f"Job {job['id']}",
+        "status": status,
+        "detail": detail,
+        "source_label": label,
+        "project_id": ref["project_id"],
+        "room_id": ref["room_id"],
+        "result_ref": ref,
+    }
+
+
+def group_card(task):
+    from .result_refs import group_task_result_ref
+
+    ref = group_task_result_ref(task)
+    return {
+        "title": task.get("title") or task.get("prompt") or f"Task {task['id']}",
+        "status": task.get("status", "queued"),
+        "detail": f"Kind: {task.get('kind', 'unknown')}\nEngine: {task.get('engine', 'unknown')}\nID: {task['id']}",
+        "source_label": "协作任务",
+        "project_id": ref["project_id"],
+        "room_id": ref["room_id"],
+        "result_ref": ref,
+    }
+
+
+def muse_card(task):
+    """Mirror a saved Muse run without exposing its response or native metadata."""
+    return {
+        "title": task.get("prompt") or "Muse 任务",
+        "status": task["status"],
+        "detail": f"Muse 原生任务编号：{task['id']}",
+        "source_label": "Muse",
+        "project_id": task.get("project_id"),
+        "room_id": task.get("room_id"),
+    }
+
+
+def backfill_room_tasks(platform, records):
+    """Recover older scoped work through existing records with a verified location."""
+    if not records:
+        return
+    from .groups import store as rooms
+    from .projects import store as projects
+    from .todo_board import backfill_external_tasks
+
+    registered = projects.read_registry()
+    scopes = {(room["project_id"], room["id"]) for room in rooms.catalog(registered)}
+    cards = []
+    for record in sorted(records.values(), key=lambda item: str(item.get("created_at") or ""), reverse=True):
+        status = record.get("status")
+        room_id = record.get("group_room_id" if platform == "workbench" else "room_id")
+        project_id = record.get("project_id")
+        if not isinstance(status, str) or status not in STATUS_MAP:
+            continue
+        if any(value is not None and not isinstance(value, str) for value in (room_id, project_id)):
+            continue
+        if (project_id, room_id) not in scopes and not (platform == "muse" and room_id is None and project_id in registered):
+            continue
+        if platform == "workbench":
+            if record.get("mode") != "group" or not room_id or record.get("conversation_id") != room_id:
+                continue
+            details = workbench_card(record, *workbench_card_state(record))
+        elif platform == "group":
+            details = group_card(record)
+        else:
+            details = muse_card(record)
+        cards.append(_board_card(platform, record["id"], **details))
+    backfill_external_tasks(cards)
 
 
 def archive_task(platform: str, task_id: str) -> None:

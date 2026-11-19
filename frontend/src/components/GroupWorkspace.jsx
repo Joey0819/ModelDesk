@@ -244,7 +244,7 @@ function GroupTeamSettings({ room, models, catalog, addRequested, onOpenAgentSet
   </dialog>;
 }
 
-function GroupHeader({ rooms, roomId, roomTitle, selectRoom, onOpenNavigation, workMode, onWorkModeChange, memberCount, onOpenRoster, onOpenMuse, focusHistory, onToggleFocusHistory, artifactsVisible, onToggleResults, resultAvailable }) {
+function GroupHeader({ rooms, roomId, roomTitle, selectRoom, onOpenNavigation, workMode, onWorkModeChange, memberCount, onOpenRoster, onOpenMuse, onOpenTodo, focusHistory, onToggleFocusHistory, artifactsVisible, onToggleResults, resultAvailable }) {
   const moreDialog = useRef(null);
   const hasRoom = Boolean(roomId);
   return <header className="workspace-header group-compact-header">
@@ -266,6 +266,7 @@ function GroupHeader({ rooms, roomId, roomTitle, selectRoom, onOpenNavigation, w
       </nav>
       <div className="group-header-actions">
         {onOpenRoster && <button type="button" className="subtle-button group-roster-trigger" aria-haspopup="dialog" aria-label={`成员与分工，${memberCount} 位成员`} onClick={onOpenRoster}><Icon name="group" size={16} /><span>成员 {memberCount}</span></button>}
+        {onOpenTodo && <button type="button" className="subtle-button group-todo-trigger" onClick={onOpenTodo}><Icon name="dashboard" size={15} />任务看板</button>}
         <button type="button" className="subtle-button group-result-trigger" disabled={!resultAvailable && !artifactsVisible} aria-expanded={artifactsVisible} onClick={onToggleResults}><Icon name="panel" size={15} />成果</button>
         <button type="button" className={`subtle-button group-more-trigger${focusHistory ? ' selected' : ''}`} aria-haspopup="dialog" aria-label="更多群聊操作" onClick={() => moreDialog.current?.showModal()}><Icon name="settings" size={15} /><span className="group-more-label">更多</span><span className="group-current-mode">{compactModeLabels[workMode]}<Icon name="chevron" size={11} /></span></button>
       </div>
@@ -276,6 +277,7 @@ function GroupHeader({ rooms, roomId, roomTitle, selectRoom, onOpenNavigation, w
             {workModes.map(([id, label, icon]) => <button key={id} type="button" className="subtle-button" aria-pressed={workMode === id} onClick={() => { moreDialog.current?.close(); onWorkModeChange(id); }}><Icon name={icon} size={15} />{label}</button>)}
           </div>
           <div className="group-more-actions">
+            {onOpenTodo && <button type="button" className="subtle-button" onClick={() => { moreDialog.current?.close(); onOpenTodo(); }}><Icon name="dashboard" size={15} />任务看板</button>}
             {onOpenMuse && <button type="button" className="subtle-button" onClick={() => { moreDialog.current?.close(); onOpenMuse(); }}><span className="group-muse-mark">M</span>Muse 面板</button>}
             <button type="button" className="subtle-button" onClick={() => { moreDialog.current?.close(); onToggleFocusHistory(); }}><Icon name="expand" size={15} />{focusHistory ? '退出专注' : '专注阅读'}</button>
             <button type="button" className="subtle-button" onClick={() => { moreDialog.current?.close(); selectRoom(null); }}><Icon name="plus" size={15} />新建群聊</button>
@@ -286,7 +288,7 @@ function GroupHeader({ rooms, roomId, roomTitle, selectRoom, onOpenNavigation, w
   </header>;
 }
 
-function GroupRoom({ roomId, projectId, initialJob, header, status, models, context, onContextChange, onOpenArtifacts, onClearArtifacts, onCloseArtifacts, artifactsVisible, onResultShortcutChange, onOpenProjects, onOpenAgentSettings, renderIntegration, focusHistory, onToggleFocusHistory }) {
+function GroupRoom({ roomId, projectId, initialJob, header, onOpenTodo, status, models, context, onContextChange, onOpenArtifacts, onClearArtifacts, onCloseArtifacts, artifactsVisible, onResultShortcutChange, onOpenProjects, onOpenAgentSettings, renderIntegration, focusHistory, onToggleFocusHistory }) {
   const machine = machineInfo(status);
   const { assets, transfers } = useProjects();
   const [workMode, setWorkMode] = useState(() => { const value = localStorage.getItem(`modeldesk.group.mode.${projectId || 'none'}.${roomId}`); return !initialJob && ['code', 'review'].includes(value) ? value : 'discussion'; });
@@ -753,7 +755,7 @@ function GroupRoom({ roomId, projectId, initialJob, header, status, models, cont
   const contextLabel = contextMode === 'fresh' ? '新任务' : '继续任务';
 
   return <>
-    <GroupHeader {...header} roomId={roomId} roomTitle={room?.title || header.roomTitle} workMode={workMode} onWorkModeChange={setWorkMode} memberCount={members.length} onOpenRoster={room ? () => rosterDialog.current?.showModal() : undefined} onOpenMuse={renderIntegration ? openMuse : undefined} focusHistory={focusHistory} onToggleFocusHistory={toggleReading} artifactsVisible={artifactsVisible} onToggleResults={toggleResults} resultAvailable={resultAvailable} />
+    <GroupHeader {...header} onOpenTodo={room && onOpenTodo ? () => onOpenTodo(room) : undefined} roomId={roomId} roomTitle={room?.title || header.roomTitle} workMode={workMode} onWorkModeChange={setWorkMode} memberCount={members.length} onOpenRoster={room ? () => rosterDialog.current?.showModal() : undefined} onOpenMuse={renderIntegration ? openMuse : undefined} focusHistory={focusHistory} onToggleFocusHistory={toggleReading} artifactsVisible={artifactsVisible} onToggleResults={toggleResults} resultAvailable={resultAvailable} />
     {header.error && <div className="error-banner" role="alert">{header.error}<button type="button" className="subtle-button" onClick={header.refresh}>重试</button></div>}
     {artifactsVisible && patchError && <div className="error-banner" role="alert">读取补丁失败：{patchError}<button type="button" className="subtle-button" onClick={() => showResult(explicitPreview.current)}>重新读取补丁</button></div>}
     {room && <dialog className="group-options-dialog group-roster-dialog" ref={rosterDialog} aria-labelledby="group-roster-heading">
@@ -974,7 +976,7 @@ function GroupRoom({ roomId, projectId, initialJob, header, status, models, cont
   </>;
 }
 
-export default function GroupWorkspace({ initialRoomId, initialTeam, initialJob, renderIntegration, status, models, context, onContextChange, onOpenNavigation, onOpenProjects, onOpenAgentSettings, onOpenArtifacts, onClearArtifacts, onCloseArtifacts, onResultShortcutChange, artifactsVisible = false }) {
+export default function GroupWorkspace({ initialRoomId, initialTeam, initialJob, renderIntegration, status, models, context, onContextChange, onOpenNavigation, onOpenTodo, onOpenProjects, onOpenAgentSettings, onOpenArtifacts, onClearArtifacts, onCloseArtifacts, onResultShortcutChange, artifactsVisible = false }) {
   const { activeProjectId, activeProject } = useProjects();
   const initialProjectTeam = initialTeam?.id && (initialTeam.project_id || null) === activeProjectId ? initialTeam : null;
   const [roomId, setRoomId] = useState(() => initialProjectTeam ? null : initialRoomId || readGroupSelection(localStorage, activeProjectId));
@@ -1015,7 +1017,7 @@ export default function GroupWorkspace({ initialRoomId, initialTeam, initialJob,
   const selectedRoom = rooms.find((room) => room.id === roomId);
   const header = { rooms, roomTitle: selectedRoom?.title, selectRoom, onOpenNavigation, error, refresh };
   return <main className={`workspace group-workspace ${focusHistory ? 'group-focus-mode' : ''}`}>
-    {roomId ? <GroupRoom key={`${activeProjectId || 'unassigned'}:${roomId}:${initialJob?.group_room_id === roomId ? initialJob.id : ''}`} header={header} initialJob={initialJob?.group_room_id === roomId && (initialJob.project_id || null) === (activeProjectId || null) ? initialJob : null} roomId={roomId} projectId={activeProjectId} status={status} models={models} onOpenAgentSettings={onOpenAgentSettings} context={context} onContextChange={onContextChange} onOpenArtifacts={onOpenArtifacts} onClearArtifacts={onClearArtifacts} onCloseArtifacts={onCloseArtifacts} onResultShortcutChange={onResultShortcutChange} artifactsVisible={artifactsVisible} onOpenProjects={onOpenProjects} renderIntegration={renderIntegration} focusHistory={focusHistory} onToggleFocusHistory={toggleFocusHistory} /> : <>
+    {roomId ? <GroupRoom onOpenTodo={onOpenTodo} key={`${activeProjectId || 'unassigned'}:${roomId}:${initialJob?.group_room_id === roomId ? initialJob.id : ''}`} header={header} initialJob={initialJob?.group_room_id === roomId && (initialJob.project_id || null) === (activeProjectId || null) ? initialJob : null} roomId={roomId} projectId={activeProjectId} status={status} models={models} onOpenAgentSettings={onOpenAgentSettings} context={context} onContextChange={onContextChange} onOpenArtifacts={onOpenArtifacts} onClearArtifacts={onClearArtifacts} onCloseArtifacts={onCloseArtifacts} onResultShortcutChange={onResultShortcutChange} artifactsVisible={artifactsVisible} onOpenProjects={onOpenProjects} renderIntegration={renderIntegration} focusHistory={focusHistory} onToggleFocusHistory={toggleFocusHistory} /> : <>
       <GroupHeader {...header} />
       {error && <div className="error-banner" role="alert">{error}<button type="button" className="subtle-button" onClick={refresh}>重试</button></div>}
       <div className="group-create-scroll"><form className="group-create-room" onSubmit={createRoom}><div className="mission-introduction"><h2>创建项目群聊</h2><p>{activeProject?.name || '独立项目'} · 选择一起讨论或执行任务的成员。</p></div><label className="group-title-input"><span>群聊名称</span><input aria-label="群聊名称" value={title} maxLength={100} placeholder="例如：产品方案讨论、发布前审查" onChange={(event) => setTitle(event.target.value)} /></label><MissionTeamPicker projectId={activeProjectId} team={team} models={models} catalog={status?.models || []} onChange={chooseTeam} onPending={setTeamPending} onOpenAgentSettings={onOpenAgentSettings} requireSaved /><div className="group-create-actions"><p>{team?.id ? '建群后会保存当前成员与分工，已有讨论不受后续编辑影响。' : '选择已有协作组，或新建并保存协作组后开始。'}</p><button type="submit" className="primary-button" disabled={creating || loading || !title.trim() || !team?.id || teamPending}><Icon name="plus" size={15} />{creating ? '正在创建' : '创建群聊'}</button></div></form></div>

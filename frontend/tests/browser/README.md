@@ -25,6 +25,8 @@ node frontend/tests/browser/check-platform-catalogs.mjs
 node frontend/tests/browser/check-conversation-actions.mjs
 node frontend/tests/browser/check-group-dispatch.mjs
 node frontend/tests/browser/check-muse-panel-dispatch.mjs
+npm --prefix frontend run build
+.venv/bin/python frontend/tests/browser/check-todo-board.py
 ```
 
 Set `CHROMIUM_EXECUTABLE` to use a specific Chromium executable. Set
@@ -36,3 +38,5 @@ smoke runs this check on every push and pull request.
 The catalog check delays two MCP servers and verifies that retries preserve a draft and that results return to the correct server. The conversation check opens account controls and downloads Markdown and JSON at laptop and phone widths.
 
 The dispatch checks simulate a lost reply after an Agent accepts work. They cover the group chat, code review form and Muse panel. Reloading or returning from a different project or room must recover the same task and preserve any edits. All submissions in these browser checks go to an isolated test adapter.
+
+The task-board check runs the production build against disposable, disk-backed project, room and board stores. It drags a synced card, advances its source, reloads the page, and checks scoped creation, role agreements and phone controls. Pass `--screenshots DIR` to capture these views.

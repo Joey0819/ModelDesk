@@ -1,9 +1,16 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  COLUMNS, groupByStatus, computeReorder, filterTasks, countByStatus, validateTask,
-  buildTaskPayload, isFleetReassignment, hasWorkbenchResult, checkWorkbenchResult, todoResultRef, checkGroupTaskResult,
+  COLUMNS, groupByStatus, computeMove, filterTasks, countByStatus, validateTask, taskLocation,
+  buildTaskPayload, canReassignFleet, cardPreview, hasWorkbenchResult, checkWorkbenchResult, todoResultRef, checkGroupTaskResult,
 } from '../src/todo-state.js';
+
+test('card previews keep useful delivery notes and hide only matching source bookkeeping', () => {
+  const task = { external_source: { platform: 'workbench', task_id: 'run-1' }, description: '需要复核图表\n模式：group\n任务编号：run-1' };
+  assert.equal(cardPreview(task), '需要复核图表');
+  assert.equal(cardPreview({ ...task, external_source: null }), task.description);
+  assert.equal(cardPreview({ ...task, external_source: { platform: 'workbench', task_id: 'another' } }), task.description);
+});
 
 // --- groupByStatus ---
 
@@ -102,50 +109,46 @@ test('filterTasks combines multiple filters', () => {
   assert.equal(result[0].id, '1');
 });
 
-// --- computeReorder ---
-
-test('computeReorder moves task to target column at correct index', () => {
-  const tasks = [
-    { id: 'a', status: 'todo', position: 0 },
-    { id: 'b', status: 'todo', position: 1 },
-    { id: 'c', status: 'doing', position: 0 },
+test('project, room and personal filters use both parts of the room scope', () => {
+  const cards = [
+    { id: 'a', project_id: 'p1', room_id: 'r1' },
+    { id: 'b', project_id: 'p1' },
+    { id: 'c', project_id: 'p2', room_id: 'r1' },
+    { id: 'd', room_id: 'r1' },
+    { id: 'e', project_id: null },
   ];
-  const { reorderPayload } = computeReorder(tasks, 'a', 'doing', 0);
-  assert.ok(reorderPayload);
-  assert.equal(reorderPayload.status, 'doing');
-  assert.deepEqual(reorderPayload.ids, ['a', 'c']);
+  const select = (scope) => filterTasks(cards, { scope }).map((card) => card.id);
+  assert.deepEqual(select({ type: 'all' }), ['a', 'b', 'c', 'd', 'e']);
+  assert.deepEqual(select({ type: 'project', projectId: 'p1' }), ['a', 'b']);
+  assert.deepEqual(select({ type: 'room', projectId: 'p1', roomId: 'r1' }), ['a']);
+  assert.deepEqual(select({ type: 'personal' }), ['d', 'e']);
+  assert.deepEqual(select({ type: 'room', projectId: null, roomId: 'r1' }), ['d']);
+  assert.deepEqual(taskLocation({ type: 'room', projectId: 'p2', roomId: 'r1' }), { project_id: 'p2', room_id: 'r1' });
+  assert.deepEqual(taskLocation({ type: 'all' }), { project_id: null, room_id: null });
 });
 
-test('computeReorder handles moving within same column', () => {
-  const tasks = [
-    { id: 'a', status: 'todo', position: 0 },
-    { id: 'b', status: 'todo', position: 1 },
-    { id: 'c', status: 'todo', position: 2 },
-  ];
-  const { reorderPayload } = computeReorder(tasks, 'c', 'todo', 0);
-  assert.ok(reorderPayload);
-  assert.deepEqual(reorderPayload.ids, ['c', 'a', 'b']);
+test('filtered moves send only the moved card and its visible anchor, including mirrored moves', () => {
+  const card = { id: 'agent', status: 'doing', external_source: { platform: 'group' } };
+  const visible = [{ id: 'archived', archived: true }, { id: 'a' }, { id: 'b' }];
+  assert.deepEqual(computeMove(card, 'done', visible, 1), { id: 'agent', from_status: 'doing', status: 'done', anchor_id: 'b', placement: 'before' });
+  assert.deepEqual(computeMove(card, 'done', visible, 2), { id: 'agent', from_status: 'doing', status: 'done', anchor_id: 'b', placement: 'after' });
+  assert.deepEqual(computeMove(card, 'done', [], 0), { id: 'agent', from_status: 'doing', status: 'done', anchor_id: null, placement: 'after' });
+  assert.equal(computeMove({ ...card, archived: true }, 'done', visible, 0), null);
 });
 
-test('computeReorder returns null payload for nonexistent task', () => {
-  const tasks = [{ id: 'a', status: 'todo', position: 0 }];
-  const { reorderPayload } = computeReorder(tasks, 'nonexistent', 'todo', 0);
-  assert.equal(reorderPayload, null);
+test('same-column drags preserve order when dropped in the original slot', () => {
+  const card = { id: 'agent', status: 'doing' };
+  const visible = [{ id: 'a' }, { id: 'archived', archived: true }, card, { id: 'b' }];
+  assert.equal(computeMove(card, 'doing', visible, 1), null);
+  assert.deepEqual(computeMove(card, 'doing', visible, 0), { id: 'agent', from_status: 'doing', status: 'doing', anchor_id: 'a', placement: 'before' });
 });
 
-test('mirrored cards can be reordered in their current column without changing status', () => {
-  const tasks = [{ id: 'agent', status: 'doing', external_source: { platform: 'group' } }];
-  assert.equal(computeReorder(tasks, 'agent', 'done', 0).reorderPayload, null);
-  assert.deepEqual(computeReorder(tasks, 'agent', 'doing', 0).reorderPayload.ids, ['agent']);
-});
-
-test('only dragging an active blocked Fleet card to todo requests reassignment', () => {
-  const card = { id: 'fleet', status: 'blocked', external_source: { platform: 'fleet' } };
-  assert.equal(isFleetReassignment(card, 'todo'), true);
-  assert.equal(isFleetReassignment(card, 'done'), false);
-  assert.equal(isFleetReassignment({ ...card, status: 'doing' }, 'todo'), false);
-  assert.equal(isFleetReassignment({ ...card, archived: true }, 'todo'), false);
-  assert.equal(isFleetReassignment({ ...card, external_source: { platform: 'group' } }, 'todo'), false);
+test('only an active blocked Fleet execution offers the explicit reassignment action', () => {
+  const card = { id: 'fleet', status: 'done', source_status: 'blocked', external_source: { platform: 'fleet', task_id: 'job' } };
+  assert.equal(canReassignFleet(card), true);
+  assert.equal(canReassignFleet({ ...card, status: 'blocked', source_status: 'doing' }), false);
+  assert.equal(canReassignFleet({ ...card, archived: true }), false);
+  assert.equal(canReassignFleet({ ...card, external_source: { platform: 'group' } }), false);
 });
 
 test('mirrored card payload updates only the fields edited in the modal', () => {
@@ -153,11 +156,12 @@ test('mirrored card payload updates only the fields edited in the modal', () => 
     id: 'fleet', title: 'Queued', description: 'Queued detail', status: 'todo',
     priority: 'medium', tags: ['Fleet'], external_source: { platform: 'fleet' },
   };
-  assert.deepEqual(buildTaskPayload({ ...original, priority: 'urgent', status: 'doing' }, original), {
+  assert.deepEqual(buildTaskPayload({ ...original, priority: 'urgent', project_id: 'other', room_id: 'other-room' }, original), {
     priority: 'urgent',
   });
-  const manual = { id: 'manual', title: 'Write tests', status: 'todo' };
-  assert.deepEqual(buildTaskPayload({ ...manual, status: 'doing' }, manual), { status: 'doing' });
+  assert.deepEqual(buildTaskPayload({ ...original, status: 'doing' }, original), { board_status: 'doing' });
+  const manual = { id: 'manual', title: 'Write tests', status: 'todo', project_id: 'old', room_id: 'old-room' };
+  assert.deepEqual(buildTaskPayload({ ...manual, status: 'doing', project_id: 'next', room_id: null }, manual), { board_status: 'doing', project_id: 'next', room_id: null });
 });
 
 test('result navigation requires a terminal Workbench card and an exact saved job and project', () => {
@@ -280,4 +284,14 @@ test('cards open a saved Agent result only with matching source, project, room a
   assert.throws(() => checkGroupTaskResult(result_ref, { ...result_ref, room_id: 'other', result_ref }), /不一致/);
   assert.throws(() => checkGroupTaskResult(result_ref, { ...result_ref, result_ref: { ...result_ref, source_run_id: 'other' } }), /不一致/);
   assert.equal(todoResultRef({ ...card, external_source: { platform: 'workbench', task_id: 'task' }, result_ref: null }), null);
+});
+
+test('opening a personal group Workbench result checks execution status and canonical room', () => {
+  const result_ref = { kind: 'workbench', id: 'job', project_id: null, room_id: 'personal-room' };
+  const card = { status: 'todo', source_status: 'done', project_id: null, room_id: 'personal-room', external_source: { platform: 'workbench', task_id: 'job' }, result_ref };
+  assert.deepEqual(todoResultRef(card), result_ref);
+  assert.equal(todoResultRef({ ...card, status: 'done', source_status: 'doing' }), null);
+  assert.equal(todoResultRef({ ...card, room_id: 'other-room' }), null);
+  assert.doesNotThrow(() => checkWorkbenchResult(card, { id: 'job', project_id: null, group_room_id: 'personal-room' }));
+  assert.throws(() => checkWorkbenchResult(card, { id: 'job', project_id: null, group_room_id: 'other-room' }), /不一致/);
 });

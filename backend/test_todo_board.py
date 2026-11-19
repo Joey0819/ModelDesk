@@ -175,13 +175,29 @@ class TodoBoardTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(saved.json()["priority"], "urgent")
             self.assertEqual((await client.get(route)).json()["status"], "error")
 
+            moved = await client.post("/api/todo/move", json={
+                "id": card["id"], "status": "done", "from_status": "blocked",
+            })
+            self.assertEqual(moved.status_code, 200, moved.text)
+            self.assertEqual(moved.json()["status"], "done")
+            self.assertEqual(moved.json()["status_mode"], "manual")
+            self.assertEqual(moved.json()["source_status"], "blocked")
+            self.assertEqual((await client.get(route)).json()["status"], "error")
+
+            todo_board._cache = None
+            self.assertEqual((await client.get("/api/todo")).json()[0], moved.json())
             reassigned = await client.post(f"{route}/reassign")
             self.assertEqual(reassigned.status_code, 200, reassigned.text)
             self.assertEqual(reassigned.json()["status"], "queued")
             refreshed = (await client.get("/api/todo")).json()[0]
             self.assertEqual(refreshed["id"], card["id"])
-            self.assertEqual(refreshed["status"], "todo")
+            self.assertEqual(refreshed["status"], "done")
+            self.assertEqual(refreshed["source_status"], "todo")
             self.assertEqual(refreshed["priority"], "urgent")
+            reset = await client.put(f"/api/todo/{card['id']}", json={"status_mode": "source"})
+            self.assertEqual(reset.status_code, 200, reset.text)
+            self.assertEqual(reset.json()["status"], "todo")
+            self.assertEqual(reset.json()["status_mode"], "source")
 
     async def test_terminal_automatic_delivery_uses_delivery_status_and_supports_job_lookup(self):
         from backend import workbench
@@ -355,6 +371,97 @@ class TodoBoardTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(accepted.status_code, 200, accepted.text)
             listed = {task["id"]: task for task in (await client.get("/api/todo")).json()}
             self.assertEqual(listed[card["id"]]["position"], 6)
+
+    async def test_filtered_move_keeps_other_cards_in_order_and_following_source(self):
+        from backend.todo_sync import sync_task
+
+        project, other_project = str(uuid.uuid4()), str(uuid.uuid4())
+        for key, scope, state in (
+            ("first", project, "running"), ("hidden", other_project, "running"),
+            ("last", project, "running"), ("moved", project, "queued"),
+        ):
+            sync_task("group", key, title=key, status=state, project_id=scope)
+
+        async with await self._client() as client:
+            def by_source(cards):
+                return {card["external_source"]["task_id"]: card for card in cards}
+
+            def lane_order(cards, status):
+                return [card["external_source"]["task_id"] for card in
+                        sorted(cards, key=lambda c: c["position"]) if card["status"] == status]
+
+            all_cards = (await client.get("/api/todo")).json()
+            self.assertEqual(lane_order(all_cards, "doing"), ["first", "hidden", "last"])
+            visible = by_source((await client.get("/api/todo", params={"project_id": project})).json())
+            self.assertEqual(set(visible), {"first", "last", "moved"})
+            placement = {"id": visible["moved"]["id"], "status": "doing", "from_status": "todo",
+                         "anchor_id": visible["last"]["id"], "placement": "before"}
+            result = await client.post("/api/todo/move", json=placement)
+            self.assertEqual(result.status_code, 200, result.text)
+            self.assertEqual(result.json()["source_status"], "todo")
+            snapshot = (await client.get("/api/todo")).json()
+            self.assertEqual(lane_order(snapshot, "doing"), ["first", "hidden", "moved", "last"])
+            self.assertEqual({key: card["status_mode"] for key, card in by_source(snapshot).items()},
+                             {"first": "source", "hidden": "source", "last": "source", "moved": "manual"})
+            rejected = await client.post("/api/todo/move", json=placement)
+            self.assertEqual(rejected.status_code, 409, rejected.text)
+            self.assertEqual((await client.get("/api/todo")).json(), snapshot)
+
+            result = await client.post("/api/todo/move", json={
+                "id": visible["last"]["id"], "status": "doing", "from_status": "doing",
+                "anchor_id": visible["first"]["id"], "placement": "before",
+            })
+            self.assertEqual(result.status_code, 200, result.text)
+            self.assertEqual(result.json()["status_mode"], "source")
+            for key in ("moved", "last"):
+                sync_task("group", key, title=key, status="complete", project_id=project)
+            todo_board._cache = None
+            persisted = (await client.get("/api/todo")).json()
+            self.assertEqual(lane_order(persisted, "doing"), ["first", "hidden", "moved"])
+            self.assertEqual(lane_order(persisted, "done"), ["last"])
+            self.assertEqual(by_source(persisted)["moved"]["source_status"], "done")
+
+    async def test_recovery_respects_archives_and_capacity_in_one_save(self):
+        def source(key, status, **extras):
+            return {"external_source": {"platform": "muse", "task_id": key},
+                    "title": key, "status": status, **extras}
+
+        async with await self._client() as client:
+            preserved = todo_board.upsert_external_task(**source("preserved", "doing"))
+            edit = await client.put(f"/api/todo/{preserved['id']}", json={
+                "board_status": "done", "title": "my label", "priority": "urgent",
+            })
+            self.assertEqual(edit.status_code, 200, edit.text)
+            archived = todo_board.upsert_external_task(**source("archived", "doing"))
+            todo_board.archive_external_task(archived["external_source"])
+            todo_board.upsert_external_task(**source("cancelled", "doing"))
+            todo_board.upsert_external_task(**source("following", "doing"))
+            room, project = str(uuid.uuid4()), str(uuid.uuid4())
+            batch = [source("newest", "todo", project_id=project, room_id=room),
+                     source("too old", "todo"), source("cancelled", "archived"),
+                     source("missing cancelled", "archived"), source("archived", "blocked"),
+                     source("preserved", "blocked", project_id=project, room_id=room),
+                     source("preserved", "review"), source("following", "blocked")]
+            with (patch.object(todo_board, "MAX_ACTIVE_TASKS", 3),
+                  patch.object(todo_board, "_save_board", wraps=todo_board._save_board) as save):
+                self.assertEqual(todo_board.backfill_external_tasks(batch), 5)
+                save.assert_called_once()
+                self.assertEqual(todo_board.backfill_external_tasks(batch), 0)
+                save.assert_called_once()
+
+            todo_board._cache = None
+            listed = (await client.get("/api/todo", params={"archived": True})).json()
+            cards = {card["external_source"]["task_id"]: card for card in listed}
+            self.assertEqual(set(cards), {"newest", "preserved", "archived", "cancelled", "following"})
+            self.assertEqual((cards["newest"]["project_id"], cards["newest"]["room_id"]), (project, room))
+            self.assertEqual((cards["preserved"]["status"], cards["preserved"]["source_status"],
+                              cards["preserved"]["title"], cards["preserved"]["priority"]),
+                             ("done", "blocked", "my label", "urgent"))
+            self.assertEqual(cards["following"]["status"], "blocked")
+            self.assertEqual(cards["archived"]["source_status"], "blocked")
+            for key in ("archived", "cancelled"):
+                self.assertTrue(cards[key]["archived"])
+                self.assertEqual(cards[key]["status"], "doing")
 
     # --- Corrupted file tolerance ---
 

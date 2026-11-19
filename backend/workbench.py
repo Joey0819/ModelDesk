@@ -199,11 +199,11 @@ class JobManager:
         # isolated; otherwise suite runs leak fixture jobs onto the live board.
         self._todo_sync_enabled = Path(self.directory).resolve() == (PROJECT / "data/workbench").resolve()
 
-    def save(self, job):
+    def save(self, job, *, sync_board=True):
         from .execution_store import save_checkpoint
         save_checkpoint(self.directory, job["id"], job)
         # Sync to todo kanban (fire-and-forget, never raises)
-        if not getattr(self, "_todo_sync_enabled", True):
+        if not sync_board or not getattr(self, "_todo_sync_enabled", True):
             return
         synced = getattr(self, "_todo_synced", None)
         if synced is None:
@@ -222,25 +222,8 @@ class JobManager:
         import logging as _logging
         _logger = _logging.getLogger(__name__)
         try:
-            from .result_refs import workbench_result_ref
-            from .todo_sync import sync_task
-            title = (job.get("prompt") or "")[:200] or f"Job {job['id']}"
-            ext_src = job.get("external_source")
-            if ext_src and isinstance(ext_src, dict) and ext_src.get("platform") == "feishu":
-                source_label = "飞书"
-            else:
-                source_label = "工作台"
-            project_id = job.get("project_id")
-            sync_task(
-                "workbench",
-                job["id"],
-                title=title,
-                status=status,
-                detail=detail,
-                source_label=source_label,
-                project_id=project_id,
-                result_ref=workbench_result_ref(job),
-            )
+            from .todo_sync import sync_task, workbench_card
+            sync_task("workbench", job["id"], **workbench_card(job, status, detail))
         except Exception:
             _logger.exception("workbench: todo sync failed for job %s", job.get("id"))
 
@@ -278,19 +261,21 @@ class JobManager:
                             except (ValueError, KeyError, TypeError):
                                 workflow["elapsed_seconds"] = budget
                             workflow["revision"] += 1
-                    self.emit(job, "error", message=job["error"])
+                    self.emit(job, "error", sync_board=False, message=job["error"])
             except (ValueError, KeyError, TypeError, OSError):
                 # A malformed local file must not prevent all other jobs loading.
                 continue
         if self._todo_sync_enabled:
             try:
                 from .todo_board import repair_workbench_delivery_cards
+                from .todo_sync import backfill_room_tasks
                 repair_workbench_delivery_cards(self.jobs)
+                backfill_room_tasks("workbench", self.jobs)
             except Exception:
                 import logging
                 logging.getLogger(__name__).exception("workbench: failed to repair todo delivery status")
 
-    def emit(self, job, event_type, **data):
+    def emit(self, job, event_type, *, sync_board=True, **data):
         # Engines may receive a derived review prompt; persist the public job,
         # never overwrite its mode/user prompt with that internal engine input.
         job = self.jobs.get(job["id"], job)
@@ -299,7 +284,7 @@ class JobManager:
         event = {"type": event_type, "job_id": job["id"], "seq": len(job["events"]) + 1, "created_at": now(), **data}
         job["events"].append(event)
         job["updated_at"] = event["created_at"]
-        self.save(job)
+        self.save(job, sync_board=sync_board)
         self.wakeups[job["id"]].set()
 
     def get(self, job_id):

@@ -30,6 +30,7 @@
 .project-assets-manager, .folder-import-dialog { margin: auto; padding: 0; color: var(--ink); }
 .project-assets-manager, .folder-import-dialog { width: min(890px, calc(100vw - 40px)); max-height: calc(100dvh - 55px); display: flex; flex-direction: column; background: #fff; border: 1px solid #dfe5ef; border-radius: 11px; overflow: hidden; box-shadow: 0 18px 80px #10223c24; }
 .project-assets-manager > header, .folder-import-dialog > header { padding: 20px 23px; border-bottom: 1px solid #e3e7ef; }
+.project-manager-actions { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
 .project-assets-manager header > div:last-child { display: flex; align-items: center; gap: 10px; }
 .project-manager-tabs { display: flex; align-items: center; gap: 25px; padding: 0 23px; border-bottom: 1px solid #e3e7ef; flex: 0 0 auto; }
 .project-manager-tabs button { padding: 12px 0; border: 0; border-bottom: 2px solid transparent; background: none; color: #8291a7; font-size: 12px; }

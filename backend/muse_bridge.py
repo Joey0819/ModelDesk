@@ -7,6 +7,7 @@ import asyncio
 import copy
 import ipaddress
 import json
+import logging
 import os
 import re
 import stat
@@ -371,6 +372,8 @@ def preserve_source_boundary(task):
 class MuseManager:
     def __init__(self, directory=None, helper=None, *, poll_seconds=2, idle_seconds=12, allow_harness_fallback=False):
         self.store = RunStore(directory or ROOT / "data/muse")
+        self._todo_sync_enabled = self.store.directory.resolve() == (ROOT / "data/muse").resolve()
+        self._todo_synced = {}
         self.helper = Path(helper) if helper else ROOT / "desktop/bin/muse-bridge"
         self.records, self.tasks = {}, {}
         self.account_lock = asyncio.Lock()
@@ -381,11 +384,23 @@ class MuseManager:
         self.allow_harness_fallback = False
         self.last_probe = None
 
-    def save(self, task, event=None, **fields):
+    def save(self, task, event=None, *, sync_board=True, **fields):
         task["updated_at"] = now()
         if event:
             task["events"].append({"seq": len(task["events"]) + 1, "type": event, "created_at": task["updated_at"], **fields})
         self.store.save(task)
+        if sync_board:
+            self._sync_to_todo(task)
+
+    def _sync_to_todo(self, task):
+        if not self._todo_sync_enabled or not (task.get("project_id") or task.get("room_id")):
+            return
+        from .todo_sync import muse_card, sync_task
+        card = muse_card(task)
+        if self._todo_synced.get(task["id"]) == card["status"]:
+            return
+        sync_task("muse", task["id"], **card)
+        self._todo_synced[task["id"]] = card["status"]
 
     def get(self, identifier, project_id=None):
         task = self.records.get(checked_id(identifier))
@@ -407,6 +422,7 @@ class MuseManager:
     def recover(self):
         if not self.store.directory.exists():
             return
+        self._todo_synced.clear()
         for path in self.store.directory.glob("*.json"):
             try:
                 if path.is_symlink():
@@ -414,7 +430,9 @@ class MuseManager:
                 task = json.loads(path.read_text())
                 if checked_id(task["id"]) != path.stem or task["id"] != task["request_id"] or task.get("schema_version") != 1:
                     continue
-                MuseTaskRequest.model_validate({key: task[key] for key in MuseTaskRequest.model_fields if key in task})
+                request = MuseTaskRequest.model_validate({key: task[key] for key in MuseTaskRequest.model_fields if key in task})
+                if task.get("project_id") != (str(request.project_id) if request.project_id else None) or task.get("room_id") != (str(request.room_id) if request.room_id else None):
+                    continue
                 if task["status"] not in STATES or not isinstance(task["events"], list) or not isinstance(task["response"], str):
                     continue
                 for field in ["created_at", "updated_at"]:
@@ -431,10 +449,17 @@ class MuseManager:
                     task["interrupted_from"] = task["status"]
                     task.update(status="interrupted", uncertain=task.get("sent") is not False, remote_state="unknown" if task.get("sent") is not False else "not_sent",
                                 error="服务已重启，未自动重新发送。请先在 Muse 核对已有任务。", monitoring=False)
-                    self.save(task, "recovered_without_replay")
-                self.records[task["id"]] = preserve_source_boundary(task)
+                    self.save(task, "recovered_without_replay", sync_board=False)
+                task = preserve_source_boundary(task)
+                self.records[task["id"]] = task
             except (ValueError, TypeError, KeyError, OSError, HTTPException):
                 continue
+        if self._todo_sync_enabled:
+            try:
+                from .todo_sync import backfill_room_tasks
+                backfill_room_tasks("muse", self.records)
+            except Exception:
+                logging.getLogger(__name__).exception("Muse: failed to recover tasks on the board")
 
     async def helper_call(self, command, payload=None):
         if command not in {"probe", "submit", "observe", "check_draft", "resume_draft"}:

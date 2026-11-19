@@ -390,7 +390,7 @@ class TaskManager:
                     continue
                 if recover_interrupted and item["status"] in ACTIVE:
                     item.update(status="interrupted", error="服务已重启；任务未自动重发。", finished_at=now())
-                    self.save(item, "interrupted", "服务重启，不自动重放任务")
+                    self.save(item, "interrupted", "服务重启，不自动重放任务", sync_board=False)
                 self.records[item["id"]] = item
             except (ValueError, KeyError, OSError, HTTPException):
                 continue
@@ -403,11 +403,13 @@ class TaskManager:
         if getattr(self, "_todo_sync_enabled", True):
             from .todo_board import repair_group_task_result_refs
             try:
+                from .todo_sync import backfill_room_tasks
                 repair_group_task_result_refs(self.records)
+                backfill_room_tasks("group", self.records)
             except Exception:
                 logging.getLogger(__name__).exception("Could not repair saved Agent task result references")
 
-    def save(self, item, event=None, text=""):
+    def save(self, item, event=None, text="", *, sync_board=True):
         item["updated_at"] = now()
         if event:
             item["events"].append({"at": now(), "type": event, "text": clean_output(text)[:3000]})
@@ -418,7 +420,7 @@ class TaskManager:
         self.store.save(item)
         # Sync to todo kanban (fire-and-forget, never raises)
         status = item.get("status")
-        if not getattr(self, "_todo_sync_enabled", True):
+        if not sync_board or not getattr(self, "_todo_sync_enabled", True):
             return
         synced = getattr(self, "_todo_synced", None)
         if synced is None:
@@ -435,22 +437,8 @@ class TaskManager:
         import logging as _logging
         _logger = _logging.getLogger(__name__)
         try:
-            from .result_refs import group_task_result_ref
-            from .todo_sync import sync_task
-            status = item.get("status", "queued")
-            title = (item.get("title") or item.get("prompt") or f"Task {item['id']}")[:200]
-            detail = f"Kind: {item.get('kind', 'unknown')}\nEngine: {item.get('engine', 'unknown')}\nID: {item['id']}"
-            project_id = item.get("project_id")
-            sync_task(
-                "group",
-                item["id"],
-                title=title,
-                status=status,
-                detail=detail,
-                source_label="协作任务",
-                project_id=project_id,
-                result_ref=group_task_result_ref(item),
-            )
+            from .todo_sync import group_card, sync_task
+            sync_task("group", item["id"], **group_card(item))
         except Exception:
             _logger.exception("group_tasks: todo sync failed for item %s", item.get("id"))
 

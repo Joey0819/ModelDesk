@@ -87,6 +87,103 @@ class GroupRoomTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(job["status"], "complete", job.get("error"))
         return job
 
+    async def test_board_links_real_group_sends_and_lists_empty_rooms(self):
+        from backend import todo_board
+
+        room = await self.room()
+        empty = await self.room(title="等待任务")
+        personal_team = self.teams.put(TeamRequest(name="Personal writers", members=self.team["members"]))
+        personal = await self.room(title="个人讨论", project_id=None, team_id=personal_team["id"])
+        unregistered_team = self.teams.put(TeamRequest(name="Archived writers", project_id=self.other["id"], members=self.team["members"]))
+        unregistered = await self.room(project_id=self.other["id"], team_id=unregistered_team["id"])
+        self.projects.remove(self.other["id"])
+
+        catalog = await self.client.get("/api/groups/catalog")
+        self.assertEqual(catalog.status_code, 200, catalog.text)
+        self.assertCountEqual(catalog.json(), [{key: item[key] for key in ("id", "project_id", "title")}
+                                               for item in (room, empty, personal)])
+        self.assertNotIn(unregistered["id"], {item["id"] for item in catalog.json()})
+        scoped = await self.client.get("/api/groups", params=self.params(room))
+        self.assertCountEqual([item["id"] for item in scoped.json()], [room["id"], empty["id"]])
+
+        self.api.include_router(todo_board.router)
+        with (patch.object(todo_board, "BOARD_FILE", self.root / "board.json"), patch.object(todo_board, "_cache", None),
+              patch.object(self.jobs, "_todo_sync_enabled", True)):
+            jobs = [(await self.send(item, recipient_member_ids=["writer"]), item) for item in (room, personal)]
+            response = await self.client.get("/api/todo")
+            self.assertEqual(response.status_code, 200, response.text)
+            cards = {card["external_source"]["task_id"]: card for card in response.json()}
+            self.assertEqual(set(cards), {job["id"] for job, _ in jobs})
+            for job, item in jobs:
+                card = cards[job["id"]]
+                self.assertEqual((card["project_id"], card["room_id"]), (item["project_id"], item["id"]))
+                self.assertEqual(card["result_ref"]["room_id"], item["id"])
+                self.assertEqual(card["status"], "done")
+
+    async def test_room_with_only_a_manual_board_card_cannot_be_deleted(self):
+        from backend import todo_board
+
+        room = await self.room()
+        self.api.include_router(todo_board.router)
+        with (patch.object(todo_board, "BOARD_FILE", self.root / "board.json"), patch.object(todo_board, "_cache", None)):
+            made = await self.client.post("/api/todo", json={"title": "记录验收标准", "project_id": room["project_id"], "room_id": room["id"]})
+            self.assertEqual(made.status_code, 200, made.text)
+            with self.assertRaises(HTTPException) as active:
+                self.rooms.hard_delete(room["id"], room["project_id"])
+            self.assertEqual(active.exception.status_code, 409)
+            archived = await self.client.delete(f"/api/todo/{made.json()['id']}")
+            self.assertEqual(archived.status_code, 200, archived.text)
+            with self.assertRaises(HTTPException) as historical:
+                self.rooms.hard_delete(room["id"], room["project_id"])
+            self.assertEqual(historical.exception.status_code, 409)
+
+    async def test_restart_imports_only_verified_missing_room_jobs_and_preserves_board_work(self):
+        from backend import todo_board
+        from backend.todo_sync import sync_task, workbench_card, workbench_card_state
+
+        room = await self.room()
+        missing, archived, manual, cancelled = [await self.send(room, recipient_member_ids=["writer"]) for _ in range(4)]
+        board_file = self.root / "board.json"
+        self.api.include_router(todo_board.router)
+        with (patch.object(todo_board, "BOARD_FILE", board_file), patch.object(todo_board, "_cache", None)):
+            for job in (archived, manual):
+                sync_task("workbench", job["id"], **workbench_card(job, *workbench_card_state(job)))
+                job["status"] = "running"
+                self.jobs.save(job)
+            todo_board.archive_external_task({"platform": "workbench", "task_id": archived["id"]})
+            listed = await self.client.get("/api/todo")
+            card_id = listed.json()[0]["id"]
+            moved = await self.client.put(f"/api/todo/{card_id}", json={"board_status": "review", "title": "验收说明"})
+            self.assertEqual(moved.status_code, 200, moved.text)
+            self.jobs.save({**cancelled, "status": "cancelled"})
+            for scope in ({"group_room_id": None}, {"project_id": self.other["id"]}, {"conversation_id": str(uuid.uuid4())}):
+                self.jobs.save({**missing, **scope, "id": str(uuid.uuid4())})
+            standalone = {**missing, "id": str(uuid.uuid4()), "mode": "chat", "group_room_id": None, "status": "running"}
+            self.jobs.save(standalone)
+            sync_task("workbench", standalone["id"], **workbench_card(standalone, *workbench_card_state(standalone)))
+
+            restored = workbench.JobManager(self.jobs.directory)
+            restored._todo_sync_enabled = True
+            restored.recover()
+            response = await self.client.get("/api/todo", params={"archived": True, "project_id": room["project_id"], "room_id": room["id"]})
+            self.assertEqual(response.status_code, 200, response.text)
+            cards = {card["external_source"]["task_id"]: card for card in response.json()}
+            self.assertEqual(set(cards), {missing["id"], archived["id"], manual["id"]})
+            all_cards = {card["external_source"]["task_id"]: card for card in
+                         (await self.client.get("/api/todo", params={"archived": True})).json()}
+            self.assertEqual(set(all_cards), {*cards, standalone["id"]})
+            standalone_card = all_cards[standalone["id"]]
+            self.assertEqual((standalone_card["room_id"], standalone_card["source_status"], standalone_card["status"]), (None, "blocked", "blocked"))
+            self.assertEqual(cards[missing["id"]]["status"], "done")
+            self.assertTrue(cards[archived["id"]]["archived"])
+            self.assertEqual(cards[manual["id"]]["id"], card_id)
+            self.assertEqual(cards[manual["id"]]["status"], "review")
+            self.assertEqual(cards[manual["id"]]["source_status"], "blocked")
+            self.assertEqual(cards[manual["id"]]["title"], "验收说明")
+            checkpoint = board_file.read_bytes()
+            restored.recover()
+            self.assertEqual(board_file.read_bytes(), checkpoint)
+
     async def test_concurrent_message_retries_dispatch_once_and_replay_after_restart(self):
         room = await self.room()
         receipt = str(uuid.uuid4())

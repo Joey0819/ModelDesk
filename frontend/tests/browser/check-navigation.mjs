@@ -49,8 +49,13 @@ async function check(page, state) {
 
 async function visit(page, state, next) {
   if (next === 'projects') {
-    await page.getByRole('combobox', { name: '选择共享项目' }).selectOption('fixture-project');
-    await click(core(page), /项目与资料/);
+    if (state.workspace === 'todo') {
+      await page.getByRole('combobox', { name: '筛选项目' }).selectOption('fixture-project');
+      await click(page.locator('.todo-toolbar'), '打开项目');
+    } else {
+      await page.getByRole('combobox', { name: '选择共享项目' }).selectOption('fixture-project');
+      await click(core(page), /项目与资料/);
+    }
     await click(page.getByRole('dialog', { name: '项目资料与历史' }), '代码审查');
     await page.locator('.project-heading').waitFor();
   } else {

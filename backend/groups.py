@@ -110,8 +110,14 @@ class RoomStore:
         return path.exists() or path.is_symlink()
 
     def get(self, identifier, project_id=None):
-        identifier = checked_id(identifier)
         project = checked_id(project_id) if project_id else None
+        room = self._load(identifier)
+        if room["project_id"] != project:
+            raise HTTPException(403, "项目群不属于当前项目")
+        return room
+
+    def _load(self, identifier):
+        identifier = checked_id(identifier)
         path = self.atomic.directory / (identifier + ".json")
         try:
             if self.atomic.directory.is_symlink() or path.is_symlink():
@@ -129,8 +135,6 @@ class RoomStore:
             raise HTTPException(404, "项目群不存在") from error
         except (ValueError, TypeError, KeyError, OSError) as error:
             raise HTTPException(409, "项目群记录无法读取，原文件已保留") from error
-        if request["project_id"] != project:
-            raise HTTPException(403, "项目群不属于当前项目")
         return {**request, "team_snapshot": copy.deepcopy(snapshot), "team_revision": team_revision(snapshot), **{key: value[key] for key in ["id", "schema_version", "created_at", "updated_at"]}}
 
     def save(self, value):
@@ -150,10 +154,17 @@ class RoomStore:
 
     def list(self, project_id=None):
         project = checked_id(project_id) if project_id else None
+        return [room for room in self._rooms() if room["project_id"] == project]
+
+    def catalog(self, project_ids):
+        return [{key: room[key] for key in ("id", "project_id", "title")} for room in self._rooms()
+                if room["project_id"] is None or room["project_id"] in project_ids]
+
+    def _rooms(self):
         values = []
         for path in self.atomic.directory.glob("*.json"):
             try:
-                values.append(self.get(path.stem, project))
+                values.append(self._load(path.stem))
             except HTTPException:
                 continue
         return sorted(values, key=lambda item: (item["updated_at"], item["id"]), reverse=True)
@@ -175,13 +186,14 @@ class RoomStore:
             room = self.get(identifier, project_id)
             from .group_tasks import manager as tasks
             from .muse_bridge import manager as muse
+            from .todo_board import has_room_cards
             jobs = [job for job in workbench.manager.jobs.values()
                     if job.get("group_room_id") == room["id"] and job.get("conversation_id") == room["id"]]
             agent_tasks = [task for task in tasks.records.values()
                            if task.get("room_id") == room["id"] and task.get("project_id") == room["project_id"]]
             muse_tasks = [task for task in muse.records.values()
                           if task.get("room_id") == room["id"] and task.get("project_id") == room["project_id"]]
-            if jobs or agent_tasks or muse_tasks:
+            if jobs or agent_tasks or muse_tasks or has_room_cards(room["project_id"], room["id"]):
                 raise HTTPException(409, "该群已有历史任务，不能删除")
             path = self.atomic.directory / (checked_id(identifier) + ".json")
             if path.is_symlink():
@@ -304,6 +316,12 @@ def room_jobs(room):
 @router.get("")
 async def list_rooms(project_id: str | None = None):
     return await asyncio.to_thread(store.list, project_id)
+
+
+@router.get("/catalog")
+def room_catalog():
+    from .projects import store as projects
+    return store.catalog(projects.read_registry())
 
 
 @router.post("", status_code=201)

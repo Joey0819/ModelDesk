@@ -5,17 +5,19 @@ import logging
 import re
 import threading
 import uuid
+from collections.abc import Iterable
+from contextlib import nullcontext
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal, Optional
 
-logger = logging.getLogger(__name__)
-
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
 from .attachments import secret_text
 from .execution_store import save_json
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/todo", tags=["todo"])
 
@@ -24,7 +26,8 @@ DATA_DIR = ROOT / "data" / "todo"
 BOARD_FILE = DATA_DIR / "board.json"
 SCHEMA_VERSION = 2
 MAX_ACTIVE_TASKS = 2000
-VALID_EXTERNAL_PLATFORMS = {"workbench", "group", "feishu", "fleet"}
+VALID_EXTERNAL_PLATFORMS = {"workbench", "group", "feishu", "fleet", "muse"}
+BoardStatus = Literal["todo", "doing", "blocked", "review", "done"]
 
 _lock = threading.RLock()
 _cache: dict | None = None
@@ -55,6 +58,13 @@ def _load_board() -> dict:
         raise HTTPException(status_code=500, detail="看板数据格式无效，缺少 tasks 字段")
     # Migrate v1 -> v2 if needed
     data = _migrate_v1_to_v2(data)
+    # Previous versions used the same field for both the column and synced state.
+    for task in data["tasks"]:
+        synced = bool(task.get("external_source"))
+        task.setdefault("status_mode", "source" if synced else "manual")
+        if synced:
+            task.setdefault("source_status", task.get("status"))
+        task.setdefault("room_id", None)
     _cache = data
     return data
 
@@ -83,6 +93,32 @@ def _migrate_v1_to_v2(data: dict) -> dict:
     return data
 
 
+def _uuid_value(value: str | None) -> str | None:
+    if not value:
+        return None
+    try:
+        return str(uuid.UUID(value))
+    except ValueError as exc:
+        raise ValueError("项目或群聊 ID 格式无效") from exc
+
+
+def _lane(tasks: list[dict], status: str, excluding: str | None = None) -> list[dict]:
+    return sorted(
+        (task for task in tasks if task["id"] != excluding and task.get("status") == status and not task.get("archived")),
+        key=lambda task: task.get("position") or 0,
+    )
+
+
+def _lane_end(tasks: list[dict], status: str, excluding: str | None = None) -> int:
+    lane = _lane(tasks, status, excluding)
+    return (lane[-1].get("position") or 0) + 1 if lane else 0
+
+
+def _apply_board_status(tasks: list[dict], task: dict, status: str) -> None:
+    if task.get("status") != status:
+        task.update(status=status, position=_lane_end(tasks, status, task["id"]))
+
+
 # --- Pydantic models ---
 
 
@@ -91,12 +127,13 @@ class TaskCreate(BaseModel):
 
     title: str
     description: str = ""
-    status: Literal["todo", "doing", "blocked", "review", "done"] = "todo"
+    status: BoardStatus = "todo"
     priority: Literal["low", "medium", "high", "urgent"] = "medium"
     assignee: str = ""
     due_date: Optional[str] = None
     tags: list[str] = []
     project_id: Optional[str] = None
+    room_id: Optional[str] = None
     position: int = 0
     # external_source is intentionally absent: the sync key is written only by
     # todo_sync. Accepting it over HTTP let any caller pre-claim (platform,
@@ -155,16 +192,10 @@ class TaskCreate(BaseModel):
                 raise ValueError("单个标签不能超过 100 个字符")
         return v
 
-    @field_validator("project_id")
+    @field_validator("project_id", "room_id")
     @classmethod
     def validate_project_id(cls, v: Optional[str]) -> Optional[str]:
-        if v is None or v == "":
-            return None
-        try:
-            uuid.UUID(v)
-        except ValueError:
-            raise ValueError("项目 ID 格式无效")
-        return v
+        return _uuid_value(v)
 
 
 class TaskUpdate(BaseModel):
@@ -172,12 +203,16 @@ class TaskUpdate(BaseModel):
 
     title: Optional[str] = None
     description: Optional[str] = None
-    status: Optional[Literal["todo", "doing", "blocked", "review", "done"]] = None
+    status: Optional[BoardStatus] = None
+    board_status: Optional[BoardStatus] = None
+    status_mode: Optional[Literal["source"]] = None
+    follow_source: bool = False
     priority: Optional[Literal["low", "medium", "high", "urgent"]] = None
     assignee: Optional[str] = None
     due_date: Optional[str] = None
     tags: Optional[list[str]] = None
     project_id: Optional[str] = None
+    room_id: Optional[str] = None
     position: Optional[int] = None
     archived: Optional[bool] = None
     # See TaskCreate: the sync key must not be rewritable over HTTP, otherwise a
@@ -245,24 +280,34 @@ class TaskUpdate(BaseModel):
                 raise ValueError("单个标签不能超过 100 个字符")
         return v
 
-    @field_validator("project_id")
+    @field_validator("project_id", "room_id")
     @classmethod
     def validate_project_id(cls, v: Optional[str]) -> Optional[str]:
-        if v is None or v == "":
-            return None
-        try:
-            uuid.UUID(v)
-        except ValueError:
-            raise ValueError("项目 ID 格式无效")
-        return v
+        return _uuid_value(v)
+
+    @model_validator(mode="after")
+    def validate_placement(self):
+        if self.board_status is not None and (self.follow_source or self.status_mode == "source"):
+            raise ValueError("不能同时更改看板列和恢复跟随来源")
+        return self
 
 
 class ReorderRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     ids: list[str]
-    status: Literal["todo", "doing", "blocked", "review", "done"]
+    status: BoardStatus
     position_start: int = 0
+
+
+class MoveRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    status: BoardStatus
+    anchor_id: str | None = None
+    placement: Literal["before", "after"] = "after"
+    from_status: BoardStatus | None = None
 
 
 # --- Internal upsert / archive for todo_sync (not HTTP) ---
@@ -276,125 +321,136 @@ def upsert_external_task(
     source_label: str = "",
     project_id: Optional[str] = None,
     result_ref: dict | None = None,
+    *,
+    room_id: str | None = None,
+    preserve_board_state: bool = False,
 ) -> dict:
-    """Idempotent upsert of a synced card keyed by (platform, task_id).
+    """Mirror source state while preserving any manual board placement.
 
-    If an active (non-archived) card with the same external_source exists,
-    update its title/status/description. Otherwise create a new card.
-    Returns the created or updated task dict.
-
-    This function is called from todo_sync while holding no lock;
-    it acquires _lock internally.
+    Startup recovery can also refresh an archived card without resurfacing it.
     """
+    with _lock:
+        data = _load_board()
+        tasks = copy.deepcopy(data["tasks"])
+        identity = _external_identity(external_source)
+        matches = [task for task in tasks if _external_identity(task.get("external_source")) == identity]
+        task = next((task for task in matches if not task.get("archived")), matches[0] if matches else None)
+        if (task is None or (task.get("archived") and not preserve_board_state)) and _active_count(tasks) >= MAX_ACTIVE_TASKS:
+            logger.warning(
+                "todo_board: active task limit reached (%d), skipping sync for %s/%s",
+                MAX_ACTIVE_TASKS, *identity,
+            )
+            return {}
+        task, changed = _mirror_external_task(
+            tasks, task, external_source, title, status, description, source_label,
+            project_id, result_ref, room_id=room_id, preserve_board_state=preserve_board_state,
+        )
+        if changed:
+            _save_board({**data, "tasks": tasks})
+        return task
+
+
+def _external_identity(source: dict | None) -> tuple[str | None, str | None]:
+    return (source.get("platform"), source.get("task_id")) if source else (None, None)
+
+
+def _mirror_external_task(
+    tasks: list[dict], task: dict | None, external_source: dict, title: str, status: str,
+    description: str = "", source_label: str = "", project_id: str | None = None,
+    result_ref: dict | None = None, *, room_id: str | None = None,
+    preserve_board_state: bool = False,
+) -> tuple[dict, bool]:
     from .result_refs import card_result_ref
 
-    def persist_ref(card):
-        ref = card_result_ref(card, result_ref)
-        if ref:
-            card["result_ref"] = ref
-        elif result_ref:
-            card.pop("result_ref", None)
-
-    platform = external_source["platform"]
-    task_id = external_source["task_id"]
-    # Single write point for the sync key: HTTP models no longer accept it, so
-    # the invariant has to be enforced here or nowhere.
+    platform, task_id = _external_identity(external_source)
+    # HTTP callers cannot supply this identity.
     if platform not in VALID_EXTERNAL_PLATFORMS:
         raise ValueError(f"unsupported external platform: {platform}")
     if not isinstance(task_id, str) or not task_id:
         raise ValueError("external_source.task_id is required")
-    # The board is exposed to more surfaces than the original job file (the UI
-    # and a paired phone), so a mirrored title gets the same credential screen
-    # the HTTP path applies. Sync cannot reject the card, so redact instead.
-    safe_title = title[:200]
-    if secret_text(title):
-        safe_title = "（来源标题含疑似凭据，已隐藏）"
+    if status not in {"todo", "doing", "blocked", "review", "done"}:
+        raise ValueError(f"unsupported board status: {status}")
+    previous = task.copy() if task is not None else None
+    now = _now_iso()
+    if task is None:
+        task = {
+            "id": str(uuid.uuid4()),
+            "status": status,
+            "status_mode": "source",
+            "priority": "medium",
+            "assignee": "",
+            "due_date": None,
+            "tags": [source_label] if source_label else [],
+            "source_label": source_label,
+            "position": _lane_end(tasks, status),
+            "created_at": now,
+            "archived": False,
+            "external_source": {"platform": platform, "task_id": task_id},
+        }
+        tasks.append(task)
+    if not (preserve_board_state and task.get("archived")):
+        task["archived"] = False
+        if task["status_mode"] == "source":
+            _apply_board_status(tasks, task, status)
+    task["source_status"] = status
+    if previous is None or not preserve_board_state:
+        # The board can be seen outside the source app, so screen titles before mirroring.
+        safe_title = "（来源标题含疑似凭据，已隐藏）" if secret_text(title) else title[:200]
+        task.update(title=safe_title, description=description[:4000])
+    if source_label:
+        task["source_label"] = source_label
+    _apply_source_scope(task, project_id, room_id)
+    candidate = task.get("result_ref") if result_ref is None else result_ref
+    if candidate is not None:
+        task["result_ref"] = card_result_ref(task, candidate)
+    changed = task != previous
+    if changed:
+        task["updated_at"] = now
+    return task, changed
+
+
+def backfill_external_tasks(cards: Iterable[dict]) -> int:
+    """Recover validated source snapshots, in priority order, using one board write."""
     with _lock:
         data = _load_board()
-        tasks = copy.deepcopy(data.get("tasks", []))
-        # Look for existing active card with same external_source
-        existing = None
-        for t in tasks:
-            es = t.get("external_source")
-            if (
-                es
-                and es.get("platform") == platform
-                and es.get("task_id") == task_id
-                and not t.get("archived", False)
-            ):
-                existing = t
-                break
-        now_ts = _now_iso()
-        if existing is not None:
-            # Update in place
-            existing["title"] = safe_title
-            existing["status"] = status
-            existing["description"] = description[:4000]
-            persist_ref(existing)
-            # The display label can change (e.g. a workbench job that turns out
-            # to be Feishu-dispatched), and the UI must follow the newest one.
-            if source_label:
-                existing["source_label"] = source_label
-            existing["updated_at"] = now_ts
-            new_data = {"schema_version": SCHEMA_VERSION, "tasks": tasks}
-            _save_board(new_data)
-            return existing
-        else:
-            # Check if there's an archived card we should un-archive
-            archived_match = None
-            for t in tasks:
-                es = t.get("external_source")
-                if (
-                    es
-                    and es.get("platform") == platform
-                    and es.get("task_id") == task_id
-                    and t.get("archived", False)
-                ):
-                    archived_match = t
-                    break
-            if archived_match is not None:
-                # Un-archive and update
-                archived_match["archived"] = False
-                archived_match["title"] = safe_title
-                archived_match["status"] = status
-                archived_match["description"] = description[:4000]
-                persist_ref(archived_match)
-                if source_label:
-                    archived_match["source_label"] = source_label
-                archived_match["updated_at"] = now_ts
-                new_data = {"schema_version": SCHEMA_VERSION, "tasks": tasks}
-                _save_board(new_data)
-                return archived_match
-            else:
-                # Create new card
-                if _active_count(tasks) >= MAX_ACTIVE_TASKS:
-                    logger.warning(
-                        "todo_board: active task limit reached (%d), skipping sync for %s/%s",
-                        MAX_ACTIVE_TASKS, platform, task_id,
-                    )
-                    return {}
-                task = {
-                    "id": str(uuid.uuid4()),
-                    "title": safe_title,
-                    "description": description[:4000],
-                    "status": status,
-                    "priority": "medium",
-                    "assignee": "",
-                    "due_date": None,
-                    "tags": [source_label] if source_label else [],
-                    "source_label": source_label,
-                    "project_id": project_id,
-                    "position": 0,
-                    "created_at": now_ts,
-                    "updated_at": now_ts,
-                    "archived": False,
-                    "external_source": {"platform": platform, "task_id": task_id},
-                }
-                persist_ref(task)
-                tasks.append(task)
-                new_data = {"schema_version": SCHEMA_VERSION, "tasks": tasks}
-                _save_board(new_data)
-                return task
+        tasks = copy.deepcopy(data["tasks"])
+        index = {}
+        for task in tasks:
+            key = _external_identity(task.get("external_source"))
+            if key[0] is not None and (key not in index or index[key].get("archived")):
+                index[key] = task
+        seen = set()
+        active_count = _active_count(tasks)
+        changed_count = 0
+        candidates = []
+        for snapshot in cards:
+            key = _external_identity(snapshot.get("external_source"))
+            if key in seen:
+                continue
+            seen.add(key)
+            task = index.get(key)
+            if snapshot["status"] == "archived":
+                if task is not None and not task.get("archived"):
+                    task.update(archived=True, updated_at=_now_iso())
+                    changed_count += 1
+                    active_count -= 1
+                continue
+            candidates.append((snapshot, task))
+        for snapshot, task in candidates:
+            if task is None and active_count >= MAX_ACTIVE_TASKS:
+                continue
+            _, changed = _mirror_external_task(tasks, task, **snapshot, preserve_board_state=True)
+            if changed:
+                changed_count += 1
+            if task is None:
+                active_count += 1
+        if changed_count:
+            _save_board({**data, "tasks": tasks})
+        return changed_count
+
+
+def _apply_source_scope(task: dict, project_id: str | None, room_id: str | None) -> None:
+    task.update(project_id=project_id, room_id=room_id)
 
 
 def archive_external_task(external_source: dict) -> Optional[dict]:
@@ -430,12 +486,11 @@ def archive_external_task(external_source: dict) -> Optional[dict]:
 def repair_workbench_delivery_cards(jobs: dict) -> None:
     """Correct older cards from the source records recovered at startup."""
     from .result_refs import card_result_ref, workbench_result_ref
-    from .todo_sync import workbench_card_state
+    from .todo_sync import STATUS_MAP, workbench_card_state
 
     with _lock:
         data = _load_board()
         tasks = copy.deepcopy(data["tasks"])
-        changed = False
         for task in tasks:
             source = task.get("external_source") or {}
             if source.get("platform") != "workbench":
@@ -443,17 +498,21 @@ def repair_workbench_delivery_cards(jobs: dict) -> None:
             job = jobs.get(source.get("task_id"))
             if job is None:
                 continue
-            ref = card_result_ref(task, workbench_result_ref(job))
-            if task.get("result_ref") != ref:
-                task["result_ref"] = ref
-                changed = True
-            if task.get("status") != "done" or job.get("status") != "complete":
-                continue
+            source_ref = workbench_result_ref(job)
+            _apply_source_scope(task, source_ref["project_id"], source_ref["room_id"])
+            task["result_ref"] = card_result_ref(task, source_ref)
             status, detail = workbench_card_state(job)
-            if status in {"review", "blocked"}:
-                task.update(status=status, description=detail, updated_at=_now_iso())
-                changed = True
-        if changed:
+            lane = STATUS_MAP.get(status)
+            if lane == "archived":
+                if not task.get("archived"):
+                    task.update(archived=True, updated_at=_now_iso())
+            elif lane and lane != task.get("source_status"):
+                task.update(source_status=lane, updated_at=_now_iso())
+                if job.get("status") == "complete" and lane in {"review", "blocked"}:
+                    task["description"] = detail
+                if task["status_mode"] == "source" and not task.get("archived"):
+                    _apply_board_status(tasks, task, lane)
+        if tasks != data["tasks"]:
             _save_board({**data, "tasks": tasks})
 
 
@@ -463,16 +522,14 @@ def repair_group_task_result_refs(records: dict) -> None:
     with _lock:
         data = _load_board()
         tasks = copy.deepcopy(data["tasks"])
-        changed = False
         for task in tasks:
             source = task.get("external_source") or {}
             item = records.get(source.get("task_id")) if source.get("platform") == "group" else None
             if item:
-                ref = card_result_ref(task, group_task_result_ref(item))
-                if task.get("result_ref") != ref:
-                    task["result_ref"] = ref
-                    changed = True
-        if changed:
+                ref = group_task_result_ref(item)
+                _apply_source_scope(task, ref["project_id"], ref["room_id"])
+                task["result_ref"] = card_result_ref(task, ref)
+        if tasks != data["tasks"]:
             _save_board({**data, "tasks": tasks})
 
 
@@ -480,18 +537,48 @@ def repair_group_task_result_refs(records: dict) -> None:
 
 
 @router.get("")
-def list_tasks(archived: bool = Query(False)):
+def list_tasks(archived: bool = False, project_id: str | None = None, room_id: str | None = None):
+    try:
+        project = _uuid_value(None if project_id == "none" else project_id)
+        room = _uuid_value(room_id)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
     with _lock:
         data = _load_board()
-        tasks = data.get("tasks", [])
-        if not archived:
-            tasks = [t for t in tasks if not t.get("archived", False)]
-        return tasks
+        return [task for task in data["tasks"]
+                if (archived or not task.get("archived"))
+                and (project_id is None or task.get("project_id") == project)
+                and (room is None or task.get("room_id") == room)]
+
+
+def has_room_cards(project_id: str | None, room_id: str) -> bool:
+    """Check all cards, including archives, before deleting a room."""
+    with _lock:
+        return any(task.get("project_id") == project_id and task.get("room_id") == room_id
+                   for task in _load_board()["tasks"])
+
+
+def _room_store():
+    from .groups import store
+    return store
+
+
+def _validate_room_scope(store, room_id: str, project_id: str | None) -> None:
+    try:
+        store.get(room_id, project_id)
+    except HTTPException as exc:
+        if exc.status_code in {403, 404}:
+            raise HTTPException(422, "群聊不存在或不属于所选项目") from exc
+        raise
 
 
 @router.post("")
 def create_task(body: TaskCreate):
-    with _lock:
+    rooms = _room_store() if body.room_id else None
+    # Room deletion takes these locks in the same order.
+    with (rooms.lock if rooms is not None else nullcontext()), _lock:
+        if body.room_id:
+            _validate_room_scope(rooms, body.room_id, body.project_id)
         data = _load_board()
         tasks = copy.deepcopy(data.get("tasks", []))
         if _active_count(tasks) >= MAX_ACTIVE_TASKS:
@@ -505,15 +592,18 @@ def create_task(body: TaskCreate):
             "title": body.title,
             "description": body.description,
             "status": body.status,
+            "status_mode": "manual",
             "priority": body.priority,
             "assignee": body.assignee,
             "due_date": body.due_date,
             "tags": body.tags,
             "project_id": body.project_id,
-            "position": body.position,
+            "room_id": body.room_id,
+            "position": body.position if "position" in body.model_fields_set else _lane_end(tasks, body.status),
             "created_at": now,
             "updated_at": now,
             "archived": False,
+            "external_source": None,
         }
         tasks.append(task)
         new_data = {"schema_version": SCHEMA_VERSION, "tasks": tasks}
@@ -523,7 +613,8 @@ def create_task(body: TaskCreate):
 
 @router.put("/{task_id}")
 def update_task(task_id: str, body: TaskUpdate, request: Request):
-    with _lock:
+    rooms = _room_store() if body.room_id else None
+    with (rooms.lock if rooms is not None else nullcontext()), _lock:
         data = _load_board()
         tasks = copy.deepcopy(data.get("tasks", []))
         target = None
@@ -535,26 +626,50 @@ def update_task(task_id: str, body: TaskUpdate, request: Request):
             raise HTTPException(status_code=404, detail="任务不存在")
         updates = body.model_dump(exclude_unset=True)
         ext = target.get("external_source")
+        status = updates.pop("status", None)
+        board_status = updates.pop("board_status", None)
+        status_mode = updates.pop("status_mode", None)
+        follow_source = updates.pop("follow_source", False) or status_mode == "source"
         if ext:
-            # Older editors echo the status they opened with. Only the source
-            # can advance a mirrored card, including while an edit is open.
-            updates.pop("status", None)
-        if not updates:
+            # Older editors echo status without expressing a move. An explicit
+            # board_status changes the column only; synced scope is read only.
+            status = None
+            for field in ("project_id", "room_id"):
+                if field in updates and updates.pop(field) != target.get(field):
+                    raise HTTPException(409, "同步任务的项目和群聊由来源管理")
+        else:
+            if follow_source:
+                raise HTTPException(422, "只有同步任务可以恢复跟随来源")
+            project = updates.get("project_id", target.get("project_id"))
+            project_changed = project != target.get("project_id")
+            room = updates.get("room_id", None if project_changed else target.get("room_id"))
+            if room and (project_changed or room != target.get("room_id")):
+                _validate_room_scope(rooms, room, project)
+            if project_changed:
+                updates["room_id"] = room
+        if not updates and not (status or board_status or follow_source):
             return target
+        old = target.copy()
         old_archived = target.get("archived")
         if not old_archived and updates.get("archived"):
             _require_source_archive_access(ext, request)
-        for key, value in updates.items():
-            target[key] = value
-        result_ref = target.get("result_ref")
-        if result_ref and target.get("project_id") != result_ref.get("project_id"):
-            target.pop("result_ref", None)
+        if follow_source:
+            _apply_board_status(tasks, target, target["source_status"])
+            target["status_mode"] = "source"
+        elif board_status or status:
+            requested = board_status or status
+            if requested != target["status"]:
+                _apply_board_status(tasks, target, requested)
+                target["status_mode"] = "manual"
+        target.update(updates)
+        if target == old:
+            return target
         target["updated_at"] = _now_iso()
         new_data = {"schema_version": SCHEMA_VERSION, "tasks": tasks}
         _save_board(new_data)
 
     if isinstance(ext, dict) and not old_archived and target.get("archived"):
-        _archive_source(ext, target.get("status"))
+        _archive_source(ext, target.get("source_status", target.get("status")))
     return target
 
 
@@ -579,7 +694,7 @@ def delete_task(task_id: str, request: Request):
         _save_board(new_data)
 
     if isinstance(ext, dict):
-        _archive_source(ext, target.get("status"))
+        _archive_source(ext, target.get("source_status", target.get("status")))
     return target
 
 
@@ -601,6 +716,38 @@ def _archive_source(external_source: dict, status: str):
     reverse_sync_task(external_source.get("platform"), external_source.get("task_id"), target_status=status, is_archived=True)
 
 
+@router.post("/move")
+def move_task(body: MoveRequest):
+    with _lock:
+        data = _load_board()
+        tasks = copy.deepcopy(data["tasks"])
+        target = next((task for task in tasks if task["id"] == body.id and not task.get("archived")), None)
+        if target is None:
+            raise HTTPException(404, "任务不存在或已归档")
+        if body.from_status is not None and target["status"] != body.from_status:
+            raise HTTPException(409, "任务的看板列已变更，请刷新后重试")
+        old_lane = _lane(tasks, body.status)
+        lane = [card for card in old_lane if card["id"] != target["id"]]
+        insert_at = len(lane)
+        if body.anchor_id is not None:
+            anchor = next((index for index, card in enumerate(lane) if card["id"] == body.anchor_id), None)
+            if anchor is None:
+                raise HTTPException(409, "目标位置已变更，请刷新后重试")
+            insert_at = anchor + (body.placement == "after")
+        lane.insert(insert_at, target)
+        if lane == old_lane:
+            return target
+        if target["status"] != body.status:
+            target.update(status=body.status, status_mode="manual")
+        # Include hidden cards when assigning ranks, but change only the moved
+        # card's lane and mode. Hidden cards retain their relative order.
+        for index, card in enumerate(lane):
+            card["position"] = index
+        target["updated_at"] = _now_iso()
+        _save_board({**data, "tasks": tasks})
+        return target
+
+
 @router.post("/reorder")
 def reorder_tasks(body: ReorderRequest):
     with _lock:
@@ -615,7 +762,7 @@ def reorder_tasks(body: ReorderRequest):
             if task is None:
                 raise HTTPException(status_code=422, detail=f"任务 {tid} 不存在")
             if task.get("external_source") and task.get("status") != body.status:
-                raise HTTPException(status_code=409, detail="同步任务的状态由来源管理，请查看最新状态后重试。")
+                raise HTTPException(status_code=409, detail="任务的看板列已变更，请刷新后重试。")
         # The board is one global board: cards from different project scopes
         # legitimately share a status column, and the UI drags the whole column
         # at once. Rejecting the mix made every drag in a mixed column fail, so

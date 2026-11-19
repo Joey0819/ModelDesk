@@ -374,6 +374,7 @@ button.group-live-badge { background: var(--shell-paper); border: 1px solid var(
   .group-room-switcher { flex: 1; }
 }
 @container (max-width: 510px) {
+  .group-header-actions .group-todo-trigger { display: none; }
   .group-header-actions .group-roster-trigger > span { display: none; }
   .group-header-actions .group-more-trigger > svg { display: none; }
   .group-header-actions :is(.group-roster-trigger, .group-more-trigger) { min-width: 37px; justify-content: center; }

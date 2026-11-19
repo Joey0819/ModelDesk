@@ -353,8 +353,15 @@ def create_gateway(remote_store=None, *, frontend=None, upstream_transport=None,
                    if key.lower() in {"content-type", "accept", "last-event-id", "range", "if-none-match", "origin"}}
         # These explicit user-control endpoints share the local API approval
         # boundary. Only an authenticated, same-origin gateway request is promoted.
-        if request.method == "POST" and (request.url.path in {"/api/group-tasks", "/api/group-approvals"} or re.fullmatch(
-                r"/api/(?:mcp-agent-tasks/[0-9a-f-]{36}/actions|autonomy/tasks/[0-9a-f-]{36}/(?:read|pause)|group-tasks/[0-9a-f-]{36}/cancel|group-approvals/[0-9a-f-]{36}/decision|groups/[0-9a-f-]{36}/messages(?:/[0-9a-f-]{36}/continue)?)", request.url.path)):
+        path = request.url.path
+        routine_path = r"/api/groups/[0-9a-f-]{36}/routines"
+        routine_edit = request.method in {"PUT", "DELETE"} and re.fullmatch(routine_path + r"/[0-9a-f-]{36}", path)
+        control_post = request.method == "POST" and (
+            path in {"/api/group-tasks", "/api/group-approvals", "/api/todo"}
+            or re.fullmatch(routine_path + r"(?:/[0-9a-f-]{36}/(?:enabled|run))?", path)
+            or re.fullmatch(r"/api/(?:mcp-agent-tasks/[0-9a-f-]{36}/actions|autonomy/tasks/[0-9a-f-]{36}/(?:read|pause)|group-tasks/[0-9a-f-]{36}/cancel|group-approvals/[0-9a-f-]{36}/decision|groups/[0-9a-f-]{36}/messages(?:/[0-9a-f-]{36}/continue)?)", path)
+        )
+        if routine_edit or control_post:
             headers["origin"] = "http://localhost:5173"
         headers["X-ModelDesk-Remote"] = "phone"
         query = request.url.query

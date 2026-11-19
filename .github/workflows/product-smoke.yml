@@ -105,6 +105,8 @@ jobs:
             backend.test_group_delivery \
             backend.test_group_tasks \
             backend.test_groups \
+            backend.test_routines \
+            backend.test_routine_store \
             backend.test_feishu \
             backend.test_feishu_bootstrap \
             backend.test_skill_frontmatter \
@@ -127,6 +129,7 @@ jobs:
           node frontend/tests/browser/check-platform-catalogs.mjs
           node frontend/tests/browser/check-conversation-actions.mjs
           node frontend/tests/browser/check-group-dispatch.mjs
+          node frontend/tests/browser/check-group-routines.mjs
           node frontend/tests/browser/check-muse-panel-dispatch.mjs
           .venv/bin/python frontend/tests/browser/check-todo-board.py
 

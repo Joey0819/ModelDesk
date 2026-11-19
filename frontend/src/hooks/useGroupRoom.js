@@ -39,6 +39,9 @@ export default function useGroupRoom(projectId, roomId, initialJob = null) {
       setSubmissionError('');
     }
   }, [rememberSubmission]);
+  const includeJob = useCallback((job) => {
+    setJobs((previous) => mergeRoomJobs(previous, [job], projectId, roomId));
+  }, [projectId, roomId]);
   useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
   const refresh = useCallback(async () => {
     try {
@@ -125,5 +128,5 @@ export default function useGroupRoom(projectId, roomId, initialJob = null) {
       if (alive.current) setBusy(false);
     }
   };
-  return { room, jobs, activeJob, loading, olderLoading, busy, error, streamError, before, submission, accepted, submissionError, acknowledge, send, cancel, loadOlder, refresh };
+  return { room, jobs, activeJob, loading, olderLoading, busy, error, streamError, before, submission, accepted, submissionError, acknowledge, send, cancel, loadOlder, refresh, includeJob };
 }

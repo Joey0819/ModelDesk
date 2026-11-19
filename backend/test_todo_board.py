@@ -79,6 +79,52 @@ class TodoBoardTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(data["tags"], ["前端", "紧急"])
             self.assertEqual(data["position"], 5)
 
+    async def test_tagged_creation_has_one_frozen_routine_input_after_retry_edit_and_restart(self):
+        self.enterContext(patch.object(todo_board, "_room_store"))
+        payload = {"title": "Review the brief", "description": "Input A", "tags": ["intake"],
+                   "room_id": str(uuid.uuid4()), "project_id": str(uuid.uuid4()), "client_request_id": str(uuid.uuid4())}
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=_make_app()),
+                base_url="http://127.0.0.1:8001", headers={"Origin": "http://localhost:5173"}) as client:
+            first = (await client.post("/api/todo", json=payload)).json()
+            self.assertNotIn("event", first)
+            await client.put(f"/api/todo/{first['id']}", json={"description": "Input B", "tags": ["different"]})
+            todo_board._cache = None
+            replay = await client.post("/api/todo", json=payload)
+            self.assertEqual(replay.json()["id"], first["id"])
+            self.assertEqual(replay.json()["description"], "Input B")
+            self.assertEqual((await client.post("/api/todo", json={**payload, "title": "Other work"})).status_code, 409)
+            events = todo_board.routine_card_events()
+            self.assertEqual(len(events), 1)
+            self.assertEqual((events[0]["id"], events[0]["tags"], events[0]["description"], events[0]["local"]),
+                             (first["id"], ["intake"], "Input A", True))
+            # Once transferred, a card cannot trigger work in its former group.
+            await client.put(f"/api/todo/{first['id']}", json={"room_id": str(uuid.uuid4())})
+            self.assertEqual(todo_board.routine_card_events(), [])
+            self.assertEqual((await client.post("/api/todo", json=payload)).status_code, 409)
+
+    async def test_only_trusted_manual_card_creations_can_trigger_group_work(self):
+        from backend.todo_sync import sync_task
+        self.enterContext(patch.object(todo_board, "_room_store"))
+        room, project = str(uuid.uuid4()), str(uuid.uuid4())
+        payload = {"title": "intake", "tags": ["intake"], "project_id": project, "room_id": room}
+        transport = httpx.ASGITransport(app=_make_app())
+        async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1:8001") as client:
+            for headers in ({}, {"Origin": "https://outside.example"}, {"Origin": "http://localhost:5173", "Sec-Fetch-Site": "cross-site"}):
+                self.assertEqual((await client.post("/api/todo", json=payload, headers=headers)).status_code, 200)
+            headers = {"Origin": "http://localhost:5173", "X-ModelDesk-Remote": "phone"}
+            clean = await client.post("/api/todo", json={**payload, "tags": []}, headers=headers)
+            await client.put(f"/api/todo/{clean.json()['id']}", json={"tags": ["intake"]})
+            sync_task("workbench", str(uuid.uuid4()), title="intake", status="complete", project_id=project, room_id=room)
+            self.assertEqual(todo_board.routine_card_events(), [])
+            token = "sk-" + "a" * 40
+            phone = await client.post("/api/todo", json={**payload, "description": token}, headers=headers)
+            event, = todo_board.routine_card_events()
+            self.assertFalse(event["local"])
+            self.assertNotIn(token, event["description"])
+            await client.delete(f"/api/todo/{phone.json()['id']}")
+            await client.put(f"/api/todo/{phone.json()['id']}", json={"archived": False})
+            self.assertEqual(todo_board.routine_card_events(), [])
+
     # --- Validation failures ---
 
     async def test_empty_title_rejected(self):

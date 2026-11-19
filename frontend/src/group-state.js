@@ -76,7 +76,7 @@ export function groupSubmissionMatches(pending, body, harnessMode) {
   return pending?.harnessMode === harnessMode && JSON.stringify(pending?.body) === JSON.stringify(body);
 }
 
-function newGroupRequestId() {
+export function newGroupRequestId() {
   // getRandomValues also works for remote clients opened over local HTTP.
   const bytes = globalThis.crypto.getRandomValues(new Uint8Array(16));
   bytes[6] = (bytes[6] & 15) | 64;

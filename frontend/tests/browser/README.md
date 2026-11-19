@@ -24,6 +24,7 @@ node frontend/tests/browser/check-navigation.mjs
 node frontend/tests/browser/check-platform-catalogs.mjs
 node frontend/tests/browser/check-conversation-actions.mjs
 node frontend/tests/browser/check-group-dispatch.mjs
+node frontend/tests/browser/check-group-routines.mjs
 node frontend/tests/browser/check-muse-panel-dispatch.mjs
 npm --prefix frontend run build
 .venv/bin/python frontend/tests/browser/check-todo-board.py
@@ -38,5 +39,7 @@ smoke runs this check on every push and pull request.
 The catalog check delays two MCP servers and verifies that retries preserve a draft and that results return to the correct server. The conversation check opens account controls and downloads Markdown and JSON at laptop and phone widths.
 
 The dispatch checks simulate a lost reply after an Agent accepts work. They cover the group chat, code review form and Muse panel. Reloading or returning from a different project or room must recover the same task and preserve any edits. All submissions in these browser checks go to an isolated test adapter.
+
+The group routines check opens the production React dialog on desktop and phone. It exercises draft import, saving a routine, enabling it, and recovering the original run when the server accepts a request but the response is lost.
 
 The task-board check runs the production build against disposable, disk-backed project, room and board stores. It drags a synced card, advances its source, reloads the page, and checks scoped creation, role agreements and phone controls. Pass `--screenshots DIR` to capture these views.

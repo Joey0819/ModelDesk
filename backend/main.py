@@ -24,6 +24,7 @@ from .remote_access import router as remote_router, controller as remote_control
 from .model_connections import router as model_connections_router, runtime_router as model_runtime_router
 from .delivery_media import router as delivery_media_router
 from .autonomy import router as autonomy_router, supervisor as autonomy_supervisor
+from .routines import router as routines_router, worker as routines_worker
 from .feishu import router as feishu_router, controller as feishu_controller
 from .council import run_full_council, generate_conversation_title, stage1_collect_responses, stage2_collect_rankings, stage3_synthesize_final, calculate_aggregate_rankings
 
@@ -52,6 +53,7 @@ app.include_router(model_connections_router)
 app.include_router(model_runtime_router)
 app.include_router(delivery_media_router)
 app.include_router(autonomy_router)
+app.include_router(routines_router)
 app.include_router(readiness_router)
 app.include_router(mcp_observation_router)
 app.include_router(feishu_router)
@@ -64,8 +66,10 @@ app.add_event_handler("startup", harness_manager.recover)
 app.add_event_handler("startup", muse_manager.recover)
 app.add_event_handler("startup", remote_controller.recover)
 app.add_event_handler("startup", autonomy_supervisor.start)
+app.add_event_handler("startup", routines_worker.start)
 app.add_event_handler("startup", feishu_controller.start)
 app.add_event_handler("shutdown", feishu_controller.shutdown)
+app.add_event_handler("shutdown", routines_worker.shutdown)
 app.add_event_handler("shutdown", autonomy_supervisor.shutdown)
 app.add_event_handler("shutdown", remote_controller.shutdown)
 app.add_event_handler("shutdown", group_tasks_manager.shutdown)

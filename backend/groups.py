@@ -187,6 +187,7 @@ class RoomStore:
             from .group_tasks import manager as tasks
             from .muse_bridge import manager as muse
             from .todo_board import has_room_cards
+            from .routines import store as routines
             jobs = [job for job in workbench.manager.jobs.values()
                     if job.get("group_room_id") == room["id"] and job.get("conversation_id") == room["id"]]
             agent_tasks = [task for task in tasks.records.values()
@@ -195,6 +196,8 @@ class RoomStore:
                           if task.get("room_id") == room["id"] and task.get("project_id") == room["project_id"]]
             if jobs or agent_tasks or muse_tasks or has_room_cards(room["project_id"], room["id"]):
                 raise HTTPException(409, "该群已有历史任务，不能删除")
+            if routines.has_room(room["project_id"], room["id"]):
+                raise HTTPException(409, "该群拥有例行任务，不能删除")
             path = self.atomic.directory / (checked_id(identifier) + ".json")
             if path.is_symlink():
                 raise HTTPException(409, "项目群保存路径无效")
@@ -430,17 +433,22 @@ async def submit_message(identifier: str, request: MessageRequest, project_id: s
     options = {"native_allowed": native_allowed, "external_source": external_source, "admission_check": admission_check}
     if request.client_request_id is None:
         return await create_room_message(room, request, job_id=job_id, **options)
-    body = request.model_dump(mode="json", exclude={"client_request_id"})
-    # The saved roster controls the order of these recipients.
-    body["recipient_member_ids"].sort()
-    digest = hashlib.sha256(json.dumps(body, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
-    receipt = {"group_client_request_id": str(request.client_request_id), "_group_request_sha256": digest}
-    job_id = str(uuid.uuid5(uuid.UUID(room["id"]), "group-message:" + str(request.client_request_id)))
+    job_id, receipt = message_receipt(room["id"], request)
     lock = store.submission_locks.setdefault(job_id, asyncio.Lock())
     async with lock:
         if previous := replay_message(room, job_id, receipt):
             return previous
         return await create_room_message(room, request, job_id=job_id, receipt=receipt, **options)
+
+
+def message_receipt(room_id, request):
+    body = request.model_dump(mode="json", exclude={"client_request_id"})
+    # The saved roster controls the order of these recipients.
+    body["recipient_member_ids"].sort()
+    digest = hashlib.sha256(json.dumps(body, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+    client_id = str(request.client_request_id)
+    job_id = str(uuid.uuid5(uuid.UUID(room_id), "group-message:" + client_id))
+    return job_id, {"group_client_request_id": client_id, "_group_request_sha256": digest}
 
 
 async def create_room_message(room, request, *, native_allowed, job_id, external_source, admission_check, receipt=None):

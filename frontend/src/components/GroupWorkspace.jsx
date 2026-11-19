@@ -66,6 +66,7 @@ import HandoffReceipt from './HandoffReceipt';
 import './TaskContextControl.css';
 import JobAttachments from './JobAttachments';
 import GroupAgentTasks from './GroupAgentTasks';
+import GroupRoutines from './GroupRoutines';
 import DeliveryOutputOptions from './DeliveryOutputOptions';
 import { machineInfo, hostIsMacos } from '../machine';
 import DocumentOutputOptions from './DocumentOutputOptions';
@@ -244,7 +245,7 @@ function GroupTeamSettings({ room, models, catalog, addRequested, onOpenAgentSet
   </dialog>;
 }
 
-function GroupHeader({ rooms, roomId, roomTitle, selectRoom, onOpenNavigation, workMode, onWorkModeChange, memberCount, onOpenRoster, onOpenMuse, onOpenTodo, focusHistory, onToggleFocusHistory, artifactsVisible, onToggleResults, resultAvailable }) {
+function GroupHeader({ rooms, roomId, roomTitle, selectRoom, onOpenNavigation, workMode, onWorkModeChange, memberCount, onOpenRoster, onOpenMuse, onOpenTodo, onOpenRoutines, focusHistory, onToggleFocusHistory, artifactsVisible, onToggleResults, resultAvailable }) {
   const moreDialog = useRef(null);
   const hasRoom = Boolean(roomId);
   return <header className="workspace-header group-compact-header">
@@ -267,6 +268,7 @@ function GroupHeader({ rooms, roomId, roomTitle, selectRoom, onOpenNavigation, w
       <div className="group-header-actions">
         {onOpenRoster && <button type="button" className="subtle-button group-roster-trigger" aria-haspopup="dialog" aria-label={`成员与分工，${memberCount} 位成员`} onClick={onOpenRoster}><Icon name="group" size={16} /><span>成员 {memberCount}</span></button>}
         {onOpenTodo && <button type="button" className="subtle-button group-todo-trigger" onClick={onOpenTodo}><Icon name="dashboard" size={15} />任务看板</button>}
+        {onOpenRoutines && <button type="button" className="subtle-button group-routines-trigger" aria-haspopup="dialog" onClick={onOpenRoutines}><Icon name="clock" size={15} />群聊自动化</button>}
         <button type="button" className="subtle-button group-result-trigger" disabled={!resultAvailable && !artifactsVisible} aria-expanded={artifactsVisible} onClick={onToggleResults}><Icon name="panel" size={15} />成果</button>
         <button type="button" className={`subtle-button group-more-trigger${focusHistory ? ' selected' : ''}`} aria-haspopup="dialog" aria-label="更多群聊操作" onClick={() => moreDialog.current?.showModal()}><Icon name="settings" size={15} /><span className="group-more-label">更多</span><span className="group-current-mode">{compactModeLabels[workMode]}<Icon name="chevron" size={11} /></span></button>
       </div>
@@ -278,6 +280,7 @@ function GroupHeader({ rooms, roomId, roomTitle, selectRoom, onOpenNavigation, w
           </div>
           <div className="group-more-actions">
             {onOpenTodo && <button type="button" className="subtle-button" onClick={() => { moreDialog.current?.close(); onOpenTodo(); }}><Icon name="dashboard" size={15} />任务看板</button>}
+            {onOpenRoutines && <button type="button" className="subtle-button" aria-haspopup="dialog" onClick={() => { moreDialog.current?.close(); onOpenRoutines(); }}><Icon name="clock" size={15} />群聊自动化</button>}
             {onOpenMuse && <button type="button" className="subtle-button" onClick={() => { moreDialog.current?.close(); onOpenMuse(); }}><span className="group-muse-mark">M</span>Muse 面板</button>}
             <button type="button" className="subtle-button" onClick={() => { moreDialog.current?.close(); onToggleFocusHistory(); }}><Icon name="expand" size={15} />{focusHistory ? '退出专注' : '专注阅读'}</button>
             <button type="button" className="subtle-button" onClick={() => { moreDialog.current?.close(); selectRoom(null); }}><Icon name="plus" size={15} />新建群聊</button>
@@ -327,6 +330,8 @@ function GroupRoom({ roomId, projectId, initialJob, header, onOpenTodo, status, 
   const [museProbe, setMuseProbe] = useState(null);
   const [harnessNotice, setHarnessNotice] = useState('');
   const [timelineFilter, setTimelineFilter] = useState('all');
+  const [routinesOpen, setRoutinesOpen] = useState(false);
+  const [routineLocation, setRoutineLocation] = useState(null);
   const [cursorPosition, setCursorPosition] = useState(null);
   const [suggestionIndex, setSuggestionIndex] = useState(0);
   const [dismissedTriggerKey, setDismissedTriggerKey] = useState('');
@@ -538,6 +543,24 @@ function GroupRoom({ roomId, projectId, initialJob, header, onOpenTodo, status, 
     if (olderPosition.current) { element.scrollTop = element.scrollHeight - olderPosition.current.height + olderPosition.current.top; olderPosition.current = null; }
     else if (nearBottom.current) element.scrollTop = element.scrollHeight;
   }, [jobs, museTasks, agentTasks, workMode]);
+  useEffect(() => {
+    if (!routineLocation || loading || workMode !== 'discussion') return;
+    const frame = requestAnimationFrame(() => {
+      const turn = timelineRef.current?.querySelector(`[data-group-job="${CSS.escape(routineLocation)}"]`);
+      if (!turn) return;
+      turn.scrollIntoView({ block: 'start' });
+      turn.focus({ preventScroll: true });
+      setRoutineLocation(null);
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [routineLocation, jobs, loading, workMode, timelineFilter]);
+
+  const openRoutineJob = (job) => {
+    roomState.includeJob(job);
+    setTimelineFilter('all');
+    setWorkMode('discussion');
+    setRoutineLocation(job.id);
+  };
 
   const prepareMuseDraft = useCallback((text, sourceJob = null) => {
     const member = members.find((item) => groupMemberKind(item) === 'muse');
@@ -755,7 +778,8 @@ function GroupRoom({ roomId, projectId, initialJob, header, onOpenTodo, status, 
   const contextLabel = contextMode === 'fresh' ? '新任务' : '继续任务';
 
   return <>
-    <GroupHeader {...header} onOpenTodo={room && onOpenTodo ? () => onOpenTodo(room) : undefined} roomId={roomId} roomTitle={room?.title || header.roomTitle} workMode={workMode} onWorkModeChange={setWorkMode} memberCount={members.length} onOpenRoster={room ? () => rosterDialog.current?.showModal() : undefined} onOpenMuse={renderIntegration ? openMuse : undefined} focusHistory={focusHistory} onToggleFocusHistory={toggleReading} artifactsVisible={artifactsVisible} onToggleResults={toggleResults} resultAvailable={resultAvailable} />
+    <GroupHeader {...header} onOpenTodo={room && onOpenTodo ? () => onOpenTodo(room) : undefined} roomId={roomId} roomTitle={room?.title || header.roomTitle} workMode={workMode} onWorkModeChange={setWorkMode} memberCount={members.length} onOpenRoster={room ? () => rosterDialog.current?.showModal() : undefined} onOpenMuse={renderIntegration ? openMuse : undefined} onOpenRoutines={room ? () => setRoutinesOpen(true) : undefined} focusHistory={focusHistory} onToggleFocusHistory={toggleReading} artifactsVisible={artifactsVisible} onToggleResults={toggleResults} resultAvailable={resultAvailable} />
+    {room && routinesOpen && <GroupRoutines room={room} composerDraft={{ prompt, documentFormats: documentOptions.documentFormats }} onDismiss={() => setRoutinesOpen(false)} onOpenJob={openRoutineJob} onRefreshRoom={roomState.refresh} />}
     {header.error && <div className="error-banner" role="alert">{header.error}<button type="button" className="subtle-button" onClick={header.refresh}>重试</button></div>}
     {artifactsVisible && patchError && <div className="error-banner" role="alert">读取补丁失败：{patchError}<button type="button" className="subtle-button" onClick={() => showResult(explicitPreview.current)}>重新读取补丁</button></div>}
     {room && <dialog className="group-options-dialog group-roster-dialog" ref={rosterDialog} aria-labelledby="group-roster-heading">

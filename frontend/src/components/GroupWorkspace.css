@@ -368,7 +368,7 @@ button.group-live-badge { background: var(--shell-paper); border: 1px solid var(
 .group-runtime-boundary { max-height: 64px; overflow: auto; }
 @container (max-width: 790px) {
   .group-compact-header .group-work-mode { display: none; }
-  .group-more-trigger .group-more-label { display: none; }
+  .group-header-actions .group-routines-trigger { display: none; }
   .group-more-trigger .group-current-mode { display: inline-flex; align-items: center; gap: 3px; }
   .group-more-modes { display: flex; flex-wrap: wrap; gap: 8px; padding-bottom: 12px; margin-bottom: 12px; border-bottom: 1px solid var(--line); }
   .group-room-switcher { flex: 1; }
@@ -377,6 +377,7 @@ button.group-live-badge { background: var(--shell-paper); border: 1px solid var(
   .group-header-actions .group-todo-trigger { display: none; }
   .group-header-actions .group-roster-trigger > span { display: none; }
   .group-header-actions .group-more-trigger > svg { display: none; }
+  .group-header-actions .group-more-trigger .group-current-mode { display: none; }
   .group-header-actions :is(.group-roster-trigger, .group-more-trigger) { min-width: 37px; justify-content: center; }
   .group-live-activity-bar { padding-left: 7px; }
   .group-live-badges { gap: 3px; }

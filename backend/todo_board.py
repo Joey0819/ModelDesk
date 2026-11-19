@@ -1,5 +1,6 @@
 """Todo Kanban board API with atomic persistence and concurrency safety."""
 import copy
+import hashlib
 import json
 import logging
 import re
@@ -125,6 +126,7 @@ def _apply_board_status(tasks: list[dict], task: dict, status: str) -> None:
 class TaskCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    client_request_id: uuid.UUID | None = None
     title: str
     description: str = ""
     status: BoardStatus = "todo"
@@ -478,8 +480,7 @@ def archive_external_task(external_source: dict) -> Optional[dict]:
             return None
         target["archived"] = True
         target["updated_at"] = _now_iso()
-        new_data = {"schema_version": SCHEMA_VERSION, "tasks": tasks}
-        _save_board(new_data)
+        _save_board({**data, "tasks": tasks})
         return target
 
 
@@ -572,8 +573,47 @@ def _validate_room_scope(store, room_id: str, project_id: str | None) -> None:
         raise
 
 
+def _card_creation_event(task, request):
+    """Only an intentional creation through a trusted board can trigger group work."""
+    if request is None or not task["room_id"] or not task["tags"]:
+        return None
+    from .remote_access import require_local
+    try:
+        require_local(request)
+    except HTTPException:
+        return None
+    remote = request.headers.get("x-modeldesk-remote")
+    if remote not in (None, "phone"):
+        return None
+    event = {key: task[key] for key in ("id", "project_id", "room_id", "title", "created_at")}
+    event["tags"] = [tag for tag in task["tags"] if tag.strip() and not secret_text(tag)]
+    event["description"] = "待办描述含疑似凭据，自动化仅使用标题。" if secret_text(task["description"]) else task["description"]
+    event["local"] = remote is None
+    return event if event["tags"] else None
+
+
+def routine_card_events() -> list[dict]:
+    """Return the original create-time inputs. Ordinary edits and mirrored jobs emit nothing."""
+    with _lock:
+        data = _load_board()
+        records = data.get("manual_creations", {})
+        return [copy.deepcopy(records[task["id"]]["event"]) for task in data["tasks"]
+                if not task.get("external_source") and not task.get("archived")
+                and records.get(task["id"], {}).get("event")]
+
+
+def _retire_card_event(data, task_id):
+    records = data.get("manual_creations", {})
+    record = records.get(task_id, {})
+    if "event" not in record:
+        return data
+    records = records.copy()
+    records[task_id] = {key: value for key, value in record.items() if key != "event"}
+    return {**data, "manual_creations": records}
+
+
 @router.post("")
-def create_task(body: TaskCreate):
+def create_task(body: TaskCreate, request: Request = None):
     rooms = _room_store() if body.room_id else None
     # Room deletion takes these locks in the same order.
     with (rooms.lock if rooms is not None else nullcontext()), _lock:
@@ -581,6 +621,24 @@ def create_task(body: TaskCreate):
             _validate_room_scope(rooms, body.room_id, body.project_id)
         data = _load_board()
         tasks = copy.deepcopy(data.get("tasks", []))
+        record = {}
+        if body.client_request_id:
+            from .dispatch_receipts import scoped_task_id
+            identifier = scoped_task_id("todo", body.project_id, body.room_id, body.client_request_id)
+            original = body.model_dump(mode="json", exclude={"client_request_id"})
+            if "position" not in body.model_fields_set:
+                original.pop("position")
+            encoded = json.dumps(original, sort_keys=True, ensure_ascii=False).encode()
+            record["request_sha256"] = hashlib.sha256(encoded).hexdigest()
+            previous = next((card for card in tasks if card["id"] == identifier), None)
+            if previous:
+                saved = data.get("manual_creations", {}).get(identifier, {})
+                if (saved.get("request_sha256") != record["request_sha256"]
+                        or (previous.get("project_id"), previous.get("room_id")) != (body.project_id, body.room_id)):
+                    raise HTTPException(409, "此创建回执对应的内容或任务归属已变更，请查看原卡片")
+                return previous
+        else:
+            identifier = str(uuid.uuid4())
         if _active_count(tasks) >= MAX_ACTIVE_TASKS:
             raise HTTPException(
                 status_code=422,
@@ -588,7 +646,7 @@ def create_task(body: TaskCreate):
             )
         now = _now_iso()
         task = {
-            "id": str(uuid.uuid4()),
+            "id": identifier,
             "title": body.title,
             "description": body.description,
             "status": body.status,
@@ -606,7 +664,12 @@ def create_task(body: TaskCreate):
             "external_source": None,
         }
         tasks.append(task)
-        new_data = {"schema_version": SCHEMA_VERSION, "tasks": tasks}
+        new_data = {**data, "tasks": tasks}
+        event = _card_creation_event(task, request)
+        if event:
+            record["event"] = event
+        if record:
+            new_data["manual_creations"] = {**data.get("manual_creations", {}), identifier: record}
         _save_board(new_data)
         return task
 
@@ -665,7 +728,9 @@ def update_task(task_id: str, body: TaskUpdate, request: Request):
         if target == old:
             return target
         target["updated_at"] = _now_iso()
-        new_data = {"schema_version": SCHEMA_VERSION, "tasks": tasks}
+        new_data = {**data, "tasks": tasks}
+        if target.get("archived") or (old.get("project_id"), old.get("room_id")) != (target.get("project_id"), target.get("room_id")):
+            new_data = _retire_card_event(new_data, task_id)
         _save_board(new_data)
 
     if isinstance(ext, dict) and not old_archived and target.get("archived"):
@@ -690,7 +755,7 @@ def delete_task(task_id: str, request: Request):
         _require_source_archive_access(ext, request)
         target["archived"] = True
         target["updated_at"] = _now_iso()
-        new_data = {"schema_version": SCHEMA_VERSION, "tasks": tasks}
+        new_data = _retire_card_event({**data, "tasks": tasks}, task_id)
         _save_board(new_data)
 
     if isinstance(ext, dict):
@@ -772,6 +837,5 @@ def reorder_tasks(body: ReorderRequest):
             task_map[tid]["status"] = body.status
             task_map[tid]["position"] = body.position_start + idx
             task_map[tid]["updated_at"] = now
-        new_data = {"schema_version": SCHEMA_VERSION, "tasks": tasks}
-        _save_board(new_data)
+        _save_board({**data, "tasks": tasks})
         return {"ok": True, "reordered": len(body.ids)}

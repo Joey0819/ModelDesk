@@ -592,6 +592,44 @@ def _card_creation_event(task, request):
     return event if event["tags"] else None
 
 
+def _card_status_event(task, request, changed_at):
+    """Record a trusted manual column entry for board_status routines."""
+    if request is None or not task.get("room_id") or task.get("external_source") or task.get("archived"):
+        return None
+    from .remote_access import require_local
+    try:
+        require_local(request)
+    except HTTPException:
+        return None
+    remote = request.headers.get("x-modeldesk-remote")
+    if remote not in (None, "phone"):
+        return None
+    return {
+        "event_id": str(uuid.uuid4()),
+        "id": task["id"],
+        "project_id": task.get("project_id"),
+        "room_id": task["room_id"],
+        "title": task["title"],
+        "status": task["status"],
+        "changed_at": changed_at,
+        "tags": [tag for tag in (task.get("tags") or []) if tag.strip() and not secret_text(tag)],
+        "description": "待办描述含疑似凭据，自动化仅使用标题。" if secret_text(task.get("description") or "") else (task.get("description") or ""),
+        "local": remote is None,
+    }
+
+
+def _record_status_event(data, task, request, changed_at):
+    event = _card_status_event(task, request, changed_at)
+    if not event:
+        return data
+    events = dict(data.get("manual_status_events", {}))
+    events[task["id"]] = event
+    if len(events) > 200:
+        ordered = sorted(events.items(), key=lambda pair: pair[1].get("changed_at", ""))
+        events = dict(ordered[-200:])
+    return {**data, "manual_status_events": events}
+
+
 def routine_card_events() -> list[dict]:
     """Return the original create-time inputs. Ordinary edits and mirrored jobs emit nothing."""
     with _lock:
@@ -602,14 +640,29 @@ def routine_card_events() -> list[dict]:
                 and records.get(task["id"], {}).get("event")]
 
 
+def routine_status_events() -> list[dict]:
+    """Return trusted manual column-entry snapshots for board_status routines."""
+    with _lock:
+        data = _load_board()
+        events = data.get("manual_status_events", {})
+        return [copy.deepcopy(events[task["id"]]) for task in data["tasks"]
+                if not task.get("external_source") and not task.get("archived")
+                and events.get(task["id"])]
+
+
 def _retire_card_event(data, task_id):
-    records = data.get("manual_creations", {})
+    updated = data
+    records = updated.get("manual_creations", {})
     record = records.get(task_id, {})
-    if "event" not in record:
-        return data
-    records = records.copy()
-    records[task_id] = {key: value for key, value in record.items() if key != "event"}
-    return {**data, "manual_creations": records}
+    if "event" in record:
+        records = records.copy()
+        records[task_id] = {key: value for key, value in record.items() if key != "event"}
+        updated = {**updated, "manual_creations": records}
+    status_events = updated.get("manual_status_events", {})
+    if task_id in status_events:
+        status_events = {key: value for key, value in status_events.items() if key != task_id}
+        updated = {**updated, "manual_status_events": status_events}
+    return updated
 
 
 @router.post("")
@@ -670,6 +723,7 @@ def create_task(body: TaskCreate, request: Request = None):
             record["event"] = event
         if record:
             new_data["manual_creations"] = {**data.get("manual_creations", {}), identifier: record}
+        new_data = _record_status_event(new_data, task, request, now)
         _save_board(new_data)
         return task
 
@@ -731,6 +785,8 @@ def update_task(task_id: str, body: TaskUpdate, request: Request):
         new_data = {**data, "tasks": tasks}
         if target.get("archived") or (old.get("project_id"), old.get("room_id")) != (target.get("project_id"), target.get("room_id")):
             new_data = _retire_card_event(new_data, task_id)
+        if not ext and not target.get("archived") and target.get("status") != old.get("status"):
+            new_data = _record_status_event(new_data, target, request, target["updated_at"])
         _save_board(new_data)
 
     if isinstance(ext, dict) and not old_archived and target.get("archived"):
@@ -782,7 +838,7 @@ def _archive_source(external_source: dict, status: str):
 
 
 @router.post("/move")
-def move_task(body: MoveRequest):
+def move_task(body: MoveRequest, request: Request = None):
     with _lock:
         data = _load_board()
         tasks = copy.deepcopy(data["tasks"])
@@ -791,6 +847,7 @@ def move_task(body: MoveRequest):
             raise HTTPException(404, "任务不存在或已归档")
         if body.from_status is not None and target["status"] != body.from_status:
             raise HTTPException(409, "任务的看板列已变更，请刷新后重试")
+        old_status = target["status"]
         old_lane = _lane(tasks, body.status)
         lane = [card for card in old_lane if card["id"] != target["id"]]
         insert_at = len(lane)
@@ -809,7 +866,10 @@ def move_task(body: MoveRequest):
         for index, card in enumerate(lane):
             card["position"] = index
         target["updated_at"] = _now_iso()
-        _save_board({**data, "tasks": tasks})
+        new_data = {**data, "tasks": tasks}
+        if not target.get("external_source") and target["status"] != old_status:
+            new_data = _record_status_event(new_data, target, request, target["updated_at"])
+        _save_board(new_data)
         return target
 
 

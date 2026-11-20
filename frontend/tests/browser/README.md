@@ -25,6 +25,7 @@ node frontend/tests/browser/check-platform-catalogs.mjs
 node frontend/tests/browser/check-conversation-actions.mjs
 node frontend/tests/browser/check-group-dispatch.mjs
 node frontend/tests/browser/check-group-routines.mjs
+node frontend/tests/browser/check-group-routine-loops.mjs
 node frontend/tests/browser/check-muse-panel-dispatch.mjs
 npm --prefix frontend run build
 .venv/bin/python frontend/tests/browser/check-todo-board.py

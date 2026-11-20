@@ -1,6 +1,6 @@
 import { API_BASE, apiFetch } from './api-base';
 const scope = (projectId, extra = {}) => new URLSearchParams({ ...(projectId ? { project_id: projectId } : {}), ...extra }).toString();
-const routinePath = (roomId, routineId, action = '') => `/${encodeURIComponent(roomId)}/routines${routineId ? `/${encodeURIComponent(routineId)}${action}` : ''}`;
+const routinePath = (roomId, routineId, action = '') => `/${encodeURIComponent(roomId)}/routines${routineId ? `/${encodeURIComponent(routineId)}${action}` : action}`;
 async function request(path, method = 'GET', body) {
   let response;
   try { response = await apiFetch(`${API_BASE}/api/groups${path}`, { method, ...(body === undefined ? {} : { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }) }); }
@@ -27,4 +27,12 @@ export const groupApi = {
   setRoutineEnabled: (roomId, projectId, id, body) => request(`${routinePath(roomId, id, '/enabled')}?${scope(projectId)}`, 'POST', body),
   runRoutine: (roomId, projectId, id, body) => request(`${routinePath(roomId, id, '/run')}?${scope(projectId)}`, 'POST', body),
   removeRoutine: (roomId, projectId, id, revision) => request(`${routinePath(roomId, id)}?${scope(projectId, { expected_revision: revision })}`, 'DELETE'),
+  designRoutine: (roomId, projectId, body) => request(`${routinePath(roomId, null, '/design')}?${scope(projectId)}`, 'POST', body),
+  walkthroughRoutine: (roomId, projectId, body) => request(`${routinePath(roomId, null, '/walkthrough')}?${scope(projectId)}`, 'POST', body),
+  routineRevisions: (roomId, projectId, id) => request(`${routinePath(roomId, id, '/revisions')}?${scope(projectId)}`),
+  recordRoutineFeedback: (roomId, projectId, id, runId, body) => request(`${routinePath(roomId, id, `/runs/${encodeURIComponent(runId)}/feedback`)}?${scope(projectId)}`, 'POST', body),
+  setRoutineCaseState: (roomId, projectId, id, runId, body) => request(`${routinePath(roomId, id, `/runs/${encodeURIComponent(runId)}/case`)}?${scope(projectId)}`, 'POST', body),
+  reflectRoutine: (roomId, projectId, id) => request(`${routinePath(roomId, id, '/reflect')}?${scope(projectId)}`, 'POST', {}),
+  applyRoutineProposal: (roomId, projectId, id, proposalId, body) => request(`${routinePath(roomId, id, `/proposals/${encodeURIComponent(proposalId)}/apply`)}?${scope(projectId)}`, 'POST', body),
+  dismissRoutineProposal: (roomId, projectId, id, proposalId) => request(`${routinePath(roomId, id, `/proposals/${encodeURIComponent(proposalId)}/dismiss`)}?${scope(projectId)}`, 'POST', {}),
 };

@@ -355,10 +355,16 @@ def create_gateway(remote_store=None, *, frontend=None, upstream_transport=None,
         # boundary. Only an authenticated, same-origin gateway request is promoted.
         path = request.url.path
         routine_path = r"/api/groups/[0-9a-f-]{36}/routines"
-        routine_edit = request.method in {"PUT", "DELETE"} and re.fullmatch(routine_path + r"/[0-9a-f-]{36}", path)
+        routine_edit = (
+            (request.method in {"PUT", "DELETE"} and re.fullmatch(routine_path + r"/[0-9a-f-]{36}", path))
+            or (request.method == "PUT" and re.fullmatch(r"/api/todo/[0-9a-f-]{36}", path))
+        )
         control_post = request.method == "POST" and (
-            path in {"/api/group-tasks", "/api/group-approvals", "/api/todo"}
-            or re.fullmatch(routine_path + r"(?:/[0-9a-f-]{36}/(?:enabled|run))?", path)
+            path in {"/api/group-tasks", "/api/group-approvals", "/api/todo", "/api/todo/move"}
+            or re.fullmatch(
+                routine_path + r"(?:/(?:design|walkthrough)|/[0-9a-f-]{36}/(?:enabled|run|reflect|runs/[0-9a-f-]{36}/(?:feedback|case)|proposals/[0-9a-f-]{36}/(?:apply|dismiss)))?",
+                path,
+            )
             or re.fullmatch(r"/api/(?:mcp-agent-tasks/[0-9a-f-]{36}/actions|autonomy/tasks/[0-9a-f-]{36}/(?:read|pause)|group-tasks/[0-9a-f-]{36}/cancel|group-approvals/[0-9a-f-]{36}/decision|groups/[0-9a-f-]{36}/messages(?:/[0-9a-f-]{36}/continue)?)", path)
         )
         if routine_edit or control_post:

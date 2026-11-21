@@ -109,6 +109,8 @@ jobs:
             backend.test_routine_store \
             backend.test_feishu \
             backend.test_feishu_bootstrap \
+            backend.test_antigravity_agent \
+            backend.test_antigravity_catalog \
             backend.test_gateway_catalog \
             backend.test_model_connections \
             backend.test_skill_frontmatter \

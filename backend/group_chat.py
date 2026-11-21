@@ -1,4 +1,4 @@
-"""Shared-topic, turn-taking discussion using the existing local model gateway.
+"""Shared-topic, turn-taking discussion using selected text transports.
 
 Implements the local group-discussion workflow documented by MultiBot Chat;
 it does not import its cloud account system or claim provider-adapter parity.
@@ -9,6 +9,9 @@ import asyncio
 import json
 import httpx
 from .attachment_io import image_content_parts
+from .antigravity_agent import AntigravityAgentError
+from .antigravity_catalog import is_agent_id
+from .group_text import execution_metadata, native_text, track_native_text
 from .vision import user_content, public_text
 from .model_connections import request_options
 
@@ -36,11 +39,15 @@ def topic_history(manager, job):
 def speaker_label(member, fallback="参与成员"):
     """A member's identity is independent of the model powering that member."""
     model = member.get("model")
+    route = execution_metadata(model)
+    execution_label = member.get("execution_label") or route.get("execution_label")
+    if execution_label and (slug := route.get("execution_model")):
+        execution_label += f" · {slug}"
     name = member.get("name") or member.get("member_name")
     identifier = member.get("id") or member.get("member_id")
     if name and identifier:
-        return f"{name}（成员 {identifier}；模型 {model}）"
-    return member.get("role") or model or fallback
+        return f"{name}（成员 {identifier}；{execution_label or f'模型 {model}'}）"
+    return member.get("role") or execution_label or model or fallback
 
 
 def discussion_messages(job, model, history, member=None, phase="reply"):
@@ -99,6 +106,7 @@ async def run_group(manager, job):
     if job.get("group_harness_version") == 1 and job.get("group_delivery_mode") == "auto":
         from .coordination import run
         return await run(manager, job)
+    job = track_native_text(manager, job)
     # The manager's same-topic lock serializes runs; distinct topics can progress
     # independently. Never read another conversation's transcript.
     history = topic_history(manager, job)
@@ -131,10 +139,18 @@ async def run_group(manager, job):
             member = participant if participant.get("id") else None
             speaker = speaker_label(participant)
             manager.emit(job, "log", text=f"群聊第 {round_index}/{job['rounds']} 轮：{speaker} 发言")
-            message = {"model": model, "round": round_index, "phase": phase, "content": ""}
+            message = {"model": model, "round": round_index, "phase": phase, "content": "", **execution_metadata(model)}
             if member:
                 message.update(member_id=member["id"], member_name=member["name"], role=member["name"])
             try:
+                if is_agent_id(model):
+                    if job.get("tools") and phase == "reply":
+                        raise AntigravityAgentError("Antigravity Agent 仅支持纯文字发言，无法使用平台工具。")
+                    message["content"] = await native_text(job, model, discussion_messages(job, model, history, member, phase))
+                    history.append({"speaker": speaker, "content": message["content"]})
+                    result["messages"].append(message)
+                    manager.emit(job, "message", **message)
+                    continue
                 if job.get("tools") and phase == "reply":
                     answer = await manager.tool_response(job, model, discussion_messages(job, model, history, member, phase))
                     message["content"] = public_text(answer["text"])
@@ -172,6 +188,8 @@ async def run_group(manager, job):
                     result["partial_failure"] = True
                 message["content"] = public_text(message["content"])
                 history.append({"speaker": speaker, "content": message["content"] + ("\n[输出达到长度限制，内容可能不完整]" if message.get("incomplete") else "")})
+            except AntigravityAgentError as exc:
+                message["error"] = str(exc)
             except httpx.HTTPStatusError as exc:
                 message["error"] = f"模型网关返回 HTTP {exc.response.status_code}；请检查登录权限或配额。"
             except httpx.TimeoutException:

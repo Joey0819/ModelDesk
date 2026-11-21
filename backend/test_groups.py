@@ -16,7 +16,7 @@ import httpx
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
-from backend import attachments, group_chat, groups, projects, super_platform, workbench
+from backend import antigravity_agent, antigravity_catalog, attachments, group_chat, groups, projects, super_platform, workbench
 from backend.harness.manager import manager as harness
 from backend.harness.models import TeamRequest
 from backend.harness.teams import TeamStore
@@ -38,6 +38,7 @@ class GroupRoomTests(unittest.IsolatedAsyncioTestCase):
                                      (projects, "store", self.projects), (attachments, "store", self.assets),
                                      (super_platform, "store", self.resources), (harness, "teams", self.teams)]:
             self.patches.enter_context(patch.object(owner, field, value))
+        self.endpoint_catalog = workbench.model_catalog
         self.catalog = self.patches.enter_context(patch.object(workbench, "model_catalog", AsyncMock(return_value=["a", "b"])))
         self.project = self.projects.register("test project")
         self.other = self.projects.register("other project")
@@ -77,8 +78,8 @@ class GroupRoomTests(unittest.IsolatedAsyncioTestCase):
     def params(self, room, **values):
         return {**({"project_id": room["project_id"]} if room["project_id"] else {}), **values}
 
-    async def send(self, room, *, wait=True, **body):
-        response = await self.client.post(f"/api/groups/{room['id']}/messages", params=self.params(room), json={"prompt": "继续讨论", **body})
+    async def send(self, room, *, wait=True, headers=None, **body):
+        response = await self.client.post(f"/api/groups/{room['id']}/messages", params=self.params(room), headers=headers, json={"prompt": "继续讨论", **body})
         self.assertEqual(response.status_code, 202, response.text)
         job = response.json()
         if wait:
@@ -88,6 +89,113 @@ class GroupRoomTests(unittest.IsolatedAsyncioTestCase):
             job = self.jobs.get(job["id"])
             self.assertEqual(job["status"], "complete", job.get("error"))
         return job
+
+    async def native_room(self, *, model=antigravity_catalog.DEFAULT_ID, peer_model="gemini-offline", coordinator=None):
+        team = self.teams.put(TeamRequest(name="native team", project_id=self.project["id"], coordinator_model=coordinator, members=[
+            {"id": "writer", "name": "作者", "model": model, "role": "保留具体事实"},
+            {"id": "reviewer", "name": "审稿人", "model": peer_model, "role": "核查作者内容"},
+        ]))
+        return await self.room(team_id=team["id"])
+
+    async def test_native_only_recipient_executes_offline_and_persists_exact_source(self):
+        exact = "agent:antigravity:gemini-4-flash"
+        room = await self.native_room(model=exact)
+        self.catalog.side_effect = httpx.ConnectError("gateway down")
+        with patch.object(antigravity_catalog, "native_catalog", return_value=[{"id": exact, "installed": True}]), \
+             patch.object(antigravity_agent, "run_antigravity_agent", AsyncMock(return_value="本机 Agent 回复")) as run:
+            job = await self.send(room, delivery_mode="discussion", rounds=1, recipient_member_ids=["writer"], system_prompt="说明限制")
+        self.catalog.assert_not_awaited()
+        self.assertEqual(self.calls, [])
+        run.assert_awaited_once()
+        self.assertEqual(run.await_args.kwargs, {"model": "gemini-4-flash"})
+        messages = json.loads(run.await_args.args[0].split("\n", 1)[1])
+        self.assertEqual([item["role"] for item in messages], ["system", "user"])
+        self.assertIn("保留具体事实", messages[0]["content"])
+        self.assertIn("说明限制", messages[0]["content"])
+        self.assertIn("继续讨论", messages[1]["content"])
+        restored = workbench.JobManager(self.jobs.directory)
+        restored.recover()
+        result = restored.get(job["id"])["result"]["messages"][0]
+        self.assertEqual(result["model"], exact)
+        self.assertEqual(result["execution_model"], "gemini-4-flash")
+        self.assertEqual(result["execution_label"], "Antigravity Agent")
+        self.assertEqual(result["execution_source"], "native_agent")
+        from backend.readiness import model_evidence
+        receipt = model_evidence(restored.jobs)
+        self.assertEqual(set(receipt), {exact})
+        self.assertTrue(receipt[exact]["recent"])
+        self.assertEqual(receipt[exact]["execution_source"], "native_agent")
+
+    async def test_native_and_custom_api_run_their_own_turns_with_gateway_offline(self):
+        from backend import readiness
+        default = antigravity_catalog.DEFAULT_ID
+        custom = "connection:fixture:api-alias"
+        room = await self.native_room(peer_model=custom, coordinator=default)
+        with patch.object(antigravity_catalog, "native_catalog", return_value=[{"id": default, "installed": True}]), \
+             patch.object(antigravity_agent, "run_antigravity_agent", AsyncMock(return_value="Agent output")) as run, \
+             patch.object(readiness, "preflight_connections", AsyncMock()) as preflight, \
+             patch.object(group_chat, "request_options", side_effect=lambda payload, _: {"url": "https://fixture.invalid/v1/chat/completions", "json": payload}), \
+             patch.object(workbench, "subscription_catalog", AsyncMock(side_effect=httpx.ConnectError("gateway down"))) as gateway, \
+             patch.object(workbench, "model_catalog", self.endpoint_catalog), \
+             patch.object(workbench, "connection_models", return_value=[{"id": custom}]):
+            job = await self.send(room, delivery_mode="discussion", rounds=1)
+        gateway.assert_awaited_once()
+        preflight.assert_awaited_once_with([custom])
+        self.assertEqual(run.await_count, 3)
+        self.assertEqual([payload["model"] for payload in self.calls], [custom])
+        self.assertEqual([message.get("execution_source") for message in job["result"]["messages"]],
+                         ["native_agent", "native_agent", None, "native_agent"])
+
+    async def test_unlisted_or_uninstalled_native_choice_does_not_contact_other_transports(self):
+        exact = "agent:antigravity:gemini-4-unknown"
+        default = antigravity_catalog.DEFAULT_ID
+        room = await self.native_room(model=exact)
+        with patch.object(antigravity_agent, "run_antigravity_agent", AsyncMock()) as run:
+            for installed, status in [(True, 422), (False, 503)]:
+                with patch.object(antigravity_catalog, "native_catalog", return_value=[{"id": default, "installed": installed}]):
+                    response = await self.client.post(f"/api/groups/{room['id']}/messages", params=self.params(room), json={
+                        "prompt": "检查身份", "delivery_mode": "discussion", "recipient_member_ids": ["writer"],
+                    })
+                self.assertEqual(response.status_code, status, response.text)
+                self.assertIn("Antigravity", response.json()["detail"])
+        run.assert_not_awaited()
+        self.catalog.assert_not_awaited()
+        self.assertEqual(self.calls, [])
+        self.assertEqual(self.jobs.jobs, {})
+
+    async def test_native_automatic_group_plans_executes_and_reviews_text(self):
+        default = antigravity_catalog.DEFAULT_ID
+        room = await self.native_room(peer_model=default, coordinator=default)
+        self.catalog.side_effect = httpx.ConnectError("gateway down")
+        plan = {"title": "研究说明", "requirements": [{"id": "body", "kind": "text", "description": "研究说明"}],
+                "steps": [{"id": "draft", "member_id": "writer", "instruction": "写出说明", "expected_output": "完整说明", "depends_on": []}]}
+        assembly = {"title": "研究说明", "content": "# 研究说明\n\n已保存的研究说明。", "missing_outputs": []}
+        review = {"goal_met": True, "missing_requirements": [], "checks": [{"requirement_id": "body", "met": True,
+                  "evidence_status": "verified", "reason": "正文已完整说明"}], "revision_instructions": ""}
+        with patch.object(antigravity_catalog, "native_catalog", return_value=[{"id": default, "installed": True}]), \
+             patch.object(antigravity_agent, "run_antigravity_agent", AsyncMock(side_effect=[json.dumps(plan), "初稿文字", json.dumps(assembly), json.dumps(review)])) as run:
+            job = await self.send(room, prompt="写一段研究说明", delivery_mode="auto", output_format="text",
+                                  headers={"Origin": "http://localhost:5173"})
+        self.catalog.assert_not_awaited()
+        self.assertEqual(run.await_count, 4)
+        self.assertEqual(self.calls, [])
+        delivery = job["result"]["delivery"]
+        self.assertEqual(delivery["status"], "complete", delivery["limitations"])
+        self.assertEqual(delivery["execution_source"], "native_agent")
+        self.assertEqual(delivery["steps"][0]["execution_source"], "native_agent")
+        self.assertEqual(delivery["reviews"][0]["execution_source"], "native_agent")
+        self.assertEqual(len([event for event in job["events"] if event.get("stage") == "native_text_response"]), 4)
+
+    async def test_native_automatic_group_does_not_repeat_a_malformed_plan(self):
+        default = antigravity_catalog.DEFAULT_ID
+        room = await self.native_room(peer_model=default, coordinator=default)
+        with patch.object(antigravity_catalog, "native_catalog", return_value=[{"id": default, "installed": True}]), \
+             patch.object(antigravity_agent, "run_antigravity_agent", AsyncMock(return_value="不是有效计划")) as run:
+            job = await self.send(room, delivery_mode="auto", output_format="text", headers={"Origin": "http://localhost:5173"})
+        run.assert_awaited_once()
+        self.assertEqual(job["result"]["delivery"]["status"], "blocked")
+        self.assertFalse(job["result"]["delivery"]["steps"])
+        self.assertEqual(self.calls, [])
 
     async def test_feishu_private_followups_use_reply_or_task_id_across_interleaved_jobs(self):
         from backend import coordination, feishu

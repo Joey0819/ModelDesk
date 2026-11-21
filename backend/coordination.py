@@ -14,6 +14,9 @@ from fastapi import HTTPException
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from .member_capabilities import member_kind
+from .antigravity_agent import AntigravityAgentError
+from .antigravity_catalog import is_agent_id
+from .group_text import execution_metadata, track_native_text
 from .harness.contracts import Plan, Review
 from .harness.context import capture_revisions, validate_revisions
 from .harness.scheduler import run_graph, validate_graph
@@ -47,7 +50,9 @@ def roster(job):
     needs_coordinator = any(member['kind'] in {'image', 'mcp'} for member in members)
     coordinator = job.get("group_coordinator_model") if job.get("group_broadcast") or needs_coordinator else None
     if needs_coordinator and not coordinator:
-        coordinator = next((item['model'] for item in job['group_team_snapshot']['members'] if member_kind(item) == 'model'), None)
+        coordinator = next((item["model"] for item in members if item["kind"] == "model"), None)
+        if not coordinator:
+            coordinator = next((item["model"] for item in job["group_team_snapshot"]["members"] if member_kind(item) == "model"), None)
     if coordinator:
         members.append({"id": "__coordinator__", "name": "统筹者", "kind": "model", "model": coordinator,
                         "role": "协调分工并整理交付"})
@@ -485,7 +490,7 @@ async def structured_output(job, model, system, prompt, validate, delivery, stag
     from .group_delivery import model_output
     from .workbench import public_error
     correction = ""
-    for attempt in range(2):
+    for attempt in range(1 if is_agent_id(model) else 2):
         options = {"image_parts": image_parts} if image_parts is not None else {}
         raw, truncated = await model_output(job, model, system, prompt + correction, max_tokens=max_tokens, **options)
         try:
@@ -570,6 +575,7 @@ async def run(manager, job, *, continuing=False):
     from .delivery_harness import media_contract, produce_media, bind_media
     from .group_delivery_runtime import run_runtime_step
     from .workbench import now, public_error
+    job = track_native_text(manager, job)
     canonical = manager.jobs[job["id"]]
     members = roster(job)
     planner_id = (job.get("group_team_snapshot") or {}).get("coordinator_member_id") if job.get("group_broadcast") else None
@@ -619,7 +625,7 @@ async def run(manager, job, *, continuing=False):
                     "task_spec": {"goal": goal, "media": contract, "requirements": []},
                     "workflow": {"schema_version": 1, "run_id": job["id"], "revision": 0, "resume_count": 0,
                                  "context_digest": freeze_inputs(manager, job), "elapsed_seconds": 0,
-                                 "concurrency": 2, "review_limit": 2}}
+                                 "concurrency": 2, "review_limit": 2}, **execution_metadata(editor)}
         result["delivery"] = delivery
     workflow = delivery["workflow"]
     clock = time.monotonic()
@@ -796,6 +802,7 @@ async def run(manager, job, *, continuing=False):
                         record_input(prompt + "\n已选资料与任务记忆：\n" + selected_background)
                         await execute_images(job, member, step, prompt + "\n已选资料与任务记忆：\n" + selected_background, delivery, changed, collect_only=collecting)
                     elif step["kind"] == "model":
+                        step.update(execution_metadata(member["model"]))
                         image_parts, image_ids, image_evidence = await model_step_images(job, reference_assets)
                         receipt.update(image_input_asset_ids=image_ids, image_input_count=len(image_parts))
                         if image_evidence:
@@ -808,6 +815,8 @@ async def run(manager, job, *, continuing=False):
                         from .skill_library import skill_prompt
                         system += skill_prompt(member.get("skill_ids", []), job.get("project_id"), snapshot=job.get("_skill_snapshots"))
                         if job.get("tools") and job.get("_runtime"):
+                            if is_agent_id(member["model"]):
+                                raise AntigravityAgentError("Antigravity Agent 仅支持纯文字发言，无法使用平台工具。")
                             from .vision import user_content
                             answer = await manager.tool_response(job, member["model"], [{"role": "system", "content": system},
                                 {"role": "user", "content": user_content(prompt + "\n已选资料：\n" + selected_background, image_parts)}])
@@ -820,7 +829,8 @@ async def run(manager, job, *, continuing=False):
                             raise ValueError("成员未返回完整步骤成果")
                         step.update(status="complete", output=output, output_sha256=hashlib.sha256(output.encode()).hexdigest())
                         message = {"member_id": member["id"], "member_name": member["name"], "model": member["model"],
-                                   "phase": "work", "round": 1, "step_id": step["id"], "content": output}
+                                   "phase": "work", "round": 1, "step_id": step["id"], "content": output,
+                                   **execution_metadata(member["model"])}
                         result["messages"].append(message)
                         manager.emit(job, "message", **message)
                     else:
@@ -1037,7 +1047,7 @@ async def run(manager, job, *, continuing=False):
                     + "\n完整成品：\n" + delivery["content"], validate_review, delivery, "review", 4000, image_parts=visual_parts)
                 record = {**review.model_dump(exclude={"writing_review"}), "model": review_model, "independent_model": review_model != editor,
                           "artifact_version": delivery["artifact"]["version"], "scope": "正文与执行证据；" + delivery["visual_evidence"]["scope"],
-                          "visual_input_count": len(visual_parts)}
+                          "visual_input_count": len(visual_parts), **execution_metadata(review_model)}
                 if document_facts["formats"]:
                     record["document_packaging"] = document_facts
                 if writing_skill:

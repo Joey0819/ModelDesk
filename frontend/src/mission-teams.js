@@ -2,7 +2,17 @@ export function temporaryMembers(models) {
   return models.map((model, index) => ({ id: `member_${index + 1}`, name: `助手 ${index + 1}`, model, role: index === 0 ? '研究任务，提出有依据的方案。' : index === 1 ? '独立核查依据、指出遗漏并完善交付。' : '补充不同视角，检查执行细节。' }));
 }
 
+// New groups need two editable roles even if the gateway is offline or still loading.
+export function draftMembers(models) {
+  const slots = [...models];
+  while (slots.length < 2) slots.push('');
+  return temporaryMembers(slots);
+}
+
 export const MEMBER_KINDS = { model: 'LLM 模型', image: '绘图模型', codex: 'Codex Agent', claude: 'Claude Code Agent', muse: 'Muse 应用 Agent', mcp: 'MCP 外部 Agent' };
+export const ANTIGRAVITY_AGENT_ID = 'agent:antigravity';
+export const ANTIGRAVITY_AGENT_LABEL = 'Antigravity Agent';
+export const isAntigravityAgentId = (id) => id === ANTIGRAVITY_AGENT_ID || Boolean(id?.startsWith(`${ANTIGRAVITY_AGENT_ID}:`));
 export const isImageModel = (id = '') => /^(gpt-image(?:-|$)|dall-e(?:-|$)|grok.*image|gemini.*image)/i.test(id.split(':').at(-1).split('/').at(-1));
 export const memberKind = (member) => (!member?.kind || member.kind === 'model') && isImageModel(member?.model) ? 'image' : member?.kind || 'model';
 export const memberKindLabel = (member) => MEMBER_KINDS[memberKind(member)] || '未知类型';
@@ -31,6 +41,7 @@ export function removeTeamMember(team, id) {
 }
 
 export const supportsRoleSkills = (kind) => ['model', 'codex', 'claude', 'muse', 'mcp'].includes(kind);
+const canDefaultModel = (model) => !model.group_only && !isAntigravityAgentId(model.id);
 export function roleSkillHelp(kind, skill) {
   if (kind === 'mcp') return '将冻结的角色技能随完整任务传入指定 MCP 工具；不安装插件或扩展权限。';
   if (kind === 'muse') return '随任务发送创作指引；长技能由统筹模型整理。使用 Muse 自身能力，不安装原生插件。';
@@ -41,7 +52,7 @@ export function roleSkillHelp(kind, skill) {
 export function changeMemberKind(member, kind, catalog) {
   const { mcp_server_id: server, mcp_tool: tool, mcp_prompt_field: field, ...base } = member;
   return { ...base, kind, ...(kind === 'mcp' ? { mcp_server_id: server || null, mcp_tool: tool || null, mcp_prompt_field: field || 'prompt' } : { mcp_can_plan: false, mcp_document_worker: false }), skill_ids: supportsRoleSkills(kind) ? [...(member.skill_ids || [])] : [],
-    model: ['model', 'image'].includes(kind) ? catalog.find((model) => isImageModel(model.id) === (kind === 'image'))?.id || '' : null };
+    model: ['model', 'image'].includes(kind) ? catalog.find((model) => canDefaultModel(model) && isImageModel(model.id) === (kind === 'image'))?.id || '' : null };
 }
 
 export const TEAM_RECIPES = [
@@ -51,7 +62,7 @@ export const TEAM_RECIPES = [
 ];
 
 export function recipeTeam(id, catalog = []) {
-  const textCatalog = catalog.filter((item) => !item.testing && !item.unavailable && !isImageModel(item.id) && item.capability !== 'other');
+  const textCatalog = catalog.filter((item) => canDefaultModel(item) && !item.testing && !item.unavailable && !isImageModel(item.id) && item.capability !== 'other');
   const models = [...textCatalog.filter((item) => item.verified), ...textCatalog.filter((item) => !item.verified)];
   const first = models[0]?.id || '';
   const second = models.find((item) => item.id !== first)?.id || first;
@@ -75,12 +86,12 @@ export function appendTeamMember(team, catalog = [], kind = 'model') {
   const draft = structuredClone(team);
   if (draft.members.length >= 4) return draft;
   if (!Object.hasOwn(MEMBER_KINDS, kind)) return draft;
-  catalog = catalog.filter((item) => !item.testing && !item.unavailable && item.capability !== 'other' && (isImageModel(item.id) === (kind === 'image')));
+  catalog = catalog.filter((item) => canDefaultModel(item) && !item.testing && !item.unavailable && item.capability !== 'other' && (isImageModel(item.id) === (kind === 'image')));
   const model = catalog.find((item) => item.verified && !draft.members.some((member) => member.model === item.id)) || catalog.find((item) => item.verified) || catalog[0];
   let index = 1;
   while (draft.members.some((member) => member.id === `member_${index}`)) index += 1;
   const defaults = {
-    model: { name: `助手 ${index}`, model: model?.id || draft.members.find((member) => member.model)?.model || '', role: '' },
+    model: { name: `助手 ${index}`, model: model?.id || draft.members.find((member) => member.model && !isAntigravityAgentId(member.model))?.model || '', role: '' },
     image: { name: '绘图者', model: catalog.find((item) => isImageModel(item.id))?.id || '', role: '根据上游审核后的分镜生成真实图片，交给后续制片角色。' },
     codex: { name: 'Codex 工程师', model: null, role: '在隔离项目副本中实现任务、运行测试，并报告实际改动与验证结果。' },
     claude: { name: 'Claude Code 工程师', model: null, role: '在受限项目副本中检查和修改代码，保留实际执行结果与能力限制。' },
@@ -105,6 +116,7 @@ export function teamIssues(team, catalog = [], { allowRepeatedModels = false, al
   if (members.some((member) => !member.name?.trim() || !member.role?.trim() || !MEMBER_KINDS[memberKind(member)] || (['model', 'image'].includes(memberKind(member)) && !member.model))) errors.push('每名成员需要名称、类型与职责；LLM 成员还需要选择模型。');
   if (members.some((member) => memberKind(member) === 'mcp' && (!member.mcp_server_id || !member.mcp_tool || !/^[A-Za-z][A-Za-z0-9_]*$/.test(member.mcp_prompt_field || 'prompt')))) errors.push('MCP Agent 需要选择服务、获准工具和任务参数名。');
   if (!allowExecutableMembers && members.some((member) => memberKind(member) !== 'model')) errors.push('可执行 Agent 请在项目群聊中使用；此协作流程需要模型成员。');
+  if (!allowExecutableMembers && (isAntigravityAgentId(team.coordinator_model) || llms.some((member) => isAntigravityAgentId(member.model)))) errors.push('Antigravity Agent 可在项目群中运行。此流程需要选择文字模型。');
   if (!llms.length && !team.coordinator_model) errors.push('请添加一名 LLM 成员，或选择一个统筹模型。');
   if (!allowRepeatedModels && new Set(llms.map((member) => member.model)).size !== llms.length) errors.push('协作任务中的模型不能重复；同一模型的多个角色请使用项目群聊。');
   if (new Set([...llms.map((member) => member.model), ...(team.coordinator_model ? [team.coordinator_model] : [])]).size > 4) errors.push('LLM 成员与统筹合计最多使用四个不同模型。');

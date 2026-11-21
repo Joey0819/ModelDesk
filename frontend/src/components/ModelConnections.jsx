@@ -1,18 +1,18 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { REMOTE_CLIENT } from '../api-base';
 import { modelConnectionApi } from '../model-connection-api';
-import { CONNECTION_PRESETS, connectionBody, connectionDraft, connectionIssue, connectionStatus, connectionRecentlyVerified } from '../model-connection-state';
+import { CONNECTION_PRESETS, connectionBody, connectionDraft, connectionIssue, connectionStatus, connectionRecentlyVerified, isGeminiConnection } from '../model-connection-state';
 import { Icon } from './WorkbenchResults';
 import { machineInfo, NEUTRAL_MACHINE } from '../machine';
 import './AgentSettings.css';
 
-export function ConnectionForm({ draft, busy, onChange, onSave, onCancel, machine = NEUTRAL_MACHINE }) {
+export function ConnectionForm({ draft, busy, onChange, onSave, onCancel, machine = NEUTRAL_MACHINE, providerLocked = false }) {
   const preset = CONNECTION_PRESETS[draft.provider];
   const patchModel = (index, patch) => onChange({ ...draft, models: draft.models.map((model, at) => at === index ? { ...model, ...patch } : model) });
   return <form className="connection-editor" onSubmit={onSave} autoComplete="off">
     <div className="agent-section-heading"><h2>{draft.id ? '编辑模型连接' : '添加模型连接'}</h2><button className="icon-button" type="button" disabled={busy} onClick={onCancel} aria-label="关闭连接编辑"><Icon name="close" size={18} /></button></div>
     <fieldset disabled={busy}>
-      <label><span>服务类型</span><select aria-label="模型服务类型" value={draft.provider} disabled={Boolean(draft.id)} onChange={(event) => onChange(connectionDraft(null, event.target.value))}><option value="xai">Grok / xAI</option><option value="gemini">Google Gemini API</option><option value="openai_compatible">自定义兼容 API</option></select></label>
+      <label><span>服务类型</span><select aria-label="模型服务类型" value={draft.provider} disabled={Boolean(draft.id) || providerLocked} onChange={(event) => onChange(connectionDraft(null, event.target.value))}><option value="xai">Grok / xAI</option><option value="gemini">Google Gemini API</option><option value="openai_compatible">自定义兼容 API</option></select></label>
       <p className="connection-help">{preset.help}</p>
       <label><span>连接名称</span><input aria-label="连接名称" required maxLength={100} value={draft.name} placeholder="例如：我的 Grok、团队模型服务" onChange={(event) => onChange({ ...draft, name: event.target.value })} /></label>
       <label><span>API 地址 <small>Base URL</small></span><input aria-label="API 地址" type="url" required readOnly={draft.provider === 'gemini'} value={draft.base_url} spellCheck={false} placeholder="https://example.com/v1" onChange={(event) => onChange({ ...draft, base_url: event.target.value })} /></label>
@@ -38,16 +38,48 @@ export function ConnectionRow({ connection, busy, onEdit, onDiscover, onTest, on
   </article>;
 }
 
-export default function Connections({ onRefresh, status }) {
+export default function Connections({ onRefresh, status, initialProvider, onModelsSaved, onChooseConnection }) {
   const machine = machineInfo(status);
-  const [items, setItems] = useState([]), [draft, setDraft] = useState(null), [busy, setBusy] = useState(false), [loading, setLoading] = useState(!REMOTE_CLIENT), [error, setError] = useState(''), [notice, setNotice] = useState('');
+  const geminiOnly = initialProvider === 'gemini';
+  const [items, setItems] = useState(null), [draft, setDraft] = useState(null), [busy, setBusy] = useState(false), [loading, setLoading] = useState(!REMOTE_CLIENT), [error, setError] = useState(''), [notice, setNotice] = useState('');
   const [discovery, setDiscovery] = useState(null), [testTarget, setTestTarget] = useState(null), [removeTarget, setRemoveTarget] = useState(null);
-  const editorRef = useRef(null), alive = useRef(true);
-  const reload = useCallback(async () => { try { const data = await modelConnectionApi.list(); if (alive.current) { setItems(data.connections || []); setError(''); } } catch (failure) { if (alive.current) setError(failure.message); } finally { if (alive.current) setLoading(false); } }, []);
+  const editorRef = useRef(null), alive = useRef(true), initialLookupDone = useRef(false);
+  const reload = useCallback(async () => {
+    try {
+      const data = await modelConnectionApi.list();
+      if (!alive.current) return;
+      const saved = data.connections || [];
+      setItems(saved);
+      setError('');
+      if (geminiOnly && !initialLookupDone.current && !saved.some(isGeminiConnection)) setDraft(connectionDraft(null, 'gemini'));
+      initialLookupDone.current = true;
+    } catch (failure) {
+      if (alive.current) setError(failure.message);
+    } finally {
+      if (alive.current) setLoading(false);
+    }
+  }, [geminiOnly]);
   useEffect(() => { alive.current = true; if (!REMOTE_CLIENT) reload(); return () => { alive.current = false; }; }, [reload]);
   const edit = (connection, provider = 'xai') => { setDraft(connectionDraft(connection, provider)); setError(''); setNotice(''); setDiscovery(null); setTestTarget(null); setRemoveTarget(null); requestAnimationFrame(() => editorRef.current?.scrollIntoView({ block: 'nearest', behavior: 'smooth' })); };
   const perform = async (action) => { if (busy) return; setBusy(true); setError(''); setNotice(''); try { await action(); } catch (failure) { if (alive.current) setError(failure.message); } finally { if (alive.current) setBusy(false); } };
-  const save = (event) => { event.preventDefault(); const issue = connectionIssue(draft); if (issue) { setError(issue); return; } perform(async () => { const response = draft.id ? await modelConnectionApi.update(draft.id, connectionBody(draft)) : await modelConnectionApi.create(connectionBody(draft)); const saved = response.connection || response; if (!alive.current) return; setDraft(null); await reload(); await onRefresh(); setNotice(saved.models?.length ? '连接已保存。可在“项目 Agent”中选择这些模型，或先测试调用。' : '连接已保存。点击“读取模型列表”选择要加入工作台的模型。'); }); };
+  const refreshSaved = async (saved) => {
+    await reload();
+    await onRefresh();
+    if (alive.current) onModelsSaved?.(saved?.enabled && saved.models?.length && isGeminiConnection(saved) ? saved.id : null);
+  };
+  const save = (event) => {
+    event.preventDefault();
+    const issue = connectionIssue(draft);
+    if (issue) { setError(issue); return; }
+    perform(async () => {
+      const response = draft.id ? await modelConnectionApi.update(draft.id, connectionBody(draft)) : await modelConnectionApi.create(connectionBody(draft));
+      const saved = response.connection || response;
+      if (!alive.current) return;
+      setDraft(null);
+      await refreshSaved(saved);
+      setNotice(saved.models?.length ? '连接已保存。可在模型选择框中选用这些模型。' : '连接已保存。点击“读取模型列表”选择要加入工作台的模型。');
+    });
+  };
   const discover = (connection) => perform(async () => {
     setDraft(null);
     setTestTarget(null);
@@ -63,13 +95,25 @@ export default function Connections({ onRefresh, status }) {
     }
   });
   if (REMOTE_CLIENT) return <div className="agent-remote-note"><Icon name="settings" size={25} /><h2>模型连接在{machine.label}上设置</h2><p>请在{machine.short}的“Agent 与连接 → 模型连接”填写 API Key。保存后，手机可以把已接入模型加入协作组并派发任务。</p></div>;
+  const visibleItems = geminiOnly ? (items || []).filter(isGeminiConnection) : items || [];
   return <>
-    <div className="agent-section-heading"><div><h2>接入其他模型</h2><p>一个连接可添加多个模型；保存后在整个工作台复用。</p></div><div className="agent-inline-actions"><button type="button" className="subtle-button" disabled={busy} onClick={() => edit(null, 'openai_compatible')}><Icon name="plus" size={15} />自定义 API</button><button type="button" className="subtle-button" disabled={busy} onClick={() => edit(null, 'gemini')}><Icon name="plus" size={15} />添加 Gemini API</button><button type="button" className="primary-button" disabled={busy} onClick={() => edit(null, 'xai')}><Icon name="plus" size={15} />添加 Grok</button></div></div>
+    {geminiOnly
+      ? <div className="agent-section-heading"><p>通过 Google AI Studio 密钥读取可用模型，加入后可在当前选择框中使用。</p>{!draft && !loading && items !== null && <button type="button" className="subtle-button" disabled={busy} onClick={() => edit(null, 'gemini')}><Icon name="plus" size={15} />添加 Gemini API</button>}</div>
+      : <div className="agent-section-heading"><div><h2>接入其他模型</h2><p>一个连接可添加多个模型；保存后在整个工作台复用。</p></div><div className="agent-inline-actions"><button type="button" className="subtle-button" disabled={busy} onClick={() => edit(null, 'openai_compatible')}><Icon name="plus" size={15} />自定义 API</button><button type="button" className="subtle-button" disabled={busy} onClick={() => edit(null, 'gemini')}><Icon name="plus" size={15} />添加 Gemini API</button><button type="button" className="primary-button" disabled={busy} onClick={() => edit(null, 'xai')}><Icon name="plus" size={15} />添加 Grok</button></div></div>}
     {error && <div className="error-banner" role="alert">{error}</div>}{notice && <p className="agent-notice" role="status">{notice}</p>}
-    <div className={`connection-layout ${draft ? 'is-editing' : ''}`}><div>{loading ? <p className="connection-help">正在读取连接…</p> : items.length === 0 ? <div className="connection-empty"><Icon name="code" size={26} /><h3>添加 Gemini、Grok 或自定义模型连接</h3><p>保存 API 密钥后即可读取模型列表，并选择要加入工作台的模型。</p><button type="button" className="subtle-button" onClick={() => edit(null, 'xai')}>添加第一个连接</button></div> : items.map((connection) => <ConnectionRow key={connection.id} connection={connection} busy={busy} onEdit={() => edit(connection)} onDiscover={() => discover(connection)} onTest={() => { setTestTarget({ connection, model: connection.models[0].id }); setDiscovery(null); setRemoveTarget(null); }} onRemove={() => { setRemoveTarget(connection); setTestTarget(null); setDiscovery(null); }} />)}</div>{draft && <div ref={editorRef}><ConnectionForm draft={draft} busy={busy} machine={machine} onChange={setDraft} onSave={save} onCancel={() => { setDraft(null); setError(''); }} /></div>}</div>
-    {discovery && <section className="connection-action-box"><div className="agent-section-heading"><h3>选择 {discovery.connection.name} 的模型</h3><button className="icon-button" type="button" aria-label="关闭模型列表" onClick={() => setDiscovery(null)}><Icon name="close" size={17} /></button></div><div className="connection-discovery-list">{discovery.models.map((model) => <label key={model.id}><input type="checkbox" checked={discovery.selected.includes(model.id)} onChange={(event) => setDiscovery({ ...discovery, selected: event.target.checked ? [...discovery.selected, model.id] : discovery.selected.filter((id) => id !== model.id) })} /><span>{model.label || model.id}<small>{model.id}</small></span></label>)}</div><button type="button" className="primary-button" disabled={busy || !discovery.selected.length} onClick={() => perform(async () => { const body = connectionBody(connectionDraft(discovery.connection)); const known = [...discovery.connection.models, ...discovery.models]; body.models = discovery.selected.map((id) => { const model = known.find((item) => item.id === id); return { id, label: model?.label || id }; }); await modelConnectionApi.update(discovery.connection.id, body); if (!alive.current) return; setDiscovery(null); await reload(); await onRefresh(); setNotice('模型已加入工作台。现在可以在“项目 Agent”中添加成员。'); })}>添加所选模型</button></section>}
+    <div className={`connection-layout ${draft && visibleItems.length ? 'is-editing' : ''}`}>
+      {loading && <p className="connection-help">正在读取连接…</p>}
+      {!loading && !visibleItems.length && !geminiOnly && <div className="connection-empty"><Icon name="code" size={26} /><h3>添加 Gemini、Grok 或自定义模型连接</h3><p>保存 API 密钥后即可读取模型列表，并选择要加入工作台的模型。</p><button type="button" className="subtle-button" onClick={() => edit(null, 'xai')}>添加第一个连接</button></div>}
+      {geminiOnly && error && items === null && <button type="button" className="subtle-button" onClick={reload}>重新读取连接</button>}
+      {visibleItems.length > 0 && <div>{visibleItems.map((connection) => <section key={connection.id}>
+        <ConnectionRow connection={connection} busy={busy} onEdit={() => edit(connection)} onDiscover={() => discover(connection)} onTest={() => { setTestTarget({ connection, model: connection.models[0].id }); setDiscovery(null); setRemoveTarget(null); }} onRemove={() => { setRemoveTarget(connection); setTestTarget(null); setDiscovery(null); }} />
+        {geminiOnly && onChooseConnection && connection.enabled && connection.models?.length > 0 && <button type="button" className="subtle-button" disabled={busy} onClick={() => onChooseConnection(connection.id)}>选用此连接</button>}
+      </section>)}</div>}
+      {draft && <div ref={editorRef}><ConnectionForm draft={draft} busy={busy} machine={machine} providerLocked={geminiOnly} onChange={setDraft} onSave={save} onCancel={() => { setDraft(null); setError(''); }} /></div>}
+    </div>
+    {discovery && <section className="connection-action-box"><div className="agent-section-heading"><h3>选择 {discovery.connection.name} 的模型</h3><button className="icon-button" type="button" aria-label="关闭模型列表" onClick={() => setDiscovery(null)}><Icon name="close" size={17} /></button></div><div className="connection-discovery-list">{discovery.models.map((model) => <label key={model.id}><input type="checkbox" checked={discovery.selected.includes(model.id)} onChange={(event) => setDiscovery({ ...discovery, selected: event.target.checked ? [...discovery.selected, model.id] : discovery.selected.filter((id) => id !== model.id) })} /><span>{model.label || model.id}<small>{model.id}</small></span></label>)}</div><button type="button" className="primary-button" disabled={busy || !discovery.selected.length} onClick={() => perform(async () => { const body = connectionBody(connectionDraft(discovery.connection)); const known = [...discovery.connection.models, ...discovery.models]; body.models = discovery.selected.map((id) => { const model = known.find((item) => item.id === id); return { id, label: model?.label || id }; }); const response = await modelConnectionApi.update(discovery.connection.id, body); if (!alive.current) return; setDiscovery(null); await refreshSaved(response.connection || response); setNotice('模型已加入工作台。现在可以在“项目 Agent”中添加成员。'); })}>添加所选模型</button></section>}
     {testTarget && <section className="connection-action-box"><h3>测试 {testTarget.connection.name}</h3><p>会向所选模型发送一句简短测试提示，可能产生少量 API 费用。</p><select aria-label="要测试的模型" value={testTarget.model} onChange={(event) => setTestTarget({ ...testTarget, model: event.target.value })}>{testTarget.connection.models.map((model) => <option key={model.id} value={model.id}>{model.label || model.id}</option>)}</select><div className="agent-inline-actions"><button type="button" className="subtle-button" disabled={busy} onClick={() => setTestTarget(null)}>取消</button><button type="button" className="primary-button" disabled={busy} onClick={() => perform(async () => { const result = await modelConnectionApi.test(testTarget.connection.id, testTarget.model); if (!alive.current) return; setTestTarget(null); await reload(); await onRefresh(); setNotice(result.message || (result.ok ? '模型调用成功。' : '模型调用失败，请检查连接。')); })}>{busy ? '正在测试…' : '发送测试请求'}</button></div></section>}
-    {removeTarget && <section className="connection-action-box"><h3>移除 {removeTarget.name}？</h3><p>会删除{machine.label}保存的连接和密钥。群聊历史保留；使用这些模型的成员需要重新选择模型。</p><div className="agent-inline-actions"><button type="button" className="subtle-button" disabled={busy} onClick={() => setRemoveTarget(null)}>取消</button><button type="button" className="primary-button" disabled={busy} onClick={() => perform(async () => { await modelConnectionApi.remove(removeTarget.id); if (!alive.current) return; setRemoveTarget(null); if (draft?.id === removeTarget.id) setDraft(null); await reload(); await onRefresh(); setNotice('连接已移除。'); })}>确认移除连接</button></div></section>}
+    {removeTarget && <section className="connection-action-box"><h3>移除 {removeTarget.name}？</h3><p>会删除{machine.label}保存的连接和密钥。群聊历史保留；使用这些模型的成员需要重新选择模型。</p><div className="agent-inline-actions"><button type="button" className="subtle-button" disabled={busy} onClick={() => setRemoveTarget(null)}>取消</button><button type="button" className="primary-button" disabled={busy} onClick={() => perform(async () => { await modelConnectionApi.remove(removeTarget.id); if (!alive.current) return; setRemoveTarget(null); if (draft?.id === removeTarget.id) setDraft(null); await refreshSaved(null); setNotice('连接已移除。'); })}>确认移除连接</button></div></section>}
   </>;
 }
 

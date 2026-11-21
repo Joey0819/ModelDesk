@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { appendTeamMember, memberKind, memberKindLabel, teamRequest, teamIssues, temporaryMembers, recipeTeam } from '../src/mission-teams.js';
+import { ANTIGRAVITY_AGENT_ID, appendTeamMember, changeMemberKind, memberKind, memberKindLabel, teamRequest, teamIssues, temporaryMembers, recipeTeam } from '../src/mission-teams.js';
 import { deriveArtifacts } from '../src/artifacts.js';
 const catalog = [{ id: 'gpt', verified: true }, { id: 'gemini', verified: true }];
 test('existing model roles keep their type and typed runtimes save without fake model IDs', () => {
@@ -65,4 +65,28 @@ test('image roles retain exact model IDs, skills bind to saved roles, and rulers
   assert.ok(teamIssues({...team,coordinator_model:'gpt-image-2.5'},connected,options).some((message)=>message.includes('文字推理')));
   assert.ok(teamIssues(team,connected).some((message)=>message.includes('Skills')));
   assert.equal(recipeTeam('article', [{id:'gpt-image-2.5',verified:true},...catalog]).coordinator_model,'gpt');
+});
+test('Antigravity selection is explicit, group-only, and persists the exact route', () => {
+  const pinned = `${ANTIGRAVITY_AGENT_ID}:gemini-4-neon-high`;
+  const native = [{ id: ANTIGRAVITY_AGENT_ID, group_only: true, verified: true }, { id: pinned, group_only: true, verified: true }];
+  const catalog = [...native, { id: 'gpt' }];
+  const team = recipeTeam('article', catalog);
+  assert.equal(team.coordinator_model, 'gpt');
+  assert.equal(changeMemberKind(team.members[0], 'model', catalog).model, 'gpt');
+  team.coordinator_model = ANTIGRAVITY_AGENT_ID;
+  team.members[0].model = pinned;
+  assert.equal(appendTeamMember(team, catalog).members.at(-1).model, 'gpt');
+  assert.equal(appendTeamMember(team, native).members.at(-1).model, 'gpt');
+  assert.deepEqual(teamIssues(team, catalog, { allowExecutableMembers: true }), []);
+  assert.ok(teamIssues(team, catalog).some((issue) => issue.includes('Antigravity Agent')));
+  assert.equal(teamRequest(team, 'project').coordinator_model, ANTIGRAVITY_AGENT_ID);
+  assert.equal(teamRequest(team, 'project').members[0].model, pinned);
+});
+
+
+test('an offline group editor starts with two assignable slots and keeps existing choices', async () => {
+  const { draftMembers, temporaryMembers } = await import('../src/mission-teams.js');
+  assert.deepEqual(draftMembers([]).map((member) => [member.id, member.model]), [['member_1', ''], ['member_2', '']]);
+  assert.deepEqual(draftMembers(['one']).map((member) => member.model), ['one', '']);
+  assert.deepEqual(draftMembers(['one', 'two', 'three']), temporaryMembers(['one', 'two', 'three']));
 });

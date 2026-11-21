@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { catalogOptions, failCatalogRefresh, filterModels, gatewayDiscovery, initialModels, mergeDiscoveries, publisherOnlyModels, retainCatalogOnFailure, selectionOptions } from '../src/model-catalog-state.js';
+import { catalogOptions, failCatalogRefresh, filterModels, gatewayDiscovery, initialModels, mergeDiscoveries, mergeHostModelRead, publisherOnlyModels, retainCatalogOnFailure, selectionOptions } from '../src/model-catalog-state.js';
 
 const source = (changes = {}) => ({ connection: { id: 'a', name: '团队服务', updated_at: 'revision-1', enabled: true }, models: [{ id: 'new-model-2027' }], ...changes });
 const status = { gateway: { online: true }, providers: [{ id: 'connection:a', enabled: true }], models: [{ id: 'saved', provider: 'codex', verified: true }, { id: 'connection:a:same', label: 'Custom name', provider: 'connection:a', testing: true }] };
@@ -76,6 +76,33 @@ test('temporary gateway outage keeps visible choices but removes verified status
   assert.equal(retainCatalogOnFailure(status, { gateway: { online: true }, models: [] }).models.length, 0);
 });
 
+test('refresh compares route IDs across polls and failed reads without counting publication-only IDs', () => {
+  const source = 'antigravity';
+  const baseline = { gateway: { online: true, cached_publication: { [source]: { catalog_only: ['gemini-upcoming'] } } },
+    models: [{ id: 'gemini-first', provider: source }, { id: 'different-login', provider: 'codex' }] };
+  const read = (ids) => ({ scope: source, sources: [], gateway: { providers: { [source]: { listed: ids, catalog_only: ['gemini-future'] } } } });
+  assert.deepEqual(publisherOnlyModels(baseline, null, source), ['gemini-upcoming']);
+  const first = mergeDiscoveries(null, read(['gemini-first', 'gemini-new']), baseline);
+  assert.deepEqual(gatewayDiscovery(first, source).changes, { compared: true, added: ['gemini-new'], removed: [] });
+  const failure = failCatalogRefresh(first, source, 'offline');
+  assert.equal(gatewayDiscovery(failure, source).changes, undefined);
+  const second = mergeDiscoveries(failure, read(['gemini-new']), baseline);
+  assert.deepEqual(gatewayDiscovery(second, source).changes, { compared: true, added: [], removed: ['gemini-first'] });
+  assert.deepEqual(publisherOnlyModels(baseline, second, source), ['gemini-future']);
+  assert.deepEqual(gatewayDiscovery(mergeDiscoveries(null, read([])), source).changes, { compared: false, added: [], removed: [] });
+});
+
+test('paired status reads report changes only when both snapshots have a usable gateway', () => {
+  const source = 'antigravity';
+  const before = { gateway: { online: true }, models: [{ id: 'gemini-old', provider: source }] };
+  const current = { gateway: { online: true }, models: [{ id: 'gemini-new', provider: source }] };
+  const report = mergeHostModelRead(null, source, before, current);
+  assert.deepEqual(gatewayDiscovery(report, source).changes, { compared: true, added: ['gemini-new'], removed: ['gemini-old'] });
+  assert.equal(mergeHostModelRead(report, source, before, null), report);
+  assert.equal(mergeHostModelRead(report, source, before, { ...current, gateway: { online: false } }), report);
+  assert.equal(gatewayDiscovery(mergeHostModelRead(null, source, null, current), source).changes.compared, false);
+});
+
 test('search uses labels, IDs and providers while excluding images and tests from text roles', () => {
   const catalog = [{ id: 'future-text', label: 'Researcher', provider: 'connection:b', provider_label: 'Lab' }, { id: 'gpt-image-2.5' }, { id: 'text-embedding-3-small' }, { id: 'test-model', testing: true }];
   assert.deepEqual(filterModels(catalog, { query: 'lab researcher' }).map((m) => m.id), ['future-text']);
@@ -92,4 +119,24 @@ test('removed selected models remain inspectable and removable without changing 
   assert.deepEqual(selected, ['deleted']);
   assert.equal(options.at(-1).unavailable, true);
   assert.equal(filterModels(options, { selected })[0].id, 'deleted');
+});
+
+test('native agent catalogs, model names and verified selections stay independent of a failing gateway', async () => {
+  const { modelName, nativeAgentSource: source } = await import('../src/model-catalog-state.js');
+  const base = { id: 'agent:antigravity', provider: source, installed: true, group_only: true, catalog_checked_at: 'cli-time' };
+  const row = { ...base, id: base.id + ':gemini-native', verified: true };
+  const host = { gateway: { online: false }, models: [base, row] };
+  const catalog = catalogOptions(host, { gateway: { stale: true } });
+  assert.equal(catalog[1].stale, undefined);
+  assert.deepEqual(initialModels([], catalog), []);
+  assert.equal(modelName({ id: base.id }), 'Antigravity Agent');
+  assert.equal(modelName({ id: row.id }), 'gemini-native');
+  assert.deepEqual(retainCatalogOnFailure(host, { gateway: { online: false }, models: [] }).models, []);
+  const next = mergeHostModelRead(null, source, { ...host, models: [base] }, host);
+  assert.deepEqual(next.nativeAgent.changes.added, [row.id]);
+  const failed = failCatalogRefresh(next, source, 'native list failed');
+  assert.equal(failed.nativeAgent.error, 'native list failed');
+  assert.deepEqual(failed.nativeAgent.listed, [row.id]);
+  const unrelated = mergeDiscoveries(failed, { gateway: {}, sources: [] });
+  assert.equal(unrelated.nativeAgent.error, 'native list failed');
 });

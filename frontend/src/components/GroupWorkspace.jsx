@@ -6,6 +6,7 @@ import { groupApi } from '../group-api';
 import { groupTaskApi } from '../group-task-api';
 import { harnessApi } from '../harness-api';
 import { temporaryMembers, teamRequest } from '../mission-teams';
+import { roleModelName } from '../model-catalog-state';
 import { TASK_LABELS, taskActive, taskDraftKey, taskEngineLabel, readTaskDraft, withFetchedPatch } from '../group-task-state';
 import {
   MUSE_STATUS,
@@ -214,7 +215,7 @@ export function GroupTurn({ job, room, onOpenArtifacts, onSendToMuse, onHandOffT
     {automatic && <summary>查看讨论与规划记录（{messages.length} 条）</summary>}
     {messages.map((message, index) => {
       const handoff = detectMessageHandoffIntent(message.content || '');
-      return <section className="group-member-message" style={{ '--member-color': groupMemberColor(message.member_id || message.model) }} key={`${message.member_id || message.model}-${message.round}-${index}`}><span className="group-member-avatar" aria-hidden="true">{message.member_name?.slice(0, 1) || 'A'}</span><div><header><strong>{message.member_name}</strong><small>{message.model}</small>{message.phase && <small className="group-phase-badge">{message.phase === 'plan' ? '统筹规划' : message.phase === 'synthesis' ? '统筹汇总' : '成员讨论'}</small>}{message.round > 1 && <small>第 {message.round} 轮</small>}</header>{message.error && <p className="output-error">发言失败：{message.error}</p>}{message.content && <Markdown>{message.content}</Markdown>}{message.incomplete && <p className="result-note">发言达到输出长度限制，内容可能不完整。</p>}<div className="group-message-actions"><CopyTextButton text={message.content || ''} label={`复制 ${message.member_name} 的发言`} />{message.content && onQuoteReply && <button className="subtle-button" type="button" onClick={() => onQuoteReply(message, job)}>@{message.member_name} 追问</button>}{!automatic && message.content && onSendToMuse && handoff.isVideoStoryboard && <button className="subtle-button group-inline-muse-btn group-smart-handoff" type="button" onClick={() => onSendToMuse(message.content, job)}><span className="group-muse-mark">M</span>一键交给 @Muse 生成视频</button>}{!automatic && message.content && onSendToMuse && !handoff.isVideoStoryboard && <button className="subtle-button group-inline-muse-btn" type="button" onClick={() => onSendToMuse(message.content, job)}><span className="group-muse-mark">M</span>准备 Muse 任务</button>}{!automatic && message.content && onHandOffToAgent && handoff.isCodeProposal && <button className="subtle-button group-smart-handoff" type="button" onClick={() => onHandOffToAgent(message.content, message.member_id, job.id)}>交给 @Codex 执行修改</button>}{!automatic && message.content && onHandOffToAgent && !handoff.isCodeProposal && <button className="subtle-button" type="button" onClick={() => onHandOffToAgent(message.content, message.member_id, job.id)}>交由代码 Agent</button>}</div></div></section>;
+      return <section className="group-member-message" style={{ '--member-color': groupMemberColor(message.member_id || message.model) }} key={`${message.member_id || message.model}-${message.round}-${index}`}><span className="group-member-avatar" aria-hidden="true">{message.member_name?.slice(0, 1) || 'A'}</span><div><header><strong>{message.member_name}</strong><small>{message.execution_label ? [message.execution_label, message.execution_model].filter(Boolean).join(' · ') : roleModelName({ id: message.model })}</small>{message.phase && <small className="group-phase-badge">{message.phase === 'plan' ? '统筹规划' : message.phase === 'synthesis' ? '统筹汇总' : '成员讨论'}</small>}{message.round > 1 && <small>第 {message.round} 轮</small>}</header>{message.error && <p className="output-error">发言失败：{message.error}</p>}{message.content && <Markdown>{message.content}</Markdown>}{message.incomplete && <p className="result-note">发言达到输出长度限制，内容可能不完整。</p>}<div className="group-message-actions"><CopyTextButton text={message.content || ''} label={`复制 ${message.member_name} 的发言`} />{message.content && onQuoteReply && <button className="subtle-button" type="button" onClick={() => onQuoteReply(message, job)}>@{message.member_name} 追问</button>}{!automatic && message.content && onSendToMuse && handoff.isVideoStoryboard && <button className="subtle-button group-inline-muse-btn group-smart-handoff" type="button" onClick={() => onSendToMuse(message.content, job)}><span className="group-muse-mark">M</span>一键交给 @Muse 生成视频</button>}{!automatic && message.content && onSendToMuse && !handoff.isVideoStoryboard && <button className="subtle-button group-inline-muse-btn" type="button" onClick={() => onSendToMuse(message.content, job)}><span className="group-muse-mark">M</span>准备 Muse 任务</button>}{!automatic && message.content && onHandOffToAgent && handoff.isCodeProposal && <button className="subtle-button group-smart-handoff" type="button" onClick={() => onHandOffToAgent(message.content, message.member_id, job.id)}>交给 @Codex 执行修改</button>}{!automatic && message.content && onHandOffToAgent && !handoff.isCodeProposal && <button className="subtle-button" type="button" onClick={() => onHandOffToAgent(message.content, message.member_id, job.id)}>交由代码 Agent</button>}</div></div></section>;
     })}
     </MessageContainer>}
     {hasDiscussionOutput && <button className="subtle-button group-discussion-preview" type="button" onClick={() => onOpenArtifacts(job, true)}><Icon name="panel" size={14} />查看本轮发言</button>}
@@ -242,7 +243,7 @@ function GroupTeamSettings({ room, models, catalog, addRequested, onOpenAgentSet
   };
   return <dialog ref={dialog} className="group-members-dialog" aria-labelledby="group-members-heading" onCancel={(event) => { if (saving) event.preventDefault(); else onClose(); }}>
     <header><div><h2 id="group-members-heading">管理群成员</h2><p>{room.title} · 选择模型，命名 Agent，设置职责</p></div><button type="button" className="icon-button" aria-label="关闭群成员设置" disabled={saving} onClick={onClose}><Icon name="close" size={18} /></button></header>
-    <div className="group-members-dialog-body"><MissionTeamPicker projectId={room.project_id} team={team} models={models} catalog={catalog} onChange={chooseTeam} onPending={setPending} onOpenAgentSettings={onOpenAgentSettings} editSignal={addRequested ? 1 : 0} requireSaved />
+    <div className="group-members-dialog-body"><MissionTeamPicker projectId={room.project_id} team={team} models={models} catalog={catalog} onChange={chooseTeam} onPending={setPending} onOpenAgentSettings={onOpenAgentSettings} editSignal={addRequested ? 1 : 0} allowGroupAgents requireSaved />
       <p className="group-members-help">先保存协作组，再应用到本群。其他群聊继续使用各自的成员；过去的发言、任务和审阅保留原成员身份。正在执行的任务完成或停止后才可应用。</p>
       {error && <p className="output-error" role="alert">{error}</p>}
     </div>
@@ -462,6 +463,7 @@ function GroupRoom({ roomId, projectId, initialJob, header, onOpenTodo, status, 
   const runtimeEngine = engines.find((item) => item.id === runtimeKind);
   const runtimeReadiness = museReadiness(museProbe);
   const coordinatorModel = room?.team_snapshot?.coordinator_model;
+  const routeLabel = (id) => roleModelName(status?.models?.find((model) => model.id === id) || { id });
   const coordinatorMember = members.find((member) => member.id === room?.team_snapshot?.coordinator_member_id);
   const usesMcpPlanner = Boolean(coordinatorMember && deliveryMode === 'auto' && !recipientIds.length);
   const runtimeReady = runtimeKind === 'muse' ? (!REMOTE_CLIENT && runtimeReadiness.ready) : Boolean(projectId && runtimeEngine?.available && runtimeEngine.authenticated !== false);
@@ -788,7 +790,7 @@ function GroupRoom({ roomId, projectId, initialJob, header, onOpenTodo, status, 
     {header.error && <div className="error-banner" role="alert">{header.error}<button type="button" className="subtle-button" onClick={header.refresh}>重试</button></div>}
     {artifactsVisible && patchError && <div className="error-banner" role="alert">读取补丁失败：{patchError}<button type="button" className="subtle-button" onClick={() => showResult(explicitPreview.current)}>重新读取补丁</button></div>}
     {room && <dialog className="group-options-dialog group-roster-dialog" ref={rosterDialog} aria-labelledby="group-roster-heading">
-      <header><div><h2 id="group-roster-heading">成员与分工</h2>{(coordinatorMember || coordinatorModel) && <p>统筹 {coordinatorMember?.name || coordinatorModel}{coordinatorMember && coordinatorModel ? ` · 编辑与验收 ${coordinatorModel}` : ''}</p>}</div><button type="button" className="icon-button" aria-label="关闭成员与分工" onClick={() => rosterDialog.current?.close()}><Icon name="close" size={18} /></button></header>
+      <header><div><h2 id="group-roster-heading">成员与分工</h2>{(coordinatorMember || coordinatorModel) && <p>统筹 {coordinatorMember?.name || routeLabel(coordinatorModel)}{coordinatorMember && coordinatorModel ? ` · 编辑与验收 ${routeLabel(coordinatorModel)}` : ''}</p>}</div><button type="button" className="icon-button" aria-label="关闭成员与分工" onClick={() => rosterDialog.current?.close()}><Icon name="close" size={18} /></button></header>
       <div className="group-options-body">
         <div className="group-roster-actions">
           <button type="button" className="subtle-button" onClick={() => openMemberSettings(true)}><Icon name="plus" size={14} />添加 Agent</button>
@@ -796,7 +798,7 @@ function GroupRoom({ roomId, projectId, initialJob, header, onOpenTodo, status, 
         </div>
         <div className="group-roster-grid">{members.map((member) => <article key={member.id}>
           <strong>{member.name}</strong>
-          <small>{groupMemberKindLabel(member)}{member.model && ` · ${status?.models?.find((model) => model.id === member.model)?.label || member.model}`}</small>
+          <small>{groupMemberKindLabel(member)}{member.model && ` · ${routeLabel(member.model)}`}</small>
           {member.role && <p>{member.role}</p>}
         </article>)}</div>
       </div>
@@ -867,7 +869,7 @@ function GroupRoom({ roomId, projectId, initialJob, header, onOpenTodo, status, 
             {deliveryMembers.map((member) => {
               const runtime = !['model', 'image', 'mcp'].includes(groupMemberKind(member));
               const selected = recipientIds.includes(member.id);
-              return <button type="button" key={member.id} aria-pressed={selected} className={`${selected ? 'selected' : ''} ${runtime ? 'group-agent-recipient' : ''}`} title={`${groupMemberKindLabel(member)} · ${runtime ? '选择后需点击明确派发按钮' : member.model || ''}`} onClick={() => { if (groupMemberKind(member) === 'mcp') setDeliveryMode('auto'); setRecipientIds((previous) => runtime ? (selected ? [] : [member.id]) : [...previous.filter((id) => deliveryMembers.some((item) => item.id === id && ['model', 'image', 'mcp'].includes(groupMemberKind(item))) && id !== member.id), ...(selected ? [] : [member.id])]); }}>@{member.name}<small>{groupMemberKindLabel(member)}</small></button>;
+              return <button type="button" key={member.id} aria-pressed={selected} className={`${selected ? 'selected' : ''} ${runtime ? 'group-agent-recipient' : ''}`} title={`${groupMemberKindLabel(member)} · ${runtime ? '选择后需点击明确派发按钮' : routeLabel(member.model)}`} onClick={() => { if (groupMemberKind(member) === 'mcp') setDeliveryMode('auto'); setRecipientIds((previous) => runtime ? (selected ? [] : [member.id]) : [...previous.filter((id) => deliveryMembers.some((item) => item.id === id && ['model', 'image', 'mcp'].includes(groupMemberKind(item))) && id !== member.id), ...(selected ? [] : [member.id])]); }}>@{member.name}<small>{groupMemberKindLabel(member)}</small></button>;
             })}
           </div>
           {!runtimeMember && (
@@ -1095,7 +1097,7 @@ export default function GroupWorkspace({ initialRoomId, initialTeam, initialJob,
         <form className="group-create-room" onSubmit={createRoom}>
           <div className="mission-introduction"><h2>创建项目群聊</h2><p>{activeProject?.name || '独立项目'} · 选择一起讨论或执行任务的成员。</p></div>
           <label className="group-title-input"><span>群聊名称</span><input aria-label="群聊名称" value={title} maxLength={100} placeholder="例如：产品方案讨论、发布前审查" onChange={(event) => setTitle(event.target.value)} /></label>
-          <MissionTeamPicker projectId={activeProjectId} team={team} models={models} catalog={status?.models || []} onChange={chooseTeam} onPending={setTeamPending} onOpenAgentSettings={onOpenAgentSettings} requireSaved />
+          <MissionTeamPicker projectId={activeProjectId} team={team} models={models} catalog={status?.models || []} onChange={chooseTeam} onPending={setTeamPending} onOpenAgentSettings={onOpenAgentSettings} allowGroupAgents requireSaved />
           <div className={`group-create-actions${!team?.id ? ' needs-team' : ''}`}>
             <p>{team?.id ? '建群后会保存当前成员与分工，已有讨论不受后续编辑影响。' : '还未选定已保存协作组：可直接一键按上方默认成员建群，或点击上方「成员与分工」自定义成员。'}</p>
             {team?.id

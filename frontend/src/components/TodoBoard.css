@@ -189,6 +189,7 @@
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 3;
   overflow: hidden;
+  min-block-size: 24px;
   font-size: 14px;
   font-weight: 500;
   overflow-wrap: anywhere;
@@ -196,7 +197,7 @@
   text-align: start;
   border: 0;
   background: transparent;
-  padding: 0;
+  padding: 2px 0;
   cursor: pointer;
   color: var(--ink);
 }

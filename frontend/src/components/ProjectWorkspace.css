@@ -333,6 +333,24 @@
 .modeldesk[data-theme=dark] .project-workspace .current .step-marker { background: #2d3c59; }
 .modeldesk[data-theme=dark] .project-workspace .project-empty-snapshot { background: #3a3225; border-color: #5c4d34; }
 .modeldesk[data-theme=dark] .project-workspace .project-empty-snapshot :is(strong,p) { color: #d8c6a3; }
+.modeldesk[data-theme=dark] .project-workspace .repository-state code { background: #2a374b; color: #c0cfe4; border: 1px solid #3a4a63; }
+.modeldesk[data-theme=dark] .project-workspace :is(.project-list, .project-view-tabs, .scope-preview-action, .review-submit-bar, .review-result-tabs, .project-review-list > button, .snapshot-file, .manifest-exclusions, .file-selector, .file-selector > header, .code-finding, .code-finding footer, .finding-evidence, .review-engine-options button:not(.selected), .scope-options button:not(.selected), .review-model-chooser label, .project-list-add, .project-start-steps li > span) { border-color: #354258; }
+.modeldesk[data-theme=dark] .project-workspace .project-progress-steps li + li::before { background: #3b4d68; }
+.modeldesk[data-theme=dark] .project-workspace :is(.code-finding, .review-engine-options button:not(.selected), .scope-options button:not(.selected), .file-selector > header) { background: #232e3d; }
+.modeldesk[data-theme=dark] .project-workspace :is(.finding-evidence, .file-selector label:hover) { background: #1d2736; }
+.modeldesk[data-theme=dark] .project-workspace .unconfirmed-reviews { background: #2d2922; border-color: #534835; }
+.modeldesk[data-theme=dark] .project-workspace .unconfirmed-reviews > section { border-color: #4a402f; }
+.modeldesk[data-theme=dark] .project-workspace .finding-severity { background: #2a374b; color: #b8c8df; }
+.modeldesk[data-theme=dark] .project-workspace :is(.severity-p0, .severity-p1) { background: #462a2d; color: #f2aba3; }
+.modeldesk[data-theme=dark] .project-workspace .severity-p2 { background: #433722; color: #e6c68a; }
+.modeldesk[data-theme=dark] .project-workspace .severity-p3 { background: #263750; color: #a7c0e8; }
+.modeldesk[data-theme=dark] .project-workspace .project-list-item.selected { background: #2d3c59; }
+.modeldesk[data-theme=dark] .project-workspace .project-list-item.selected strong,
+.modeldesk[data-theme=dark] .project-workspace .project-list-item.selected > svg { color: #c0cbff; }
+.modeldesk[data-theme=dark] .project-workspace :is(.project-heading h2, .project-empty h2) { color: #dbe4f1; }
+.modeldesk[data-theme=dark] .project-workspace :is(.review-scope-panel h3, .review-engine-panel h3, .code-finding h3, .review-engine-options strong) { color: #d0dced; }
+.modeldesk[data-theme=dark] .project-workspace :is(.repository-state, .project-view-tabs > button, .project-list-empty, .project-list-add, .review-scope-select, .file-selector label) { color: #a4b5ce; }
+.modeldesk[data-theme=dark] .project-workspace :is(.project-view-tabs > button.selected, .review-result-tabs button.selected) { color: #a7b5ff; border-bottom-color: #a7b5ff; }
 .review-context-memory { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; margin: 12px 0; font-size: 12px; color: var(--ink); }
 .review-context-memory input { accent-color: var(--accent); }
 .review-context-memory small { color: var(--muted); font-size: 11px; }

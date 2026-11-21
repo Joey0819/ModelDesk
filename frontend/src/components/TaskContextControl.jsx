@@ -18,7 +18,7 @@ export default function TaskContextControl({ value, onChange, disabled, jobs = [
     <small>{value === 'fresh' ? '保留旧记录；本轮从新目标开始。已选项目资料仍有效。' : '沿用原始目标、历次修改和最新底稿；失败不会清空，所有执行成员共享。'}</small>
     {memory && <><button type="button" className="task-memory-button" onClick={() => memoryDialog.current?.showModal()}>{fresh ? '查看上次执行记忆（本轮不带入）' : `上次执行记忆 · ${memory.requests?.length || 0} 条要求${memory.artifact ? ' · 已保留底稿' : ''}${mediaCount ? ` · ${mediaCount} 份素材` : ''}`}</button>
       <dialog ref={memoryDialog} className="task-memory-dialog" aria-label="上次执行的任务记忆">
-        <header><strong>上次执行的任务记忆</strong><button type="button" onClick={() => memoryDialog.current?.close()} aria-label="关闭任务记忆">关闭</button></header>
+        <header><strong>上次执行的任务记忆</strong><button type="button" className="subtle-button" onClick={() => memoryDialog.current?.close()} aria-label="关闭任务记忆">关闭</button></header>
       <div className="task-memory-body">
         <p className="task-memory-scope">{fresh ? '已选择开始新任务：以下是上次执行的记录，不会作为本轮任务记忆带入。已选项目资料仍有效。' : `上次执行实际准备的记忆（第 ${memory.revision} 轮），不包含该次执行后才生成的成果。下一轮发送时会重新整理最新成果，并追加本轮要求；后续修改覆盖冲突的旧要求。`}</p>
         <div className="task-memory-inventory" aria-label="记忆内容清单"><span>{memory.requests?.length || 0} 条用户要求</span><span>{documentCount} 份历史文本资料</span><span>{mediaCount} 份可复用素材</span></div>

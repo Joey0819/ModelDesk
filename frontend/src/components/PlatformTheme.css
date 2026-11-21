@@ -46,3 +46,22 @@
 .modeldesk[data-theme=dark] .status-failed, .modeldesk[data-theme=dark] .status-error { color: #f0958d; }
 .modeldesk[data-theme=dark] .history-meta { color: #8c9db8; }
 .modeldesk[data-theme=dark] .mode-header-icon { background: color-mix(in srgb, var(--accent) 16%, #232e3d); color: #a9b8ff; border-color: color-mix(in srgb, var(--accent) 32%, #354258); }
+.modeldesk[data-theme=dark] :is(.illustration-input, .illustration-responses > div, .example-prompt) { background: #232e3d; border-color: #354258; color: #c8d5e9; }
+.modeldesk[data-theme=dark] .example-prompt:hover { border-color: #5b72a8; background: #283548; }
+.modeldesk[data-theme=dark] .example-prompt > span { background: #2d3c56; color: #a7b9d6; }
+.modeldesk[data-theme=dark] .example-prompt > svg { color: #8fa3c2; }
+.modeldesk[data-theme=dark] :is(.illustration-input span, .illustration-responses span) { background: #3a4a63; }
+.modeldesk[data-theme=dark] .illustration-lines i { border-color: #3a4a63; }
+.modeldesk[data-theme=dark] .illustration-model { background: #1f3d35; color: #67c5b1; }
+.modeldesk[data-theme=dark] .illustration-model.gemini-mark { background: #2b3859; color: #a7b5ff; }
+.modeldesk[data-theme=dark] .empty-flow { color: #8f9fb8; }
+.modeldesk[data-theme=dark] .empty-flow i { background: #354258; }
+.modeldesk[data-theme=dark] :is(.resource-list, .mcp-manager > aside, .platform-inner-tabs, .platform-resource-counts, .platform-resource-counts button, .runtime-list article, .job-monitor-table button, .knowledge-search-results, .platform-job-inspector, .sdk-native-result, .actual-flow-routes > div, .original-app-frame, .original-app-frame > header, .project-context-selector, .context-mcp, .context-chat-tools, .workflow-advanced, .task-condition, .provenance-source, .remembered-result, .feature-catalog > div, .result-source-record, .flow-graph-preview section, .resource-new, .stage-navigation, .prompt-text) { border-color: #354258; }
+.modeldesk[data-theme=dark] :is(.flow-graph-preview section, .knowledge-search-results article, .original-app-frame) { background: #232e3d; border-color: #354258; }
+.modeldesk[data-theme=dark] .context-snapshot-preview { background: #202a39; border-color: #354258; }
+.modeldesk[data-theme=dark] .resource-search button { background: #2d3c59; color: #c0cbff; }
+.modeldesk[data-theme=dark] :is(.resource-list-item:hover, .platform-resource-counts button:hover, .job-monitor-table button:hover, .platform-navigation button:hover:not(.active), .mcp-manager aside > button:hover:not(.selected)) { background: #253347; }
+.modeldesk[data-theme=dark] :is(.platform-tool-catalog button.selected, .mcp-manager aside button.selected) { background: #2d3c59; border-color: #4b6086; color: #c0cbff; }
+.modeldesk[data-theme=dark] .platform-inner-tabs > button.selected { color: #a7b5ff; border-bottom-color: #a7b5ff; }
+.modeldesk[data-theme=dark] .sdk-source-editor { background: #1b2534 !important; color: #dbe4f1 !important; }
+.modeldesk[data-theme=dark] .sdk-execution-output .sdk-stderr { background: #3a262b; color: #e5b7b1; }

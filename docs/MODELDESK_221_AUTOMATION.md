@@ -120,8 +120,7 @@ than creating another bot. Sender restrictions and native-Agent permissions
 remain separate for every binding.
 
 The optional **直接用自然语言派发任务** setting lets an authorized chat send a
-plain-language request as a fresh task. **继续：修改要求** explicitly carries the
-group's context into a revision. Greetings show help; they do not create jobs.
+plain-language request as a fresh task. Reply to your task receipt or send **继续：<full task ID> 修改要求** to revise that task. A follow-up uses only the selected task's history and deliverables. With multiple eligible tasks an unqualified continuation asks you to select one. Greetings show help; they do not create jobs.
 Group chats still require mentioning the actual bot. Existing installations
 remain command-only until this option is enabled. `/modeldesk task`,
 `/modeldesk continue`, `status` and `cancel` remain available. Previously ignored

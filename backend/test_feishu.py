@@ -74,6 +74,7 @@ class FeishuTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(project, self.project_id)
         self.assertEqual(room, self.room_id)
         job = {"id": kwargs["job_id"], "mode": "group", "status": "running", "project_id": project, "group_room_id": room, "events": [],
+               "conversation_id": room, "group_context_mode": request.context_mode if request else "fresh",
                "external_source": kwargs["external_source"], "created_at": workbench.now(), "autonomy": {"state": "running"}}
         self.jobs.jobs[job["id"]] = job
         self.jobs.wakeups[job["id"]] = asyncio.Event()
@@ -97,8 +98,8 @@ class FeishuTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.store.events()[-1]["state"], "rejected")
 
     async def test_task_and_explicit_continue_use_shared_submit_without_native_escalation(self):
-        self.received()
-        self.received(text="/modeldesk continue 改成英文")
+        root = self.received()
+        self.received(text=f"/modeldesk continue {root['job_id']} 改成英文")
         submit = AsyncMock(side_effect=self.submit)
         with patch.object(groups, "submit_message", submit):
             await self.controller.tick()
@@ -108,6 +109,8 @@ class FeishuTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(first.args[1].context_mode, "fresh")
         self.assertTrue(first.args[1].background_mode)
         self.assertEqual(second.args[1].context_mode, "continue")
+        self.assertEqual(second.args[1].prompt, "改成英文")
+        self.assertEqual(second.kwargs["external_source"]["parent_job_id"], root["job_id"])
         self.assertFalse(first.kwargs["native_allowed"])
         self.assertTrue(all(row["state"] == "monitoring" for row in self.store.events()))
         self.assertEqual({row["job_id"] for row in self.controller.public()["recent"]}, set(self.jobs.jobs))
@@ -152,6 +155,76 @@ class FeishuTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(first.kwargs['native_allowed'])
         self.assertEqual({row['input_mode'] for row in self.store.events()}, {'natural_language'})
         self.assertEqual(self.store.events()[-1]['reason'], '已回传指令用法，没有创建任务')
+
+    async def test_wrong_or_ambiguous_targets_stop_before_dispatch(self):
+        root_a = self.received()
+        root_b = self.received(text='/modeldesk task 新任务B')
+        self.received(text='/modeldesk continue 改报告')
+        self.received(text=f'/modeldesk continue {uuid.uuid4()} 改报告')
+        self.received(text=f'/modeldesk continue {root_a["job_id"][:-1]} 改报告')
+        self.received(text=f'/modeldesk continue {root_a["job_id"]}')
+        self.received(text='/modeldesk continue 改报告', parent_id='om_unknown')
+        self.received(text='/modeldesk continue 改报告', root_id=root_a['message_id'])
+        self.received(text=f'/modeldesk continue {root_b["job_id"]} 改报告', parent_id=root_a['message_id'])
+        with patch.object(groups, 'submit_message', AsyncMock(side_effect=self.submit)) as submit:
+            await self.controller.tick()
+        self.assertEqual(submit.await_count, 2)
+        for call in self.sdk.calls[2:]:
+            self.assertIn('/modeldesk status', call[3]['text'])
+        self.assertIn('多个可选的任务', self.sdk.calls[2][3]['text'])
+        self.assertIn('格式无效', self.sdk.calls[4][3]['text'])
+        self.assertIn('后写上修改要求', self.sdk.calls[5][3]['text'])
+        self.assertIn('无法对应', self.sdk.calls[-1][3]['text'])
+
+    async def test_reply_to_result_remembers_the_full_chain_across_controller_restart(self):
+        root = self.received()
+        revision = self.received(text='/modeldesk continue 改报告')
+        submit = AsyncMock(side_effect=self.submit)
+        with patch.object(groups, 'submit_message', submit):
+            await self.controller.tick()
+            self.jobs.get(revision['job_id']).update(status='complete', result={'delivery': {'content': '新版报告'}},
+                autonomy={'state': 'complete', 'notification_id': 'revision-complete'})
+            with patch('backend.autonomy.completion_problem', return_value=None):
+                await self.controller.tick()
+            self.assertTrue(self.sdk.calls[2][3]['text'].startswith('任务已完成'))
+            followup = self.received(text='/modeldesk continue 调整结尾', parent_id='om_reply_3', root_id=revision['message_id'])
+            restarted = feishu.FeishuController(FeishuStore(self.store.directory), self.jobs, sdk_factory=lambda _: self.sdk)
+            await restarted.tick()
+        self.assertEqual(submit.await_count, 3)
+        from backend.task_context import task_records
+        self.assertEqual([job['id'] for job in task_records(self.jobs.jobs, self.jobs.get(followup['job_id']))],
+                         [root['job_id'], revision['job_id']])
+
+    async def test_continuation_rejects_foreign_tasks_and_old_unscoped_continuations(self):
+        self.store.save_config(ConfigInput(enabled=True, app_id='cli_test', bindings=[
+            {**self.binding, 'allowed_sender_ids': ['ou_person', 'ou_colleague']},
+            {**self.binding, 'chat_id': 'oc_two'},
+        ]))
+        root = self.received()
+        submit = AsyncMock(side_effect=self.submit)
+        with patch.object(groups, 'submit_message', submit):
+            await self.controller.tick()
+        saved = self.jobs.jobs[root['job_id']]
+        foreign_cases = [({}, {'app_id': 'cli_wrong'}), ({}, {'config_revision': 'stale'}),
+                         ({'project_id': str(uuid.uuid4())}, {}), ({'group_room_id': str(uuid.uuid4())}, {}),
+                         ({'conversation_id': str(uuid.uuid4())}, {}), ({'group_context_mode': 'continue'}, {})]
+        submit.reset_mock()
+        command = f'/modeldesk continue {root["job_id"]} 改报告'
+        with patch.object(groups, 'submit_message', submit):
+            for changed_job, changed_source in foreign_cases:
+                self.jobs.jobs[root['job_id']] = {**saved, **changed_job, 'external_source': {**saved['external_source'], **changed_source}}
+                self.received(text=command)
+                await self.controller.tick()
+            self.jobs.jobs[root['job_id']] = saved
+            self.received(chat_id='oc_two', text=command)
+            self.received(sender_id='ou_colleague', text=command)
+            self.received(sender_id='ou_colleague', text='/modeldesk continue 改报告', parent_id='om_reply_1')
+            await self.controller.tick()
+            submit.assert_not_awaited()
+            self.received(text=command)
+            await self.controller.tick()
+        self.assertEqual(submit.await_count, 1)  # Older fresh jobs already carry enough provenance.
+        self.assertEqual(submit.await_args.kwargs['external_source']['parent_job_id'], root['job_id'])
 
     async def test_restart_reconciles_created_job_and_never_replays_unknown_dispatch(self):
         record = self.received()
@@ -293,6 +366,9 @@ class FeishuTests(unittest.IsolatedAsyncioTestCase):
         upload = next(call for call in self.sdk.calls if call[0] == "upload")
         self.assertEqual(hashlib.sha256(upload[2]).hexdigest(), entry["sha256"])
         self.assertTrue(any(call[0] == "reply" and call[2] == "file" for call in self.sdk.calls))
+        for i, call in enumerate(self.sdk.calls, 1):
+            if call[0] == "reply":
+                self.assertEqual(self.store.task_for_reply({**record, "reply_message_id": f"om_reply_{i}"}), job["id"])
 
     async def test_verified_text_results_reply_once_to_original_chat(self):
         from backend.coordination import save_version

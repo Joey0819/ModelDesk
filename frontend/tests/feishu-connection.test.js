@@ -63,10 +63,10 @@ test('actual Feishu status view distinguishes saved credentials from real connec
   const failed = render({ error: '服务无法访问' });
   assert.match(failed, /状态未确认/); assert.match(failed, /role="alert"/); assert.match(failed, /重新读取/);
   assert.match(fresh, /im.message.receive_v1/); assert.match(fresh, /\/modeldesk status/); assert.match(fresh, /\/modeldesk cancel/);
-  assert.match(fresh, /\/modeldesk task/); assert.match(fresh, /\/modeldesk continue/); assert.match(fresh, /共享历史与资料/);
+  assert.match(fresh, /\/modeldesk task/); assert.match(fresh, /\/modeldesk continue/); assert.match(fresh, /只沿用你指定任务的历史和成果/);
   const unbound = render({ connection: { config: { ...config, bindings: [] }, status: { state: 'connected' } } });
   assert.match(unbound, /已连接，但尚未允许任何聊天/); assert.match(unbound, /未绑定会话不会执行指令/);
-  assert.match(fresh, /不代表任务已经完成/); assert.match(fresh, /官方长连接配置指南/);
+  assert.match(fresh, /成果回执确认交付/); assert.match(fresh, /官方长连接配置指南/);
   assert.ok(fresh.includes(FEISHU_SETUP_URL));
   const remote = render({ remote: true }); assert.match(remote, /请在这台电脑设置/); assert.doesNotMatch(remote, /验证已保存的应用凭据/);
   assert.equal(safeFeishuError('failed for exact-secret', 'exact-secret'), 'failed for [密钥已隐藏]');

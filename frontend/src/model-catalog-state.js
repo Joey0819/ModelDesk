@@ -12,7 +12,11 @@ export function retainCatalogOnFailure(previous, next) {
 }
 
 export function catalogOptions(status, discovery) {
-  const entries = new Map((status?.models || []).map((model) => [model.id, { ...model, registered: true }]));
+  const staleGateway = status?.gateway?.stale || discovery?.gateway?.stale || discovery?.gateway?.error;
+  const entries = new Map((status?.models || []).map((model) => [model.id, {
+    ...model, registered: true,
+    ...(staleGateway && !model.id.startsWith('connection:') ? { stale: true } : {}),
+  }]));
   for (const source of discovery?.sources || []) {
     const connection = source.connection;
     // Never resurrect a deleted/disabled connection from an earlier discovery.
@@ -20,7 +24,7 @@ export function catalogOptions(status, discovery) {
     for (const model of source.models || []) {
       const id = `connection:${connection.id}:${model.id}`;
       if (entries.has(id)) continue;
-      entries.set(id, { ...model, id, model_id: model.id, connection_id: connection.id, connection_name: connection.name, provider: `connection:${connection.id}`, provider_label: connection.name, testing: connection.testing, registered: false, expected_updated_at: connection.updated_at, stale: Boolean(source.error), verified: false });
+      entries.set(id, { ...model, id, model_id: model.id, connection_id: connection.id, connection_name: connection.name, provider: `connection:${connection.id}`, provider_label: connection.name, testing: connection.testing, registered: false, expected_updated_at: connection.updated_at, stale: Boolean(source.error || source.stale), verified: false });
     }
   }
   return [...entries.values()];

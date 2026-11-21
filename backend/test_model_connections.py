@@ -26,7 +26,11 @@ class ConnectionTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.store = connections.ConnectionStore(self.temporary.name)
-        self.patches = [patch.object(connections, "store", self.store), patch.object(workbench, "connection_store", self.store)]
+        self.patches = [
+            patch.object(connections, "store", self.store),
+            patch.object(workbench, "connection_store", self.store),
+            patch.object(connections, "refresh_gateway_catalog", new=AsyncMock(return_value={"skipped": True})),
+        ]
         for context in self.patches:
             context.start()
         app = FastAPI()
@@ -183,6 +187,7 @@ class ConnectionTests(unittest.IsolatedAsyncioTestCase):
             response = await self.client.post("/api/model-connections/refresh-catalog")
         self.assertEqual(response.status_code, 200)
         sources = response.json()["sources"]
+        self.assertEqual(response.json()["gateway"], {"skipped": True})
         self.assertEqual(next(item for item in sources if item["connection"]["id"] == good["id"])["models"][0]["id"], "new-model-2027")
         self.assertEqual(sum(bool(item.get("error")) for item in sources), 1)
         self.assertEqual(sum(bool(item.get("skipped")) for item in sources), 2)

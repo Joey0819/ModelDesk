@@ -205,26 +205,44 @@ function ModelDeskWorkspace() {
   }, [job, jobId, prompt, activeProjectId]);
 
   const statusSequence = useRef(0);
-  const refresh = useCallback(async () => {
+  const appliedStatusSequence = useRef(0);
+  const refreshStatus = useCallback(async () => {
     const sequence = ++statusSequence.current;
-    const [statusResult, jobsResult, projectJobsResult] = await Promise.allSettled([workbenchApi.status(), workbenchApi.listJobs(), activeProjectId ? workbenchApi.listJobs(activeProjectId) : Promise.resolve([])]);
-    if (statusResult.status === 'fulfilled' && sequence === statusSequence.current) {
-      setStatus((previous) => retainCatalogOnFailure(previous, statusResult.value));
-      if (!preferencesSet.current) {
-        preferencesSet.current = true;
-        const available = statusResult.value.models || [];
-        let saved = []; try { saved = sessionFor(sessionsRef.current, modeRef.current, projectScopeRef.current)?.preferences?.models?.length ? sessionFor(sessionsRef.current, modeRef.current, projectScopeRef.current).preferences.models : JSON.parse(localStorage.getItem('modeldesk.models') || '[]'); } catch { /* Ignore stale preferences. */ }
-        setModels(initialModels(Array.isArray(saved) ? saved : [], available));
+    try {
+      const current = await workbenchApi.status();
+      // A late poll must not replace a newer catalog read by the picker.
+      if (sequence > appliedStatusSequence.current) {
+        appliedStatusSequence.current = sequence;
+        setStatus((previous) => retainCatalogOnFailure(previous, current));
+        if (!preferencesSet.current) {
+          preferencesSet.current = true;
+          let saved = []; try { saved = sessionFor(sessionsRef.current, modeRef.current, projectScopeRef.current)?.preferences?.models?.length ? sessionFor(sessionsRef.current, modeRef.current, projectScopeRef.current).preferences.models : JSON.parse(localStorage.getItem('modeldesk.models') || '[]'); } catch { /* Ignore stale preferences. */ }
+          setModels(initialModels(Array.isArray(saved) ? saved : [], current.models));
+        }
       }
-    } else if (statusResult.status === 'rejected' && sequence === statusSequence.current) setStatus((previous) => retainCatalogOnFailure(previous, { gateway: { online: false, error: statusResult.reason.message }, providers: previous?.providers || [], models: [], tools: {}, connections_error: '暂时无法读取连接，保留上次模型列表。' }));
+      return current;
+    } catch (failure) {
+      if (sequence > appliedStatusSequence.current) {
+        appliedStatusSequence.current = sequence;
+        setStatus((previous) => retainCatalogOnFailure(previous, { checked_at: previous?.checked_at, gateway: { online: false, error: failure.message }, providers: previous?.providers || [], models: [], tools: {}, connections_error: '暂时无法读取连接，保留上次模型列表。' }));
+      }
+      return null;
+    }
+  }, []);
+
+  const refresh = useCallback(async () => {
+    const [current, [jobsResult, projectJobsResult]] = await Promise.all([
+      refreshStatus(),
+      Promise.allSettled([workbenchApi.listJobs(), activeProjectId ? workbenchApi.listJobs(activeProjectId) : Promise.resolve([])]),
+    ]);
     if (jobsResult.status === 'fulfilled') {
       const globalJobs = Array.isArray(jobsResult.value) ? jobsResult.value : jobsResult.value.jobs || [];
       const projectJobs = projectJobsResult.status === 'fulfilled' ? (Array.isArray(projectJobsResult.value) ? projectJobsResult.value : projectJobsResult.value.jobs || []) : [];
       setJobs([...new Map([...globalJobs, ...projectJobs].map((item) => [item.id, item])).values()]);
     }
     else setError(jobsResult.reason.message);
-    return statusResult.status === 'fulfilled' ? statusResult.value : null;
-  }, [activeProjectId]);
+    return current;
+  }, [activeProjectId, refreshStatus]);
 
   useEffect(() => { refresh(); const timer = setInterval(refresh, 15000); return () => clearInterval(timer); }, [refresh]);
   useEffect(() => {
@@ -571,7 +589,7 @@ function ModelDeskWorkspace() {
     window.addEventListener('pointermove', move); window.addEventListener('pointerup', done, { once: true });
   };
 
-  return <ModelCatalogProvider theme={theme} status={status} onRefresh={refresh}><div className={`modeldesk ${sidebarCollapsed ? 'sidebar-collapsed' : ''}`} data-theme={theme}>
+  return <ModelCatalogProvider theme={theme} status={status} onRefresh={refreshStatus}><div className={`modeldesk ${sidebarCollapsed ? 'sidebar-collapsed' : ''}`} data-theme={theme}>
     <CommandPalette
       open={commandPaletteOpen}
       onClose={() => setCommandPaletteOpen(false)}

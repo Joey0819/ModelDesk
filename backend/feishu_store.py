@@ -280,6 +280,8 @@ class FeishuStore:
         # same message_id can only ever create one durable event.
         command = re.sub(r"^[/／]modeldesk\s+", "", text, count=1, flags=re.IGNORECASE).strip() if input_mode == "bootstrap" else None
         prefix = re.match(r'^[/／]modeldesk(?:\s+|$)', text, flags=re.IGNORECASE) if input_mode != "bootstrap" else None
+        parent_id = event.get("parent_id")
+        is_reply = bool(parent_id or event.get("root_id"))
         if command is None:
             if prefix:
                 command = text[prefix.end():].strip()
@@ -288,8 +290,11 @@ class FeishuStore:
             elif text.casefold() in {'status', '状态'}:
                 command = 'status'
             else:
-                continuation = re.match(r'^(?:继续|continue)[：:\s]+(.+)$', text, flags=re.IGNORECASE | re.DOTALL)
-                command = 'continue ' + continuation[1] if continuation else 'task ' + text
+                continuation = re.match(r'^(?:继续|continue)(?:[：:\s]+(.*)|$)', text, flags=re.IGNORECASE | re.DOTALL)
+                if continuation:
+                    command = 'continue ' + (continuation[1] or '')
+                else:
+                    command = ('continue ' if is_reply else 'task ') + text
         identifier = str(uuid.uuid5(uuid.NAMESPACE_URL, "modeldesk:feishu:" + config["app_id"] + ":" + message_id))
         with self.db() as db:
             db.execute("BEGIN IMMEDIATE")
@@ -307,9 +312,32 @@ class FeishuStore:
                       "job_id": None if input_mode == "bootstrap" else str(uuid.uuid5(uuid.NAMESPACE_URL, "modeldesk:feishu-job:" + identifier)),
                       "state": "rejected" if reason else "received", "reason": reason, "created_at": stamp, "updated_at": stamp,
                       "notifications": []}
+            if is_reply:
+                # A reply's root can point at a different revision from its parent.
+                record["reply_message_id"] = parent_id if isinstance(parent_id, str) and re.fullmatch(r"om_[A-Za-z0-9_-]{1,197}", parent_id) else None
             db.execute("INSERT INTO events VALUES (?, ?, ?, ?, ?, ?, ?, ?)", (identifier, config["app_id"], message_id, chat_id,
                        record["state"], stamp, stamp, json.dumps(record, ensure_ascii=False)))
         return identifier
+
+    def task_for_reply(self, record):
+        message_id = record.get("reply_message_id")
+        if not message_id:
+            return None
+        with self.db() as db:
+            rows = db.execute("""
+                SELECT events.data FROM events WHERE app_id=? AND chat_id=? AND (
+                    message_id=? OR id IN (
+                        SELECT event_id FROM outgoing WHERE state='sent'
+                        AND json_extract(outgoing.data, '$.response_id')=?
+                        AND (json_extract(outgoing.data, '$.kind')='accepted' OR json_extract(outgoing.data, '$.kind') LIKE '%:summary'
+                             OR json_extract(outgoing.data, '$.kind') LIKE '%:body:%' OR json_extract(outgoing.data, '$.kind') LIKE '%:file:%')
+                    )
+                ) LIMIT 2
+                """, (record["app_id"], record["chat_id"], message_id, message_id)).fetchall()
+        if len(rows) == 1:
+            original = json.loads(rows[0]["data"])
+            if original["sender_id"] == record["sender_id"] and original["config_revision"] == record["config_revision"]:
+                return original.get("job_id")
 
     def events(self, states=None):
         with self.db() as db:

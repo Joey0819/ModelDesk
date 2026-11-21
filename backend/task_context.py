@@ -18,7 +18,37 @@ def encoded(value):
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
+def is_feishu_task(job):
+    return (job.get("external_source") or {}).get("platform") == "feishu"
+
+
+def feishu_task_scope(job):
+    source = job.get("external_source") or {}
+    return (job.get("project_id"), job.get("group_room_id"), job.get("conversation_id"),
+            *(source.get(key) for key in ("app_id", "chat_id", "sender_id", "config_revision")))
+
+
+def feishu_task_ancestors(jobs, job):
+    """Resolve an explicit chain. A missing link must never open room history."""
+    scope = feishu_task_scope(job)
+    seen, ancestors = {job["id"]}, []
+    error = "无法验证这条飞书任务的完整来源。请找到原始新任务的 ID，或重新开始任务。"
+    while job.get("group_context_mode") != "fresh":
+        parent_id = (job.get("external_source") or {}).get("parent_job_id")
+        parent = jobs.get(parent_id) if isinstance(parent_id, str) else None
+        if (not parent or parent_id in seen or scope[1] is None or scope[1] != scope[2] or not all(scope[3:])
+                or parent.get("id") != parent_id or parent.get("mode") != "group" or not is_feishu_task(parent)
+                or feishu_task_scope(parent) != scope):
+            raise HTTPException(422, error)
+        ancestors.append(parent)
+        seen.add(parent_id)
+        job = parent
+    return ancestors[::-1]
+
+
 def task_records(jobs, job):
+    if is_feishu_task(job):
+        return feishu_task_ancestors(jobs, job)
     if job.get("group_context_mode") == "fresh":
         return []
     records = sorted((item for item in jobs.values()

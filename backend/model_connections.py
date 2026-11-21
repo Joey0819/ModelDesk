@@ -22,6 +22,8 @@ from urllib.parse import urlsplit
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
+
+from .gateway_catalog import refresh_gateway_catalog
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -317,7 +319,7 @@ async def create_connection(request: Request):
 
 @router.post("/refresh-catalog")
 async def refresh_catalog():
-    """Explicit discovery, not a generation probe or an implicit config change."""
+    """Refresh the host routing directory and discover models on enabled API connections."""
     connections = store.list()
     semaphore = asyncio.Semaphore(4)
 
@@ -337,7 +339,10 @@ async def refresh_catalog():
             except HTTPException as error:
                 return {"connection": public, "models": [], "error": error.detail}
 
-    return {"checked_at": now(), "sources": await asyncio.gather(*(discover(item) for item in connections))}
+    gateway, sources = await asyncio.gather(
+        refresh_gateway_catalog(), asyncio.gather(*(discover(item) for item in connections)),
+    )
+    return {"checked_at": now(), "gateway": gateway, "sources": sources}
 
 
 @router.post("/{identifier}/models")

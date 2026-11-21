@@ -3,6 +3,7 @@ import asyncio
 import copy
 import json
 import os
+import re
 import sqlite3
 import sys
 import uuid
@@ -11,7 +12,13 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from .feishu_sdk import FeishuAPIError, FeishuSDK, safe_error
 from .feishu_store import ConfigInput, FeishuStore, ROOT, now
+from .task_context import feishu_task_ancestors
 from . import workbench
+
+
+CONTINUE_USAGE = "用 /modeldesk status 查看最近任务 ID，然后发送 /modeldesk continue 完整任务ID 修改要求，也可回复原任务回执。"
+TASK_ID = re.compile(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", re.IGNORECASE)
+TASK_ID_LIKE = re.compile(r"(?:[a-z0-9]{8}(?:-[a-z0-9]{4}){3}(?:-[a-z0-9]*)?|[0-9a-f]{32})", re.IGNORECASE)
 
 
 class FeishuController:
@@ -195,8 +202,9 @@ class FeishuController:
             return
         parts = command.split(maxsplit=1)
         action, prompt = (parts + ['', ''])[:2]
+        action, prompt = action.casefold(), prompt.strip()
         if action in {'cancel', '停止'} and prompt:
-            target = prompt.strip()
+            target = prompt
             job = self.jobs.jobs.get(target)
             if not job or not self.belongs(job, record):
                 await self.reply_once(record, "cancel", "当前飞书聊天没有此任务，请使用 /modeldesk status 查看任务 ID。")
@@ -205,10 +213,10 @@ class FeishuController:
                 await self.reply_once(record, "cancel", "已停止任务 " + target + "；已有成果保留。")
             self.store.update(record, state="delivered", reason="停止指令已处理")
             return
-        if action not in {"task", "continue"} or not prompt.strip():
-            direct_help = ('此会话已开启直接派发：直接描述需求即可开始新任务；用“继续：修改要求”接着上次任务。\n'
+        if action not in {"task", "continue"} or not prompt:
+            direct_help = ('直接描述需求可开始新任务。回复任务回执，或用“继续：完整任务ID 修改要求”继续该任务。\n'
                            if record['binding'].get('natural_language_tasks') else '')
-            await self.reply_once(record, "usage", direct_help + "使用方法：\n/modeldesk task 完整任务（新任务）\n/modeldesk continue 修改要求（使用绑定群的共享上下文）\n/modeldesk status\n/modeldesk cancel 完整任务ID")
+            await self.reply_once(record, "usage", direct_help + "使用方法：\n/modeldesk task 完整任务（新任务）\n/modeldesk continue 完整任务ID 修改要求\n回复任务回执：/modeldesk continue 修改要求\n/modeldesk status\n/modeldesk cancel 完整任务ID")
             self.store.update(record, state="delivered", reason="已回传指令用法，没有创建任务")
             return
         job = self.jobs.jobs.get(record["job_id"])
@@ -220,6 +228,14 @@ class FeishuController:
         if record["state"] == "dispatching":
             self.store.update(record, state="needs_attention", reason="上次任务创建结果未确认；不会自动重复创建，请检查本机任务")
             return
+        target = None
+        if action == "continue":
+            try:
+                target, prompt = self.continuation_target(record, prompt)
+            except HTTPException as error:
+                await self.reply_once(record, "continue_target", f"{error.detail}\n{CONTINUE_USAGE}")
+                self.store.update(record, state="delivered", reason=error.detail)
+                return
         if sum(job.get("status") not in workbench.TERMINAL for job in self.jobs.jobs.values()) >= 4:
             return
         # Commit the deterministic job ID before any awaited validation or model
@@ -228,19 +244,62 @@ class FeishuController:
         binding = record["binding"]
         source = {"platform": "feishu", "app_id": record["app_id"], "chat_id": record["chat_id"],
                   "message_id": record["message_id"], "sender_id": record["sender_id"], "config_revision": record["config_revision"]}
-        await submit_message(binding["room_id"], MessageRequest(prompt=prompt.strip(), context_mode="fresh" if action == "task" else "continue",
+        if target:
+            source["parent_job_id"] = target
+
+        def assert_admission():
+            self.assert_current(record)
+            if target:
+                self.checked_continuation_job(record, target)
+
+        await submit_message(binding["room_id"], MessageRequest(prompt=prompt, context_mode="continue" if target else "fresh",
                              delivery_mode="auto", background_mode=True),
                              binding["project_id"], native_allowed=binding["allow_native"], job_id=record["job_id"], external_source=source,
-                             admission_check=lambda: self.assert_current(record))
+                             admission_check=assert_admission)
         self.store.update(record, state="monitoring", reason="任务已交给 ModelDesk 后台执行")
         try:
             from .platform_support import machine_short
             await self.reply_once(record, "accepted", "已收到任务，ModelDesk 正在后台协作。\n任务 ID：" + record["job_id"]
+                                  + "\n可回复这条回执并发送 /modeldesk continue 修改要求。"
                                   + f"\n完成或需要处理时会回传到本条消息；{machine_short()} 和 ModelDesk 服务需保持运行。")
         except Exception:
             # An uncertain acknowledgement must not lose a successfully
             # created job or prevent its separate completion notification.
             self.store.update(record, reason="任务已创建；接收确认消息未确认，不会重复发送，仍会等待最终成果")
+
+    def continuation_target(self, record, prompt):
+        quoted = self.store.task_for_reply(record) if "reply_message_id" in record else None
+        first, *rest = prompt.split(maxsplit=1)
+        if TASK_ID.fullmatch(first):
+            if not rest:
+                raise HTTPException(422, "请在完整任务 ID 后写上修改要求。")
+            target, prompt = first.lower(), rest[0]
+            if "reply_message_id" in record and quoted != target:
+                raise HTTPException(409, "回复的消息与所填任务 ID 无法对应。请直接回复要修改的成果，或另发一条带任务 ID 的消息。")
+        elif TASK_ID_LIKE.fullmatch(first):
+            raise HTTPException(422, "任务 ID 格式无效，请复制回执里的完整 ID。")
+        elif "reply_message_id" in record:
+            target = quoted
+        else:
+            owned = {job["id"]: job for job in self.jobs.jobs.values() if self.can_continue(job, record)}
+            prior = {job["external_source"].get("parent_job_id") for job in owned.values()}
+            heads = owned.keys() - prior
+            if len(heads) > 1:
+                raise HTTPException(409, "这里有多个可选的任务，请明确选择要继续的任务。")
+            target = next(iter(heads), None)
+        self.checked_continuation_job(record, target)
+        return target, prompt
+
+    def can_continue(self, job, record):
+        return (self.belongs(job, record) and job.get("mode") == "group"
+                and job.get("conversation_id") == record["binding"]["room_id"]
+                and job["external_source"].get("sender_id") == record["sender_id"])
+
+    def checked_continuation_job(self, record, target):
+        job = self.jobs.jobs.get(target)
+        if job is None or not self.can_continue(job, record):
+            raise HTTPException(404, "找不到你在当前飞书会话发起的对应任务。")
+        feishu_task_ancestors(self.jobs.jobs, job)
 
     def bootstrap_service(self):
         """Construct the bootstrap service; tests patch this for scratch stores."""

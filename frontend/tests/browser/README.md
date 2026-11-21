@@ -22,6 +22,7 @@ export PLAYWRIGHT_MODULE
 PLAYWRIGHT_MODULE="$(.venv/bin/python -c 'from pathlib import Path; import playwright; print((Path(playwright.__file__).parent / "driver/package/index.mjs").as_uri())')"
 node frontend/tests/browser/check-navigation.mjs
 node frontend/tests/browser/check-platform-catalogs.mjs
+node frontend/tests/browser/check-model-picker-refresh.mjs
 node frontend/tests/browser/check-conversation-actions.mjs
 node frontend/tests/browser/check-group-dispatch.mjs
 node frontend/tests/browser/check-group-routines.mjs
@@ -38,6 +39,8 @@ in an empty session and returning from the phone task board. Linux product
 smoke runs this check on every push and pull request.
 
 The catalog check delays two MCP servers and verifies that retries preserve a draft and that results return to the correct server. The conversation check opens account controls and downloads Markdown and JSON at laptop and phone widths.
+
+The model picker check refreshes and selects a new Ruler model while an older poll is pending. It checks failure feedback for both source types and confirms paired phones only read the host catalog.
 
 The dispatch checks simulate a lost reply after an Agent accepts work. They cover the group chat, code review form and Muse panel. Reloading or returning from a different project or room must recover the same task and preserve any edits. All submissions in these browser checks go to an isolated test adapter.
 

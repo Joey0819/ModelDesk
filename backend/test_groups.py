@@ -4,11 +4,13 @@ import copy
 import hashlib
 import json
 import tempfile
+import time
 import unittest
 import uuid
 from contextlib import ExitStack
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock, patch
 
 import httpx
 from fastapi import FastAPI, HTTPException
@@ -86,6 +88,77 @@ class GroupRoomTests(unittest.IsolatedAsyncioTestCase):
             job = self.jobs.get(job["id"])
             self.assertEqual(job["status"], "complete", job.get("error"))
         return job
+
+    async def test_feishu_private_followups_use_reply_or_task_id_across_interleaved_jobs(self):
+        from backend import coordination, feishu
+        from backend.conversations import build_history
+        from backend.feishu_store import ConfigInput, FeishuStore
+        from backend.feishu_worker import normalize_event
+        from backend.task_context import build_task_context
+
+        room = await self.room()
+        store = FeishuStore(self.root / "feishu")
+        store.save_config(ConfigInput(enabled=True, app_id="cli_test", app_secret="test-secret", bindings=[
+            {"chat_id": "oc_private", "project_id": self.project["id"], "room_id": room["id"],
+             "allowed_sender_ids": ["ou_person"], "natural_language_tasks": True},
+        ]))
+        sdk = SimpleNamespace(reply=Mock(side_effect=lambda *_: f"om_receipt_{sdk.reply.call_count}"))
+        controller = feishu.FeishuController(store, self.jobs, sdk_factory=lambda _: sdk)
+        executions = {}
+        first_started = asyncio.Event()
+        release_first = asyncio.Event()
+
+        async def run(manager, job):
+            executions[job["id"]] = job
+            if job["prompt"].startswith("写独立报告苹果"):
+                first_started.set()
+                await release_first.wait()
+            return {"delivery": {"status": "complete", "content": f"底稿：{job['prompt'].splitlines()[0]}"}}
+
+        def send_feishu(text, parent_id=None):
+            message = SimpleNamespace(message_id="om_" + uuid.uuid4().hex, chat_id="oc_private", chat_type="p2p", message_type="text",
+                                      content=json.dumps({"text": text}), create_time=int(time.time() * 1000), mentions=[], parent_id=parent_id)
+            sender = SimpleNamespace(sender_type="user", sender_id=SimpleNamespace(open_id="ou_person"))
+            data = SimpleNamespace(header=SimpleNamespace(app_id="cli_test"), event=SimpleNamespace(message=message, sender=sender))
+            event_id = store.ingest(normalize_event(data, "cli_test", "ou_bot"))
+            return next(event["job_id"] for event in store.events() if event["id"] == event_id)
+
+        with patch.object(coordination, "run", side_effect=run):
+            first_id = send_feishu("写独立报告苹果")
+            second_id = send_feishu("写独立报告香蕉")
+            await controller.tick()
+            await asyncio.wait_for(first_started.wait(), timeout=2)
+            self.assertEqual(len(self.jobs.tasks), 2)
+            followup_id = send_feishu("把这份报告译成英文", parent_id="om_receipt_1")
+            second_followup_id = send_feishu(f"继续：{second_id} 改成三段")
+            await controller.tick()
+            self.assertEqual(self.jobs.get(followup_id)["external_source"]["parent_job_id"], first_id)
+            self.assertEqual(self.jobs.get(second_followup_id)["external_source"]["parent_job_id"], second_id)
+            release_first.set()
+            await asyncio.gather(*self.jobs.tasks.values())
+
+        first_followup = executions[followup_id]
+        second_followup = executions[second_followup_id]
+        self.assertIn("底稿：写独立报告苹果", first_followup["prompt"])
+        self.assertNotIn("香蕉", first_followup["prompt"])
+        self.assertIn("底稿：写独立报告香蕉", second_followup["prompt"])
+        self.assertNotIn("苹果", second_followup["prompt"])
+        self.assertNotIn("苹果", executions[second_id]["prompt"])
+        self.assertEqual(first_followup["_task_context"]["revision"], 2)
+        self.assertFalse(first_followup["group_native_allowed"])
+        self.assertEqual(first_followup["tools"], [])
+        self.assertEqual(first_followup["mcp_server_ids"], [])
+
+        recovered = workbench.JobManager(self.jobs.directory)
+        recovered.recover()
+        persisted = recovered.get(followup_id)
+        self.assertEqual([turn["job_id"] for turn in build_history(recovered.jobs, persisted)["turns"]], [first_id])
+        self.assertEqual(build_task_context(recovered.jobs, persisted)["artifact"]["job_id"], first_id)
+        del recovered.jobs[first_id]
+        with self.assertRaises(HTTPException):
+            build_history(recovered.jobs, persisted)
+        with self.assertRaises(HTTPException):
+            build_task_context(recovered.jobs, persisted)
 
     async def test_board_links_real_group_sends_and_lists_empty_rooms(self):
         from backend import todo_board

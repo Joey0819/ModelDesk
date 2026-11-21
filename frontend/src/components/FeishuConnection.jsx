@@ -44,7 +44,7 @@ export function FeishuConfigurationForm({ draft, projects = [], chats = [], busy
       <p className="connection-help">只有下面列出的这些人的<strong>私聊</strong>可以用 <code>/modeldesk setup</code> 在飞书里直接创建项目、团队和项目群并绑定会话；群聊永远不能自助开通，必须在本机添加绑定。留空则完全关闭飞书内自助开通。</p>
       <label><span>管理员 Open ID（最多 10 个）</span><textarea aria-label="飞书自助开通管理员 Open ID" rows={2} value={draft.owner_text ?? draft.owner_sender_ids.join('\n')} placeholder="每行一个 ou_… 开头的 Open ID；只有这些人可以在私聊里 /modeldesk setup 创建项目" spellCheck={false} onChange={(event) => onChange({ ...draft, owner_text: event.target.value, owner_sender_ids: feishuSenderIds(event.target.value) })} /></label>
       <h3>允许的飞书会话</h3>
-      <p className="connection-help">只有下方明确允许的 Chat ID 可以派发任务。每个飞书会话绑定一个 ModelDesk 项目群，沿用该群的角色与项目配置。task 开始新任务；continue 会使用绑定群的共享历史与资料，请只授权可信会话。</p>
+      <p className="connection-help">一个机器人可以服务多个项目群。每个允许的飞书会话绑定一个项目群，使用该群的角色与项目资料。新任务单独保存历史。</p>
       <datalist id="modeldesk-feishu-chat-options">{chats.map((chat) => <option key={chat.chat_id} value={chat.chat_id}>{chat.name || chat.chat_id}</option>)}</datalist>
       {draft.bindings.map((binding, index) => <section className="feishu-binding" key={index} aria-label={`飞书会话绑定 ${index + 1}`}>
         <header><strong>会话 {index + 1}</strong><button type="button" className="subtle-button" onClick={() => onChange({ ...draft, bindings: draft.bindings.filter((_, at) => at !== index) })}>移除绑定</button></header>
@@ -56,7 +56,7 @@ export function FeishuConfigurationForm({ draft, projects = [], chats = [], busy
           {projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}
         </select></label>{renderRoomSelect ? renderRoomSelect(binding, (room_id) => patch(index, { room_id }), index) : <label><span>ModelDesk 项目群</span><input aria-label={`飞书会话 ${index + 1} 项目群 ID`} value={binding.room_id} required onChange={(event) => patch(index, { room_id: event.target.value })} /></label>}</div>
         <label className="connection-enabled"><input type="checkbox" checked={binding.natural_language_tasks} onChange={(event) => patch(index, { natural_language_tasks: event.target.checked })} /><span>直接用自然语言派发任务</span></label>
-        <p className="connection-help">开启后，直接发送需求即可开始新任务；发送“继续：修改要求”沿用该群上下文。群聊中仍需 @机器人，仍受发起人名单与本机权限限制。</p>
+        <p className="connection-help">单独发一条需求即可开始新任务。要修改自己的任务，回复它的回执或成果，写下修改要求。群聊中请 @机器人。</p>
         <details className="feishu-binding-advanced"><summary>发起人限制与本机权限</summary>
           <label><span>允许的用户 Open ID（可选）</span><textarea aria-label={`飞书会话 ${index + 1} 允许的用户`} rows={2} value={binding.sender_text ?? binding.allowed_sender_ids.join('\n')} placeholder="留空：允许此会话中的所有用户；每行一个 Open ID 可限制发起人" onChange={(event) => patch(index, { sender_text: event.target.value, allowed_sender_ids: feishuSenderIds(event.target.value) })} /></label>
           <label className="connection-enabled"><input type="checkbox" checked={binding.allow_native} onChange={(event) => patch(index, { allow_native: event.target.checked })} /><span>允许此会话触发{machine.short}原生 Agent（如 Muse）</span></label>
@@ -117,7 +117,7 @@ export function FeishuConnectionOverview({ connection, loading, error, notice, b
           <li><code>im:resource</code>：回传文件成果</li>
           <li><code>im:chat:read</code> 或 <code>im:chat:readonly</code>：读取可用群聊列表（用于选择 Chat ID）</li>
         </ul><p>权限与事件配置完成后，发布应用版本，让目标用户可使用该机器人。</p></details>
-        <div className="feishu-command-guide"><strong>绑定后，在飞书发送</strong><p>为会话开启“直接用自然语言派发任务”后，可直接发送“帮我完成一份竞品分析报告”；使用“继续：修改上次报告的结论”保留上下文。以下指令始终可用：</p><code>/modeldesk task 帮我完成一份竞品分析报告</code><code>/modeldesk continue 修改上次报告的结论</code><code>/modeldesk status</code><p><code>task</code> 从新任务开始，不带群聊旧对话；<code>continue</code> 会使用绑定群的共享历史与资料，同群其他成员的记录也可能被引用。群聊中请 @机器人。停止任务：<code>/modeldesk cancel 完整任务UUID</code>。收发是否成功，以飞书中的实际回执为准；“长连接在线”不代表任务已经完成。</p></div>
+        <div className="feishu-command-guide"><strong>绑定后，在飞书发送</strong><p>开启自然语言派发后，直接发需求即可。要修改某份成果，回复对应回执并写下修改要求。也可用以下指令。</p><code>/modeldesk task 帮我完成一份竞品分析报告</code><code>/modeldesk continue 完整任务ID 缩短报告结论</code><code>/modeldesk status</code><p><code>task</code> 单独开始一项工作。<code>continue</code> 只沿用你指定任务的历史和成果。任务 ID 可以在回执中找到。群聊中请 @机器人。停止任务可发送 <code>/modeldesk cancel 完整任务UUID</code>。请以飞书中的成果回执确认交付。</p></div>
         <div className="feishu-command-guide"><strong>还没有任何绑定时</strong><p>配置了管理员 Open ID 后，管理员可直接在飞书<strong>私聊</strong>里发送 <code>/modeldesk setup 项目名</code>（可选 <code>with 模型1,模型2</code> 指定成员模型）自助创建项目、团队和项目群并绑定当前会话，再用 <code>/modeldesk confirm 4位确认码</code> 二次确认执行；<code>/modeldesk unlink</code> 可解除当前会话绑定。群聊不支持自助开通。</p><code>/modeldesk setup 竞品分析</code><code>/modeldesk setup 竞品分析 with qwen3.8-max,glm-5.3</code><code>/modeldesk confirm 1234</code><code>/modeldesk unlink</code></div>
       </div>
     </details>

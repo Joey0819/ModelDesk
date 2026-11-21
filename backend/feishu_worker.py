@@ -84,6 +84,7 @@ def normalize_event(data, app_id, bot_open_id):
         return None
     return {"app_id": app_id, "message_id": message.message_id, "chat_id": message.chat_id,
             "create_time": message.create_time,
+            "parent_id": getattr(message, "parent_id", None), "root_id": getattr(message, "root_id", None),
             "chat_type": message.chat_type, "message_type": message.message_type, "text": text, "input_error": input_error,
             "sender_type": sender.sender_type, "sender_id": sender.sender_id.open_id}
 

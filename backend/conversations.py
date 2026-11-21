@@ -115,10 +115,16 @@ def build_history(jobs, job, reserved_chars=0):
     reserve = 4000 if job.get("mode") == "group" else 0
     budget = min(MAX_HISTORY_CHARS, max(0, MAX_INPUT_CHARS - len(job["prompt"]) - reserved_chars - reserve - 1000))
     remaining, truncated = budget, False
-    prior = sorted((item for item in jobs.values() if item.get("conversation_id") == job.get("conversation_id") and item["id"] != job["id"] and isinstance(item.get("created_at"), str) and item["created_at"] < job["created_at"]), key=lambda item: (item["created_at"], item["id"]), reverse=True)
     grouped = job.get("mode") == "group" and bool(job.get("group_room_id"))
-    boundary = next((item for item in prior if item.get("group_room_id") == job.get("group_room_id")
-                     and item.get("project_id") == job.get("project_id") and item.get("group_context_mode") == "fresh"), None)
+    from .task_context import is_feishu_task, task_records
+    scoped = grouped and is_feishu_task(job)
+    if scoped:
+        prior = task_records(jobs, job)[::-1]
+        boundary = prior[-1] if prior else None
+    else:
+        prior = sorted((item for item in jobs.values() if item.get("conversation_id") == job.get("conversation_id") and item["id"] != job["id"] and isinstance(item.get("created_at"), str) and item["created_at"] < job["created_at"]), key=lambda item: (item["created_at"], item["id"]), reverse=True)
+        boundary = next((item for item in prior if item.get("group_room_id") == job.get("group_room_id")
+                         and item.get("project_id") == job.get("project_id") and item.get("group_context_mode") == "fresh"), None)
 
     def omit(previous, reason):
         nonlocal omitted_count
@@ -127,7 +133,7 @@ def build_history(jobs, job, reserved_chars=0):
             omitted.append({"job_id": previous["id"], "reason": reason})
 
     for previous in prior:
-        if grouped and (job.get("group_context_mode") == "fresh" or boundary and previous["created_at"] < boundary["created_at"]):
+        if grouped and not scoped and (job.get("group_context_mode") == "fresh" or boundary and previous["created_at"] < boundary["created_at"]):
             omit(previous, "new_task_boundary")
             continue
         if previous.get("group_room_id") != job.get("group_room_id"):

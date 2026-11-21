@@ -15,23 +15,24 @@ function ConnectionsDialog({ onClose, onRefresh, theme }) {
 
 export default function ModelCatalogProvider({ status, onRefresh, theme, children }) {
   const [discovery, setDiscovery] = useState(null);
-  const [refreshing, setRefreshing] = useState(false), [error, setError] = useState('');
+  const [refreshing, setRefreshing] = useState(false), [refreshError, setRefreshError] = useState('');
   const pending = useRef(null);
   const [connectionsOpen, setConnectionsOpen] = useState(false);
   const refresh = useCallback(() => {
     if (pending.current) return pending.current;
-    setRefreshing(true); setError('');
+    setRefreshing(true); setRefreshError('');
     pending.current = (async () => {
-      const [current, discovered] = await Promise.allSettled([onRefresh(), REMOTE_CLIENT ? Promise.resolve(null) : modelConnectionApi.refreshCatalog()]);
-      const errors = [];
-      if (current.status === 'rejected' || !current.value) errors.push('模型状态暂时无法更新，保留上次列表。');
-      else {
-        if (!current.value.gateway?.online) errors.push(current.value.gateway?.error || '订阅网关暂不可达。');
-        if (current.value.connections_error) errors.push(current.value.connections_error);
+      if (!REMOTE_CLIENT) {
+        try {
+          const next = await modelConnectionApi.refreshCatalog();
+          setDiscovery((previous) => mergeDiscoveries(previous, next));
+        } catch (failure) {
+          setDiscovery((previous) => ({ ...previous, gateway: { stale: true }, sources: (previous?.sources || []).map((source) => ({ ...source, stale: true })) }));
+          setRefreshError(`无法刷新模型目录，保留上次读取的结果。${failure.message}`);
+        }
       }
-      if (discovered.status === 'fulfilled' && discovered.value) setDiscovery((previous) => mergeDiscoveries(previous, discovered.value));
-      else if (discovered.status === 'rejected') errors.push(discovered.reason.message);
-      setError(errors.join(' '));
+      // The host refreshes the gateway in the POST. Read its results only once it completes.
+      await onRefresh();
     })().finally(() => { pending.current = null; setRefreshing(false); });
     return pending.current;
   }, [onRefresh]);
@@ -44,5 +45,11 @@ export default function ModelCatalogProvider({ status, onRefresh, theme, childre
     return model.id;
   };
   const catalog = useMemo(() => catalogOptions(status, discovery), [status, discovery]);
-  return <ModelCatalogContext.Provider value={{ catalog, refresh, refreshing, error, ensureModel, onOpenConnections: () => setConnectionsOpen(true), checkedAt: discovery?.checked_at || status?.checked_at, discovered: Boolean(discovery), sources: discovery?.sources || [], remote: REMOTE_CLIENT }}>{children}{connectionsOpen && <ConnectionsDialog theme={theme} onClose={() => setConnectionsOpen(false)} onRefresh={refresh} />}</ModelCatalogContext.Provider>;
+  const gatewayError = status?.gateway?.error || (status && !status.gateway?.online ? '订阅网关暂不可达。' : '');
+  const error = [...new Set([refreshError, discovery?.gateway?.error, gatewayError, status?.connections_error].filter(Boolean))].join(' ');
+  const service = {
+    catalog, refresh, refreshing, error, ensureModel, onOpenConnections: () => setConnectionsOpen(true),
+    checkedAt: status?.checked_at, sources: discovery?.sources || [], gatewayReread: Boolean(discovery?.gateway?.skipped), remote: REMOTE_CLIENT,
+  };
+  return <ModelCatalogContext.Provider value={service}>{children}{connectionsOpen && <ConnectionsDialog theme={theme} onClose={() => setConnectionsOpen(false)} onRefresh={refresh} />}</ModelCatalogContext.Provider>;
 }

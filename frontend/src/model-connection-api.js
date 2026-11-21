@@ -16,7 +16,11 @@ export const modelConnectionApi = {
   update: (id, body) => request(`/${encodeURIComponent(id)}`, 'PUT', body),
   remove: (id) => request(`/${encodeURIComponent(id)}`, 'DELETE'),
   discover: (id) => request(`/${encodeURIComponent(id)}/discover`, 'POST'),
-  refreshCatalog: () => request('/refresh-catalog', 'POST'),
+  refreshCatalog: async () => {
+    const catalog = await request('/refresh-catalog', 'POST');
+    if (!Array.isArray(catalog?.sources)) throw new Error('连接服务返回的模型目录无法读取。');
+    return catalog;
+  },
   addModel: (id, body) => request(`/${encodeURIComponent(id)}/models`, 'POST', body),
   test: (id, model) => request(`/${encodeURIComponent(id)}/test`, 'POST', { model }),
 };

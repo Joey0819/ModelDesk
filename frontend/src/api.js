@@ -52,7 +52,11 @@ export const platformApi = {
 };
 
 export const workbenchApi = {
-  status: () => workbenchRequest('/status'),
+  status: async () => {
+    const status = await workbenchRequest('/status', { cache: 'no-store' });
+    if (!Array.isArray(status?.models) || typeof status.gateway?.online !== 'boolean') throw new Error('工作台返回的模型状态无法读取。');
+    return status;
+  },
   listJobs: (projectId) => workbenchRequest(`/jobs${projectId ? `?project_id=${encodeURIComponent(projectId)}` : ''}`),
   getJob: (id) => workbenchRequest(`/jobs/${encodeURIComponent(id)}`),
   createJob: (body) => workbenchRequest('/jobs', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }),

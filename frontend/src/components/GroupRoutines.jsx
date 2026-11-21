@@ -106,9 +106,14 @@ function RoutineEditor({
       </fieldset>
       <fieldset className="group-routine-fields group-routine-settings" disabled={locked}>
         <legend>触发、追踪与交付</legend>
-        <label>触发方式<select value={trigger.kind} onChange={(event) => updateTrigger({ kind: event.target.value })}>
-          {Object.entries(ROUTINE_TRIGGERS).map(([kind, label]) => <option key={kind} value={kind}>{label}</option>)}
-        </select></label>
+        <div className="group-routine-trigger-row">
+          <label>触发方式<select value={trigger.kind} onChange={(event) => updateTrigger({ kind: event.target.value })}>
+            {Object.entries(ROUTINE_TRIGGERS).map(([kind, label]) => <option key={kind} value={kind}>{label}</option>)}
+          </select></label>
+          <label>关联追踪编号字段（可选）
+            <input value={spec.correlation_field} maxLength={80} placeholder="例如：客户邮箱、订单号、需求编号（用于跨运行关联与防重）" onChange={(event) => update({ correlation_field: event.target.value })} />
+          </label>
+        </div>
         {timed && <>
           <div className="group-routine-schedule">
             {trigger.kind === 'weekly' && <label>每周哪天<select value={trigger.weekday} onChange={(event) => updateTrigger({ weekday: Number(event.target.value) })}>
@@ -147,9 +152,6 @@ function RoutineEditor({
           </div>
           <p className="group-routine-hint">当本群看板手动卡片新建或拖入目标列时触发。自动同步的镜像卡片不会循环触发。</p>
         </>}
-        <label>关联追踪编号字段（可选）
-          <input value={spec.correlation_field} maxLength={80} placeholder="例如：客户邮箱、订单号、需求编号（用于跨运行关联与防重）" onChange={(event) => update({ correlation_field: event.target.value })} />
-        </label>
         <fieldset className="group-routine-formats">
           <legend>同时生成文件 <span>未选时按目标生成</span></legend>
           {DOCUMENT_FORMATS.map(({ id, label }) => <label key={id}>
@@ -745,8 +747,9 @@ export default function GroupRoutines({ room, composerDraft, onDismiss, onOpenJo
           <p>先从最终目标出发，写清执行步骤、判断边界和验收标准。可以先让 AI 访谈梳理并演练案例，再按时间、固定间隔或看板变化自动运行。</p>
           <div className="group-routine-actions">
             <button type="button" className="primary-button" onClick={() => beginEdit()}><Icon name="plus" size={15} />新建例程</button>
-            <button type="button" className="subtle-button" onClick={() => openDesigner('interview')}><Icon name="dialogue" size={15} />AI 访谈设计</button>
+            <button type="button" className="subtle-button group-routine-design-cta" onClick={() => openDesigner('interview')}><Icon name="dialogue" size={15} />AI 访谈设计</button>
           </div>
+          <p className="group-routine-empty-hint">不确定怎么拆分步骤与判断边界？推荐使用「AI 访谈设计」口述目标，自动整理后再微调保存。</p>
         </section>}
         {routines?.length > 0 && <>
           <div className="group-routines-list-heading">

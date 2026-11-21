@@ -34,9 +34,19 @@
 .fleet-meter progress::-moz-progress-bar { background: var(--accent); border-radius: 5px; }
 .fleet-node-detail { margin: 4px 0 0; font-size: 12px; color: var(--muted); }
 
+.fleet-header-actions,
+.agent-section-heading > .agent-inline-actions { flex-shrink: 0; flex-wrap: nowrap; align-items: center; }
+
 .fleet-node-actions { display: flex; justify-content: flex-end; }
 .fleet-node-actions .subtle-button { padding: 6px 10px; font-size: 12px; }
 .fleet-node-remove { color: #b4483d; }
+.fleet-node-remove:hover:not(:disabled) { background: #fdf3f2; border-color: #e2b5b0; color: #9c382e; }
+.modeldesk[data-theme=dark] .fleet-node-remove { color: #f0958d; border-color: #5c3b40; }
+.modeldesk[data-theme=dark] .fleet-node-remove:hover:not(:disabled) { background: #3b272c; border-color: #7d4c52; color: #f7b2ac; }
+@media (max-width: 600px) {
+  .fleet-header-actions,
+  .agent-section-heading > .agent-inline-actions { flex-wrap: wrap; }
+}
 
 .fleet-empty { margin-top: 4px; }
 

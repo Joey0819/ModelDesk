@@ -147,9 +147,12 @@ export function GroupDeliveryProgress({ job, onOpenArtifacts }) {
   const planner = delivery.workflow?.planner;
   const plannerLabel = { pending: '正在等待 MCP 统筹计划', accepted: 'MCP 统筹计划已通过校验', rejected: 'MCP 统筹计划未通过校验', blocked: 'MCP 统筹未完成', cancelled: 'MCP 统筹已停止' }[planner?.status];
   const limitations = Array.isArray(delivery.limitations) ? delivery.limitations.filter((item) => typeof item === 'string') : [];
+  const deliveryTitle = !active && ['blocked', 'partial'].includes(state) && delivery.title === '正在安排协作任务'
+    ? '协作在安排阶段中断，可展开下方步骤查看详情'
+    : delivery.title;
   return <section className={`group-delivery-progress group-delivery-${state}`} aria-label="自动交付进度" aria-live={active ? 'polite' : 'off'}>
     <header>{active ? <span className="small-spinner" /> : <Icon name="file" size={16} />}<strong>{label || '正在同步交付进度'}</strong>{hasOutput && <button className="subtle-button group-delivery-action" type="button" onClick={() => onOpenArtifacts(job, true)}><Icon name="panel" size={14} />{state === 'complete' ? '查看完整成果' : filesAwaitReview ? '查看文件与验收意见' : '查看部分成果'}</button>}</header>
-    {delivery.title && <p className="group-delivery-title">{delivery.title}</p>}
+    {deliveryTitle && <p className="group-delivery-title">{deliveryTitle}</p>}
     {plannerLabel && <p className="group-delivery-title">{plannerLabel}</p>}
     {steps.length > 0 && <details className="group-execution-details"><summary>分工与执行 · {steps.filter((step) => step.status === 'complete').length}/{steps.length} 已完成{steps.some((step) => step.status === 'error') ? ' · 有步骤失败' : ''}</summary><ol>{steps.map((step, index) => <li key={step.id || index} className={`group-delivery-step-${step.status}`}><div><strong>{step.member_name || step.member_id || '协作成员'}</strong><span>{GROUP_DELIVERY_STEP_STATUS[step.status] || '状态待同步'}</span></div>{step.instruction && <p>{step.instruction}</p>}<HandoffReceipt step={step} />{step.kind === 'mcp' && step.task_id && step.task_observation && <McpTaskControls step={step} />}{step.error && <p className="output-error">{step.error}</p>}</li>)}</ol></details>}
     <details className="group-delivery-receipt"><summary>验收与素材{limitations.length > 0 ? ` · ${limitations.length} 条待处理说明` : ''}</summary><DeliveryMediaProgress job={job} />
@@ -1044,7 +1047,36 @@ export default function GroupWorkspace({ initialRoomId, initialTeam, initialJob,
     {roomId ? <GroupRoom onOpenTodo={onOpenTodo} key={`${activeProjectId || 'unassigned'}:${roomId}:${initialJob?.group_room_id === roomId ? initialJob.id : ''}`} header={header} initialJob={initialJob?.group_room_id === roomId && (initialJob.project_id || null) === (activeProjectId || null) ? initialJob : null} roomId={roomId} projectId={activeProjectId} status={status} models={models} onOpenAgentSettings={onOpenAgentSettings} context={context} onContextChange={onContextChange} onOpenArtifacts={onOpenArtifacts} onClearArtifacts={onClearArtifacts} onCloseArtifacts={onCloseArtifacts} onResultShortcutChange={onResultShortcutChange} artifactsVisible={artifactsVisible} onOpenProjects={onOpenProjects} renderIntegration={renderIntegration} focusHistory={focusHistory} onToggleFocusHistory={toggleFocusHistory} /> : <>
       <GroupHeader {...header} />
       {error && <div className="error-banner" role="alert">{error}<button type="button" className="subtle-button" onClick={refresh}>重试</button></div>}
-      <div className="group-create-scroll"><form className="group-create-room" onSubmit={createRoom}><div className="mission-introduction"><h2>创建项目群聊</h2><p>{activeProject?.name || '独立项目'} · 选择一起讨论或执行任务的成员。</p></div><label className="group-title-input"><span>群聊名称</span><input aria-label="群聊名称" value={title} maxLength={100} placeholder="例如：产品方案讨论、发布前审查" onChange={(event) => setTitle(event.target.value)} /></label><MissionTeamPicker projectId={activeProjectId} team={team} models={models} catalog={status?.models || []} onChange={chooseTeam} onPending={setTeamPending} onOpenAgentSettings={onOpenAgentSettings} requireSaved /><div className="group-create-actions"><p>{team?.id ? '建群后会保存当前成员与分工，已有讨论不受后续编辑影响。' : '选择已有协作组，或新建并保存协作组后开始。'}</p><button type="submit" className="primary-button" disabled={creating || loading || !title.trim() || !team?.id || teamPending}><Icon name="plus" size={15} />{creating ? '正在创建' : '创建群聊'}</button></div></form></div>
+      <div className="group-create-scroll">
+        {rooms.length > 0 && (
+          <nav className="group-existing-rooms-bar" aria-label="当前项目已有群聊">
+            <span className="group-existing-rooms-label">当前项目已有群聊：</span>
+            <div className="group-existing-rooms-list">
+              {rooms.slice(0, 6).map((room) => (
+                <button
+                  key={room.id}
+                  type="button"
+                  className="group-existing-room-pill"
+                  onClick={() => selectRoom(room.id)}
+                >
+                  <Icon name="group" size={13} />
+                  <span>{room.title}</span>
+                </button>
+              ))}
+              {rooms.length > 6 && <span className="group-existing-rooms-more">等 {rooms.length} 个（可在顶部切换）</span>}
+            </div>
+          </nav>
+        )}
+        <form className="group-create-room" onSubmit={createRoom}>
+          <div className="mission-introduction"><h2>创建项目群聊</h2><p>{activeProject?.name || '独立项目'} · 选择一起讨论或执行任务的成员。</p></div>
+          <label className="group-title-input"><span>群聊名称</span><input aria-label="群聊名称" value={title} maxLength={100} placeholder="例如：产品方案讨论、发布前审查" onChange={(event) => setTitle(event.target.value)} /></label>
+          <MissionTeamPicker projectId={activeProjectId} team={team} models={models} catalog={status?.models || []} onChange={chooseTeam} onPending={setTeamPending} onOpenAgentSettings={onOpenAgentSettings} requireSaved />
+          <div className={`group-create-actions${!team?.id ? ' needs-team' : ''}`}>
+            <p>{team?.id ? '建群后会保存当前成员与分工，已有讨论不受后续编辑影响。' : '请先在上方选择已有协作组，或点击「成员与分工」/「新建组」保存后再创建群聊。'}</p>
+            <button type="submit" className="primary-button" disabled={creating || loading || !title.trim() || !team?.id || teamPending}><Icon name="plus" size={15} />{creating ? '正在创建' : '创建群聊'}</button>
+          </div>
+        </form>
+      </div>
     </>}
   </main>;
 }

@@ -49,7 +49,7 @@
 .header-title div > span { display: block; color: #95a0b1; font-size: 10px; }
 .header-actions { display: flex; align-items: center; gap: 15px; }
 .subtle-button { border: 1px solid var(--line); background: #fff; border-radius: 6px; height: 32px; padding: 0 11px; font-size: 11px; display: inline-flex; align-items: center; gap: 7px; }
-.subtle-button:hover:not(:disabled) { color: var(--accent); border-color: #b8c3e5; }
+.subtle-button:hover:not(:disabled) { color: var(--accent); border-color: #b8c3e5; background: #f5f7fc; }
 .subtle-button:disabled { opacity: .4; }
 .icon-button { border: 0; background: transparent; padding: 5px; display: inline-flex; align-items: center; justify-content: center; border-radius: 5px; color: #8b97a8; }
 .icon-button:hover { background: #eef1f7; }
@@ -111,7 +111,7 @@
 .composer-footer strong { color: #b08146; font-weight: 400; }
 .primary-button, .stop-button { display: flex; align-items: center; gap: 7px; height: 34px; padding: 0 14px; border: 0; background: #4658c8; color: #fff; border-radius: 6px; font-size: 11px; font-weight: 500; white-space: nowrap; }
 .primary-button:hover:not(:disabled) { background: #3547b5; }
-.primary-button:disabled { background: #d1d7ed; color: #f8faff; }
+.primary-button:disabled { background: #e6eaf4; color: #6f7d94; box-shadow: inset 0 0 0 1px #d6ddeb; }
 .stop-button { background: #fff; border: 1px solid #dce1ed; color: #69768b; }
 .stop-button:hover:not(:disabled) { background: #f5f7fb; }
 .stop-button:disabled { opacity: .55; }

@@ -1,10 +1,28 @@
-:root { font-family: 'PingFang SC', 'Hiragino Sans GB', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; color: #273444; background: #fafbfd; line-height: 1.55; font-weight: 400; font-synthesis: none; text-rendering: optimizeLegibility; -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
+:root { font-family: 'PingFang SC', 'Hiragino Sans GB', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; color: #273444; background: #fafbfd; color-scheme: light; text-autospace: normal; line-height: 1.55; font-weight: 400; font-synthesis: none; text-rendering: optimizeLegibility; -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
+html[data-theme="dark"] { color-scheme: dark; background: #1b2330; color: #dbe4f1; }
 * { box-sizing: border-box; }
 body { margin: 0; min-width: 0; }
+pre, code { text-autospace: no-autospace; }
 button, input, textarea, select { font: inherit; }
 button { cursor: pointer; color: inherit; }
 button:disabled { cursor: not-allowed; }
 button, a, input, textarea, select { -webkit-tap-highlight-color: transparent; }
-button:focus-visible, a:focus-visible, summary:focus-visible { outline: 3px solid #aeb8f1; outline-offset: 3px; }
+:where(button, a, summary, input, textarea, select):focus-visible { outline: 2px solid #4658c8; outline-offset: 2px; }
+html[data-theme="dark"] :where(button, a, summary, input, textarea, select):focus-visible { outline-color: #95a7ff; }
 a { color: #4658c8; }
 ::selection { background: #e2e6ff; }
+html[data-theme="dark"] ::selection { background: #364770; color: #eef3fc; }
+@media (prefers-reduced-motion: no-preference) {
+  .primary-button,
+  .subtle-button,
+  .stop-button,
+  .icon-button {
+    transition: background-color 140ms ease, border-color 140ms ease, color 140ms ease, transform 90ms ease;
+  }
+  .primary-button:active:not(:disabled),
+  .subtle-button:active:not(:disabled),
+  .stop-button:active:not(:disabled),
+  .icon-button:active:not(:disabled) {
+    transform: translateY(0.5px);
+  }
+}

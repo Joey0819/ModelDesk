@@ -8,6 +8,13 @@ import { machineInfo, NEUTRAL_MACHINE } from '../machine';
 import { Icon } from './WorkbenchResults';
 import './FeishuConnection.css';
 
+const padLatin = (value, { before = false, after = false } = {}) => {
+  const text = String(value || '');
+  const leading = before && /^[A-Za-z0-9]/.test(text) ? ' ' : '';
+  const trailing = after && /[A-Za-z0-9]$/.test(text) ? ' ' : '';
+  return `${leading}${text}${trailing}`;
+};
+
 function BindingRoomSelect({ projectId, roomId, disabled, onChange }) {
   const [rooms, setRooms] = useState([]), [loading, setLoading] = useState(true), [error, setError] = useState('');
   useEffect(() => {
@@ -53,7 +60,7 @@ export function FeishuConfigurationForm({ draft, projects = [], chats = [], busy
         <details className="feishu-binding-advanced"><summary>发起人限制与本机权限</summary>
           <label><span>允许的用户 Open ID（可选）</span><textarea aria-label={`飞书会话 ${index + 1} 允许的用户`} rows={2} value={binding.sender_text ?? binding.allowed_sender_ids.join('\n')} placeholder="留空：允许此会话中的所有用户；每行一个 Open ID 可限制发起人" onChange={(event) => patch(index, { sender_text: event.target.value, allowed_sender_ids: feishuSenderIds(event.target.value) })} /></label>
           <label className="connection-enabled"><input type="checkbox" checked={binding.allow_native} onChange={(event) => patch(index, { allow_native: event.target.checked })} /><span>允许此会话触发{machine.short}原生 Agent（如 Muse）</span></label>
-          <p className="connection-help">默认关闭。开启后，此会话中获准的用户可让任务操作本机原生应用；{machine.short}仍需解锁并授予所需权限。代码合入保留审批。</p>
+          <p className="connection-help">默认关闭。开启后，此会话中获准的用户可让任务操作本机原生应用；{padLatin(machine.short, { after: true })}仍需解锁并授予所需权限。代码合入保留审批。</p>
         </details>
       </section>)}
       <button type="button" className="subtle-button" onClick={() => onChange({ ...draft, bindings: [...draft.bindings, feishuBinding()] })}><Icon name="plus" size={14} />允许一个飞书会话</button>
@@ -89,9 +96,9 @@ export function FeishuConnectionOverview({ connection, loading, error, notice, b
     </ul><p>权限与事件配置完成后，发布应用版本，让目标用户可使用该机器人。</p></details>
     {!remote && config?.enabled && !config.bindings?.length && <p className="feishu-unbound-note">{status?.state === 'connected' ? '已连接，但尚未允许任何聊天。' : '尚未允许任何聊天。'}可先完成事件订阅、识别 Chat ID，再添加绑定。未绑定会话不会执行指令或回传成果。</p>}
     <div className="feishu-command-guide"><strong>绑定后，在飞书发送</strong><p>为会话开启“直接用自然语言派发任务”后，可直接发送“帮我完成一份竞品分析报告”；使用“继续：修改上次报告的结论”保留上下文。以下指令始终可用：</p><code>/modeldesk task 帮我完成一份竞品分析报告</code><code>/modeldesk continue 修改上次报告的结论</code><code>/modeldesk status</code><p><code>task</code> 从新任务开始，不带群聊旧对话；<code>continue</code> 会使用绑定群的共享历史与资料，同群其他成员的记录也可能被引用。群聊中请 @机器人。停止任务：<code>/modeldesk cancel 完整任务UUID</code>。收发是否成功，以飞书中的实际回执为准；“长连接在线”不代表任务已经完成。</p></div>
-    <p className="connection-help">{machine.short}与 ModelDesk 服务需要保持运行并联网；原生应用操作还需要{machine.short}解锁。此连接采用官方出站长连接，无需配置 Webhook 或内网穿透。</p>
+    <p className="connection-help">{machine.short}与 ModelDesk 服务需要保持运行并联网；原生应用操作还需要{padLatin(machine.short, { before: true, after: true })}解锁。此连接采用官方出站长连接，无需配置 Webhook 或内网穿透。</p>
     <div className="feishu-command-guide"><strong>还没有任何绑定时</strong><p>配置了管理员 Open ID 后，管理员可直接在飞书<strong>私聊</strong>里发送 <code>/modeldesk setup 项目名</code>（可选 <code>with 模型1,模型2</code> 指定成员模型）自助创建项目、团队和项目群并绑定当前会话，再用 <code>/modeldesk confirm 4位确认码</code> 二次确认执行；<code>/modeldesk unlink</code> 可解除当前会话绑定。群聊不支持自助开通。</p><code>/modeldesk setup 竞品分析</code><code>/modeldesk setup 竞品分析 with qwen3.8-max,glm-5.3</code><code>/modeldesk confirm 1234</code><code>/modeldesk unlink</code></div>
-    {remote ? <p className="agent-remote-note">App Secret 和允许会话在{machine.short}的“Agent 与连接 → 飞书远程”配置。完成后，可直接从手机飞书派发任务和接收结果。</p> : <div className="agent-inline-actions feishu-connection-actions"><button type="button" className="subtle-button" disabled={busy || loading} onClick={onRefresh}>刷新连接状态</button><button type="button" className="subtle-button" disabled={busy || !config?.app_id || !config?.has_app_secret} onClick={onTest}>验证已保存的应用凭据</button><button type="button" className="subtle-button" disabled={busy || !config?.app_id || !config?.has_app_secret} onClick={onDiscover}>{chatsAvailable ? '继续读取可用群聊' : '读取可用群聊'}</button><button type="button" className="subtle-button" onClick={onOpenGroups}>打开项目群</button></div>}
+    {remote ? <p className="agent-remote-note">App Secret 和允许会话在{padLatin(machine.short, { before: true, after: true })}的“Agent 与连接 → 飞书远程”配置。完成后，可直接从手机飞书派发任务和接收结果。</p> : <div className="agent-inline-actions feishu-connection-actions"><button type="button" className="subtle-button" disabled={busy || loading} onClick={onRefresh}>刷新连接状态</button><button type="button" className="subtle-button" disabled={busy || !config?.app_id || !config?.has_app_secret} onClick={onTest}>验证已保存的应用凭据</button><button type="button" className="subtle-button" disabled={busy || !config?.app_id || !config?.has_app_secret} onClick={onDiscover}>{chatsAvailable ? '继续读取可用群聊' : '读取可用群聊'}</button><button type="button" className="subtle-button" onClick={onOpenGroups}>打开项目群</button></div>}
   </>;
 }
 

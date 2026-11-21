@@ -1,7 +1,7 @@
 /* ==========================================================================
-   Astryx 主题试点 · 仅作用于看板页（.todo-board）
-   配色：Matcha（墨绿/米绿）  字体：Stone（Montserrat + Figtree）
-   范围：只重定义本页用到的 token，侧边栏与其他页面完全不受影响
+   ModelDesk 看板主题 · 仅作用于任务看板页（.todo-board）
+   配色：统一 ModelDesk 冷灰靛蓝（Slate-Indigo），保留 --astryx-* token 命名
+   字体：拉丁回落 Figtree / Montserrat，中文使用系统无衬线字体
    ========================================================================== */
 
 @font-face {
@@ -25,33 +25,36 @@
   --astryx-body: 'Figtree', 'PingFang SC', 'Hiragino Sans GB', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   --astryx-heading: 'Montserrat', 'Figtree', 'PingFang SC', 'Hiragino Sans GB', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
 
-  /* 配色（Matcha 浅色） */
-  --astryx-body-bg: #f0f0e0;
+  /* 配色（ModelDesk Slate-Indigo 浅色） */
+  --astryx-body-bg: #f3f5fa;
   --astryx-paper: #ffffff;
-  --astryx-soft: #e7e8d6;
-  --astryx-line: #dce3ce;
-  --astryx-ink: #3e481d;
-  --astryx-muted: #5a6b2a;
-  --astryx-accent: #3e481d;
+  --astryx-soft: #eaeff7;
+  --astryx-line: #dde3ee;
+  --astryx-ink: #243246;
+  --astryx-muted: #607089;
+  --astryx-accent: #4658c8;
   --astryx-on-accent: #ffffff;
-  --astryx-accent-wash: rgba(62, 72, 29, 0.07);
+  --astryx-accent-wash: rgba(70, 88, 200, 0.09);
+  --astryx-source-ink: #4658c8;
 
-  /* 状态色（在米绿底上略作收敛，避免刺眼） */
-  --astryx-danger: #c1402f;
-  --astryx-warning: #c07f14;
-  --astryx-info: #3a5e8c;
-  --astryx-neutral: #8a9670;
+  /* 语义状态色 */
+  --astryx-danger: #c74138;
+  --astryx-warning: #b87414;
+  --astryx-review-ink: #9a5e08;
+  --astryx-info: #4658c8;
+  --astryx-neutral: #7b8a9f;
+  --astryx-done: #1e826c;
 
-  /* 圆角与阴影（Astryx radius 阶梯） */
+  /* 圆角与阴影 */
   --astryx-r-inner: 6px;
-  --astryx-r-element: 12px;
-  --astryx-r-container: 18px;
-  --astryx-shadow-card: 0 1px 2px rgba(62, 72, 29, 0.06);
-  --astryx-shadow-hover: 0 4px 14px rgba(62, 72, 29, 0.12);
-  --astryx-shadow-modal: 0 18px 48px rgba(20, 26, 10, 0.22);
-  --astryx-ring: 0 0 0 3px rgba(62, 72, 29, 0.22);
+  --astryx-r-element: 10px;
+  --astryx-r-container: 14px;
+  --astryx-shadow-card: 0 1px 2px rgba(28, 41, 66, 0.05);
+  --astryx-shadow-hover: 0 4px 12px rgba(28, 41, 66, 0.09);
+  --astryx-shadow-modal: 0 18px 48px rgba(18, 28, 48, 0.22);
+  --astryx-ring: 0 0 0 3px rgba(70, 88, 200, 0.22);
 
-  /* 覆写本页既有 token，TodoBoard.css 无需改动即可换肤 */
+  /* 覆写本页既有 token，保持 TodoBoard.css 无缝兼容 */
   --line: var(--astryx-line);
   --ink: var(--astryx-ink);
   --muted: var(--astryx-muted);
@@ -62,26 +65,41 @@
   font-family: var(--astryx-body);
   background: var(--astryx-body-bg);
   color: var(--astryx-ink);
+  color-scheme: light;
 }
 
 .modeldesk[data-theme=dark] .todo-board {
-  --astryx-body-bg: #12140e;
-  --astryx-paper: #1a1c14;
-  --astryx-soft: #23261b;
-  --astryx-line: rgba(192, 203, 169, 0.18);
-  --astryx-ink: #c0cba9;
-  --astryx-muted: #94a468;
-  --astryx-accent: #c0cba9;
-  --astryx-on-accent: #3e481d;
-  --astryx-accent-wash: rgba(192, 203, 169, 0.12);
-  --astryx-danger: #e8756a;
-  --astryx-warning: #e3b04b;
-  --astryx-info: #a7c9e3;
-  --astryx-neutral: #7f8a68;
-  --astryx-shadow-card: 0 1px 2px rgba(0, 0, 0, 0.35);
-  --astryx-shadow-hover: 0 6px 18px rgba(0, 0, 0, 0.45);
-  --astryx-shadow-modal: 0 18px 48px rgba(0, 0, 0, 0.6);
-  --astryx-ring: 0 0 0 3px rgba(192, 203, 169, 0.3);
+  --astryx-body-bg: #161d29;
+  --astryx-paper: #202a3a;
+  --astryx-soft: #263347;
+  --astryx-line: #324159;
+  --astryx-ink: #dce5f3;
+  --astryx-muted: #93a6c2;
+  --astryx-accent: #6377ec;
+  --astryx-on-accent: #ffffff;
+  --astryx-accent-wash: rgba(99, 119, 236, 0.16);
+  --astryx-source-ink: #b3c1ff;
+  --astryx-danger: #f08078;
+  --astryx-warning: #ebb85c;
+  --astryx-review-ink: #ebb85c;
+  --astryx-info: #93a7ff;
+  --astryx-neutral: #8496b0;
+  --astryx-done: #5ec2ad;
+  --astryx-shadow-card: 0 1px 2px rgba(0, 0, 0, 0.3);
+  --astryx-shadow-hover: 0 6px 16px rgba(0, 0, 0, 0.42);
+  --astryx-shadow-modal: 0 18px 48px rgba(0, 0, 0, 0.62);
+  --astryx-ring: 0 0 0 3px rgba(99, 119, 236, 0.34);
+  color-scheme: dark;
+}
+
+.modeldesk[data-theme=dark] .workspace.todo-board {
+  background: var(--astryx-body-bg);
+  color: var(--astryx-ink);
+}
+
+.modeldesk[data-theme=dark] .todo-board .workspace-header {
+  background: var(--astryx-paper);
+  border-color: var(--astryx-line);
 }
 
 /* ---------- 工具栏 ---------- */
@@ -89,23 +107,28 @@
 .todo-board .todo-toolbar {
   background: var(--astryx-paper);
   border-bottom: 1px solid var(--astryx-line);
-  padding: 14px 22px;
+  padding: 13px 22px;
   gap: 10px;
 }
 
-/* 前缀 .modeldesk[data-theme] 是为了压过 PlatformTheme.css 里同优先级的全局深色输入框规则 */
+/* 前缀 .modeldesk[data-theme] 与 [data-theme=dark] 压过 PlatformTheme.css 全局深色控件规则 */
 .modeldesk[data-theme] .todo-board .todo-toolbar input[type="text"],
-.modeldesk[data-theme] .todo-board .todo-toolbar select {
+.modeldesk[data-theme] .todo-board .todo-toolbar select,
+.modeldesk[data-theme=dark] .todo-board .todo-toolbar input[type="text"],
+.modeldesk[data-theme=dark] .todo-board .todo-toolbar select {
+  min-block-size: 32px;
   border: 1px solid var(--astryx-line);
   border-radius: var(--astryx-r-element);
   background: var(--astryx-paper);
   color: var(--astryx-ink);
-  padding: 7px 12px;
-  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+  padding: 6px 11px;
+  box-sizing: border-box;
 }
 
 .modeldesk[data-theme] .todo-board .todo-toolbar input[type="text"]:focus,
-.modeldesk[data-theme] .todo-board .todo-toolbar select:focus {
+.modeldesk[data-theme] .todo-board .todo-toolbar select:focus,
+.modeldesk[data-theme=dark] .todo-board .todo-toolbar input[type="text"]:focus,
+.modeldesk[data-theme=dark] .todo-board .todo-toolbar select:focus {
   outline: none;
   border-color: var(--astryx-accent);
   box-shadow: var(--astryx-ring);
@@ -113,15 +136,35 @@
 
 .modeldesk[data-theme] .todo-board .todo-toolbar input[type="text"]::placeholder {
   color: var(--astryx-muted);
-  opacity: 0.75;
+  opacity: 0.78;
+}
+
+.todo-board .todo-toolbar .todo-card-action,
+.modeldesk[data-theme=dark] .todo-board .todo-toolbar .todo-card-action,
+.modeldesk[data-theme=dark] .todo-board .todo-toolbar .subtle-button {
+  min-block-size: 32px;
+  border-radius: var(--astryx-r-element);
+  background: var(--astryx-paper);
+  border-color: var(--astryx-line);
+  color: var(--astryx-ink);
+}
+
+.todo-board .todo-toolbar .todo-card-action:hover:not(:disabled),
+.modeldesk[data-theme=dark] .todo-board .todo-toolbar .todo-card-action:hover:not(:disabled),
+.modeldesk[data-theme=dark] .todo-board .todo-toolbar .subtle-button:hover:not(:disabled) {
+  background: var(--astryx-soft);
+  border-color: color-mix(in srgb, var(--astryx-accent) 34%, var(--astryx-line));
 }
 
 .todo-board .todo-toolbar label {
+  min-block-size: 28px;
   color: var(--astryx-muted);
   font-size: 12.5px;
 }
 
 .todo-board .todo-toolbar input[type="checkbox"] {
+  width: 15px;
+  height: 15px;
   accent-color: var(--astryx-accent);
 }
 
@@ -131,42 +174,44 @@
   letter-spacing: 0.01em;
 }
 
-/* 工具栏主按钮（原本无样式，走浏览器默认） */
+/* 工具栏主按钮 */
 .todo-board .todo-new-task {
+  min-block-size: 34px;
   border: 1px solid var(--astryx-accent);
   background: var(--astryx-accent);
   color: var(--astryx-on-accent);
   border-radius: var(--astryx-r-element);
-  padding: 8px 16px;
+  padding: 7px 15px;
   font-family: var(--astryx-heading);
   font-size: 13px;
   font-weight: 600;
   letter-spacing: 0.01em;
-  transition: opacity 0.15s ease, transform 0.15s ease;
+  cursor: pointer;
 }
 
-.todo-board .todo-new-task:hover {
-  opacity: 0.88;
+.todo-board .todo-new-task:hover:not(:disabled) {
+  opacity: 0.9;
 }
 
-.todo-board .todo-new-task:active {
-  transform: translateY(1px);
+.todo-board .todo-new-task:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
 }
 
 .todo-board .todo-new-task:focus-visible {
-  outline: none;
-  box-shadow: var(--astryx-ring);
+  outline: 2px solid var(--astryx-accent);
+  outline-offset: 2px;
 }
 
 /* ---------- 列 ---------- */
 
 .todo-board .todo-columns {
   gap: 14px;
-  padding: 18px;
+  padding: 16px 18px;
 }
 
 .todo-board .todo-column {
-  background: color-mix(in srgb, var(--astryx-soft) 48%, var(--astryx-paper));
+  background: color-mix(in srgb, var(--astryx-soft) 52%, var(--astryx-paper));
   border: 1px solid var(--astryx-line);
   border-radius: var(--astryx-r-container);
   box-shadow: none;
@@ -177,13 +222,14 @@
   background: var(--astryx-accent-wash);
 }
 
-.todo-board .todo-column-header {
+.todo-board .todo-column-header,
+.modeldesk[data-theme=dark] .todo-board .todo-column-header {
   font-family: var(--astryx-heading);
   font-size: 12.5px;
   font-weight: 600;
   letter-spacing: 0.04em;
   color: var(--astryx-ink);
-  padding: 14px 16px 12px;
+  padding: 13px 15px 11px;
   border-bottom: 1px solid var(--astryx-line);
 }
 
@@ -210,7 +256,7 @@
 .todo-lane-title.lane-doing { --lane-indicator: var(--astryx-info); }
 .todo-lane-title.lane-blocked { --lane-indicator: var(--astryx-danger); }
 .todo-lane-title.lane-review { --lane-indicator: var(--astryx-warning); }
-.todo-lane-title.lane-done { --lane-indicator: var(--astryx-accent); }
+.todo-lane-title.lane-done { --lane-indicator: var(--astryx-done); }
 
 .todo-board .todo-column-body {
   padding: 10px;
@@ -220,7 +266,19 @@
   color: var(--astryx-muted);
   font-size: 12.5px;
   padding: 26px 8px;
-  opacity: 0.8;
+  opacity: 0.85;
+}
+
+.todo-board .todo-show-more {
+  border-color: var(--astryx-line);
+  border-radius: var(--astryx-r-element);
+  color: var(--astryx-muted);
+}
+
+.todo-board .todo-show-more:hover {
+  background: var(--astryx-paper);
+  border-color: color-mix(in srgb, var(--astryx-accent) 34%, var(--astryx-line));
+  color: var(--astryx-ink);
 }
 
 /* ---------- 卡片 ---------- */
@@ -229,10 +287,9 @@
   background: var(--astryx-paper);
   border: 1px solid var(--astryx-line);
   border-radius: var(--astryx-r-element);
-  padding: 12px 13px;
+  padding: 11px 12px;
   margin-bottom: 9px;
   box-shadow: var(--astryx-shadow-card);
-  transition: box-shadow 0.16s ease, border-color 0.16s ease, transform 0.16s ease;
 }
 
 .todo-board .todo-card:hover {
@@ -288,18 +345,51 @@
 }
 
 .todo-board .todo-card-synced {
-  border-left: 3px solid var(--astryx-accent);
+  border-left: 1px solid var(--astryx-line);
 }
 
 .todo-board .todo-source-badge {
-  background: var(--astryx-accent);
-  color: var(--astryx-on-accent);
+  background: var(--astryx-accent-wash);
+  color: var(--astryx-source-ink);
+  border: 1px solid color-mix(in srgb, var(--astryx-accent) 22%, transparent);
   border-radius: 999px;
   font-family: var(--astryx-heading);
   font-size: 10px;
   font-weight: 600;
-  letter-spacing: 0.03em;
-  padding: 2.5px 9px;
+  letter-spacing: 0.02em;
+  padding: 1.5px 8px;
+  line-height: 1.4;
+}
+
+.modeldesk[data-theme=dark] .todo-board .todo-source-badge {
+  color: #b3c1ff;
+  border-color: color-mix(in srgb, var(--astryx-accent) 34%, transparent);
+}
+
+.todo-board .todo-card-actions {
+  border-top: 1px solid color-mix(in srgb, var(--astryx-line) 65%, transparent);
+  padding-top: 8px;
+  margin-top: 9px;
+}
+
+.todo-board .todo-card-action,
+.modeldesk .todo-board .todo-card-status {
+  border-radius: var(--astryx-r-inner);
+  border-color: var(--astryx-line);
+  background: var(--astryx-paper);
+  color: var(--astryx-ink);
+}
+
+.modeldesk[data-theme=dark] .todo-board .todo-card-status,
+.modeldesk[data-theme=dark] .todo-board .todo-card-action {
+  background: var(--astryx-soft);
+  border-color: var(--astryx-line);
+  color: var(--astryx-ink);
+}
+
+.modeldesk[data-theme=dark] .todo-board .todo-card-action:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--astryx-accent) 18%, var(--astryx-soft));
+  border-color: color-mix(in srgb, var(--astryx-accent) 44%, var(--astryx-line));
 }
 
 /* ---------- 行内新建 ---------- */
@@ -309,22 +399,25 @@
   padding: 9px 10px;
 }
 
-.modeldesk .todo-board .todo-add-input {
+.modeldesk .todo-board .todo-add-input,
+.modeldesk[data-theme=dark] .todo-board .todo-add-input {
+  min-block-size: 32px;
   border: 1px solid transparent;
   border-radius: var(--astryx-r-inner);
   background: transparent;
   color: var(--astryx-ink);
-  padding: 7px 9px;
+  padding: 6px 9px;
   font-size: 12.5px;
-  transition: background 0.15s ease, border-color 0.15s ease;
 }
 
-.todo-board .todo-add-input:hover {
+.modeldesk .todo-board .todo-add-input:hover,
+.modeldesk[data-theme=dark] .todo-board .todo-add-input:hover {
   background: var(--astryx-paper);
   border-color: var(--astryx-line);
 }
 
-.todo-board .todo-add-input:focus {
+.modeldesk .todo-board .todo-add-input:focus,
+.modeldesk[data-theme=dark] .todo-board .todo-add-input:focus {
   outline: none;
   background: var(--astryx-paper);
   border-color: var(--astryx-accent);
@@ -339,8 +432,12 @@
 /* ---------- 弹窗 ---------- */
 
 .todo-board .todo-modal::backdrop {
-  background: rgba(18, 20, 14, 0.42);
+  background: rgba(18, 28, 48, 0.42);
   backdrop-filter: blur(2px);
+}
+
+.modeldesk[data-theme=dark] .todo-board .todo-modal::backdrop {
+  background: rgba(8, 12, 20, 0.62);
 }
 
 .todo-board .todo-modal {
@@ -348,10 +445,12 @@
   border: 1px solid var(--astryx-line);
   border-radius: var(--astryx-r-container);
   box-shadow: var(--astryx-shadow-modal);
-  padding: 26px;
+  color: var(--astryx-ink);
+  padding: 24px;
 }
 
-.todo-board .todo-modal h3 {
+.todo-board .todo-modal h3,
+.modeldesk[data-theme=dark] .todo-board .todo-modal h3 {
   font-family: var(--astryx-heading);
   font-size: 17px;
   font-weight: 600;
@@ -367,9 +466,8 @@
   letter-spacing: 0.02em;
 }
 
-.modeldesk .todo-board .todo-field input,
-.modeldesk .todo-board .todo-field textarea,
-.modeldesk .todo-board .todo-field select {
+.modeldesk .todo-board .todo-field :is(input, textarea, select),
+.modeldesk[data-theme=dark] .todo-board .todo-field :is(input, textarea, select) {
   border: 1px solid var(--astryx-line);
   border-radius: var(--astryx-r-element);
   background: var(--astryx-paper);
@@ -377,12 +475,10 @@
   padding: 9px 12px;
   font-family: var(--astryx-body);
   font-size: 13.5px;
-  transition: border-color 0.15s ease, box-shadow 0.15s ease;
 }
 
-.modeldesk .todo-board .todo-field input:focus,
-.modeldesk .todo-board .todo-field textarea:focus,
-.modeldesk .todo-board .todo-field select:focus {
+.modeldesk .todo-board .todo-field :is(input, textarea, select):focus,
+.modeldesk[data-theme=dark] .todo-board .todo-field :is(input, textarea, select):focus {
   outline: none;
   border-color: var(--astryx-accent);
   box-shadow: var(--astryx-ring);
@@ -393,12 +489,12 @@
 }
 
 .todo-board .todo-modal-actions button {
+  min-block-size: 36px;
   border-radius: var(--astryx-r-element);
   font-family: var(--astryx-heading);
   font-size: 13px;
   font-weight: 600;
-  padding: 9px 18px;
-  transition: opacity 0.15s ease, background 0.15s ease;
+  padding: 8px 16px;
 }
 
 .todo-board .todo-btn-primary {
@@ -411,13 +507,20 @@
   opacity: 0.9;
 }
 
+.modeldesk[data-theme=dark] .todo-board .todo-btn-primary:disabled {
+  background: #2f3b54;
+  color: #8f9eb8;
+  border-color: #2f3b54 !important;
+  opacity: 1;
+}
+
 .todo-board .todo-btn-secondary {
   background: transparent;
   color: var(--astryx-ink);
   border-color: var(--astryx-line) !important;
 }
 
-.todo-board .todo-btn-secondary:hover {
+.todo-board .todo-btn-secondary:hover:not(:disabled) {
   background: var(--astryx-soft);
 }
 
@@ -427,7 +530,7 @@
   border-color: var(--astryx-danger) !important;
 }
 
-.todo-board .todo-btn-danger:hover {
+.todo-board .todo-btn-danger:hover:not(:disabled) {
   background: color-mix(in srgb, var(--astryx-danger) 10%, transparent);
 }
 
@@ -447,11 +550,44 @@
 }
 
 .todo-board .todo-error button {
+  min-block-size: 32px;
   border: 1px solid var(--astryx-line);
   border-radius: var(--astryx-r-element);
   background: var(--astryx-paper);
   color: var(--astryx-ink);
 }
+
+/* ---------- 动效与高对比度兜底 ---------- */
+
+@media (prefers-reduced-motion: no-preference) {
+  .modeldesk[data-theme] .todo-board .todo-toolbar input[type="text"],
+  .modeldesk[data-theme] .todo-board .todo-toolbar select,
+  .modeldesk .todo-board .todo-field :is(input, textarea, select),
+  .modeldesk .todo-board .todo-add-input,
+  .todo-board .todo-card,
+  .todo-board .todo-drag-grip,
+  .todo-board .todo-card-action,
+  .todo-board .todo-room-link,
+  .todo-board .todo-show-more,
+  .todo-board .todo-new-task,
+  .todo-board .todo-modal-actions button {
+    transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease, box-shadow 0.15s ease, opacity 0.15s ease, transform 0.12s ease;
+  }
+
+  .todo-board .todo-new-task:active:not(:disabled),
+  .todo-board .todo-card-action:active:not(:disabled) {
+    transform: translateY(1px);
+  }
+}
+
+@media (forced-colors: active) {
+  .todo-board :is(input, textarea, select, button):focus-visible {
+    outline: 2px solid Highlight;
+    outline-offset: 2px;
+  }
+}
+
+/* ---------- 移动端适配 ---------- */
 
 @media (max-width: 640px) {
   .todo-board .todo-toolbar {
@@ -478,7 +614,7 @@
 
   .todo-board .todo-scope-filters select {
     max-width: 100%;
-    min-height: 36px;
+    min-block-size: 36px;
   }
 
   .todo-board .todo-toolbar-filters input[type="text"] {
@@ -499,24 +635,35 @@
 
   .todo-board .todo-mobile-columns {
     display: flex;
-    gap: 5px;
+    gap: 6px;
     overflow-x: auto;
-    padding: 8px 12px 2px;
+    max-width: 100%;
+    box-sizing: border-box;
+    padding: 8px 18px 4px 12px;
+    scrollbar-width: none;
+    scroll-snap-type: x proximity;
+    -webkit-mask-image: linear-gradient(to right, black 0%, black calc(100% - 20px), transparent 100%);
+    mask-image: linear-gradient(to right, black 0%, black calc(100% - 20px), transparent 100%);
   }
 
   .todo-board .todo-mobile-columns button {
     flex: 1 0 auto;
+    min-block-size: 34px;
+    padding: 4px 10px;
     white-space: nowrap;
+    scroll-snap-align: start;
   }
 
   .todo-board .todo-mobile-columns button[aria-pressed="true"] {
     background: var(--astryx-accent-wash);
     border-color: var(--astryx-accent);
+    color: var(--astryx-source-ink);
     font-weight: 600;
   }
 
   .todo-board .todo-mobile-columns span {
     color: var(--astryx-muted);
+    margin-inline-start: 3px;
   }
 
   .todo-board .todo-column {
@@ -542,7 +689,7 @@
   .todo-board .todo-card-action,
   .todo-board .todo-card-status,
   .todo-board .todo-room-link {
-    min-height: 32px;
+    min-block-size: 32px;
   }
 
   .todo-board .todo-modal {

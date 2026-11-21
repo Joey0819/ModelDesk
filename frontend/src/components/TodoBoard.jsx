@@ -15,6 +15,7 @@ const PRIORITY_LABELS = { urgent: '紧急', high: '高', medium: '中', low: '�
 const SOURCE_LABELS = { feishu: '飞书', workbench: '工作台', group: '协作任务', fleet: 'Fleet 节点', muse: 'Muse' };
 const STATUS_LABELS = Object.fromEntries(COLUMNS.map(({ id, label }) => [id, label]));
 const REFRESH_INTERVAL_MS = 8000;
+const DONE_COLLAPSE_LIMIT = 20;
 const ALL_SCOPE = { type: 'all' };
 const PERSONAL = '__personal__';
 
@@ -107,17 +108,24 @@ function TodoCard({ task, project, room, busy, onEdit, onDragStart, onDragEnd, o
         {!task.archived && <span className="todo-drag-grip" aria-hidden="true" />}
       </div>
       <div className="todo-card-badges">
-        <span className="todo-location-badge" title={project}>{project}</span>
-        {groupTitle && (room && onOpenRoom ?
-          <button type="button" className="todo-location-badge todo-room-link" aria-label={`打开群聊：${groupTitle}`} title={groupTitle} onClick={(event) => { event.stopPropagation(); onOpenRoom(room); }}>{groupTitle}</button> :
-          <span className="todo-location-badge" title={groupTitle}>{groupTitle}</span>)}
+        <span className="todo-location-trail">
+          <span className="todo-location-badge" title={project}>{project}</span>
+          {groupTitle && <span className="todo-location-sep" aria-hidden="true">/</span>}
+          {groupTitle && (room && onOpenRoom ?
+            <button type="button" className="todo-location-badge todo-room-link" aria-label={`打开群聊：${groupTitle}`} title={groupTitle} onClick={(event) => { event.stopPropagation(); onOpenRoom(room); }}>{groupTitle}</button> :
+            <span className="todo-location-badge" title={groupTitle}>{groupTitle}</span>)}
+        </span>
         {label && <span className="todo-source-badge">{label}</span>}
-        {task.archived && <span className="todo-location-badge">已归档</span>}
+        {task.archived && <span className="todo-archived-badge">已归档</span>}
       </div>
       {platform && (
         <div className="todo-execution">
-          <span className={`todo-execution-state state-${executionStatus}`}>执行 · {STATUS_LABELS[executionStatus] || '未知'}</span>
-          <span>{manualPlacement ? '手动放置' : '跟随来源'}</span>
+          <span className={`todo-execution-state state-${executionStatus}`}>
+            <span className="todo-execution-dot" aria-hidden="true" />
+            执行 · {STATUS_LABELS[executionStatus] || '未知'}
+          </span>
+          <span className="todo-execution-sep" aria-hidden="true">·</span>
+          <span className={`todo-execution-mode${manualPlacement ? ' is-manual' : ''}`}>{manualPlacement ? '手动放置' : '跟随来源'}</span>
         </div>
       )}
       {preview && <div className="todo-card-desc">{preview}</div>}
@@ -267,6 +275,7 @@ export default function TodoBoard({
   const [search, setSearch] = useState('');
   const [priorityFilter, setPriorityFilter] = useState('');
   const [showDone, setShowDone] = useState(true);
+  const [showAllDone, setShowAllDone] = useState(false);
   const [showArchived, setShowArchived] = useState(false);
   const [editTask, setEditTask] = useState(null);
   const [modalError, setModalError] = useState('');
@@ -488,6 +497,10 @@ export default function TodoBoard({
         <div className="todo-columns">
           {shownColumns.map((column) => {
             const target = dropTarget?.status === column.id ? dropTarget : null;
+            const columnTasks = grouped[column.id];
+            const collapseEligible = column.id === 'done' && !search.trim() && columnTasks.length > DONE_COLLAPSE_LIMIT;
+            const shouldCollapseDone = collapseEligible && !showAllDone;
+            const visibleTasks = shouldCollapseDone ? columnTasks.slice(0, DONE_COLLAPSE_LIMIT) : columnTasks;
             return (
               <section
                 key={column.id}
@@ -502,11 +515,11 @@ export default function TodoBoard({
                 onDrop={(event) => handleDrop(event, column.id)}
               >
                 <h2 className="todo-column-header" id={`todo-column-${column.id}`}>
-                  <span className={`todo-lane-title lane-${column.id}`}>{column.label}</span><span className="todo-column-count">{grouped[column.id].length}</span>
+                  <span className={`todo-lane-title lane-${column.id}`}>{column.label}</span><span className="todo-column-count">{columnTasks.length}</span>
                 </h2>
                 <div className="todo-column-body">
-                  {!grouped[column.id].length && <div className="todo-empty">暂无任务</div>}
-                  {grouped[column.id].map((task) => (
+                  {!columnTasks.length && <div className="todo-empty">暂无任务</div>}
+                  {visibleTasks.map((task) => (
                     <div className={target?.beforeId === task.id ? 'todo-card-slot drop-before' : 'todo-card-slot'} key={task.id}>
                       <TodoCard task={task} project={projectName(projects, task.project_id)} room={roomsByScope.get(roomKey(task.project_id, task.room_id))}
                         busy={busy} onEdit={startEdit} onDragStart={handleDragStart} onDragEnd={handleDragEnd}
@@ -518,6 +531,16 @@ export default function TodoBoard({
                     </div>
                   ))}
                   {target && !target.beforeId && <div className="todo-drop-end" aria-hidden="true" />}
+                  {shouldCollapseDone && (
+                    <button type="button" className="todo-show-more" onClick={() => setShowAllDone(true)}>
+                      展开其余 {columnTasks.length - DONE_COLLAPSE_LIMIT} 项已完成
+                    </button>
+                  )}
+                  {collapseEligible && showAllDone && (
+                    <button type="button" className="todo-show-more" onClick={() => setShowAllDone(false)}>
+                      收起多余已完成项
+                    </button>
+                  )}
                 </div>
                 <InlineAddForm status={column.id} onCreate={handleInlineCreate} busy={busy} />
               </section>

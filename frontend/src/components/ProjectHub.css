@@ -4,8 +4,10 @@
 .project-hub-bar { min-height: 36px; display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: center; padding: 4px 18px; font-size: 11.5px; }
 .project-hub-bar > label { display: flex; align-items: center; gap: 7px; min-width: 0; }
 .project-hub-bar label > span { color: #7b8da5; font-size: 11px; white-space: nowrap; }
-.project-hub-bar select { border: 0; background: transparent; max-width: 270px; min-width: 125px; color: #354a66; outline: none; padding: 2px; }
-.project-hub-bar > button { border: 0; background: transparent; color: #667b99; padding: 2px 0; display: flex; align-items: center; gap: 5px; font-size: 11px; }
+.project-hub-bar select { border: 0; background: transparent; max-width: 270px; min-width: 125px; min-block-size: 28px; color: #354a66; padding: 3px 7px; border-radius: 6px; }
+.project-hub-bar select:hover:not(:disabled) { background: var(--shell-wash); }
+.project-hub-bar > button { border: 0; background: transparent; color: #667b99; min-block-size: 28px; padding: 4px 8px; border-radius: 6px; display: flex; align-items: center; gap: 5px; font-size: 11px; }
+.project-hub-bar > button:hover:not(:disabled) { background: var(--shell-wash); color: var(--ink); }
 .project-hub-bar button:disabled { opacity: .4; }
 .project-hub-loading { color: #a0adbe; font-size: 10px; }
 .project-materials-trigger > span { background: #edf1f8; border-radius: 4px; padding: 1px 5px; font-size: 9px; }
@@ -75,7 +77,8 @@
 .attachment-composer { position: relative; display: flex; flex-wrap: wrap; align-items: center; gap: 5px 10px; padding: 4px 12px; border-bottom: 1px solid #e7ebf2; background: #fafbfd; }
 .attachment-compact { padding: 4px 0; border: 0; background: transparent; }
 .attachment-add-control { position: relative; }
-.attachment-plus { display: flex; align-items: center; gap: 5px; border: 0; background: transparent; color: #778ea9; padding: 2px 0; font-size: 11px; }
+.attachment-plus { display: flex; align-items: center; gap: 5px; border: 0; border-radius: 6px; background: transparent; color: #778ea9; min-block-size: 28px; padding: 3px 6px; font-size: 11px; }
+.attachment-plus:hover:not(:disabled) { background: var(--shell-wash, #f5f7fb); color: var(--ink, #273444); }
 .attachment-plus:disabled { opacity: .45; }
 .attachment-add-menu { position: absolute; bottom: calc(100% + 8px); left: 0; z-index: 30; width: 210px; border: 1px solid #dfe5ef; border-radius: 7px; padding: 6px; background: #fff; box-shadow: 0 7px 30px #16284214; }
 .attachment-add-menu button { width: 100%; display: flex; align-items: center; gap: 8px; padding: 9px 7px; font-size: 11px; border: 0; color: #667e9e; background: transparent; text-align: left; }
@@ -111,6 +114,9 @@
 .modeldesk[data-theme=dark] :is(.project-create-inline,.project-assets-manager,.folder-import-dialog,.attachment-add-menu,.attachment-chip) { background: #232e3d; border-color: #354255; }
 .modeldesk[data-theme=dark] :is(.project-create-inline header strong,.project-assets-manager header strong,.folder-import-dialog header strong,.asset-row-main strong,.project-hub-bar select) { color: #bfcee4; }
 .modeldesk[data-theme=dark] :is(.project-hub-bar > button,.project-hub-bar label > span,.project-create-inline header span,.project-assets-explanation,.asset-row-main small,.asset-row-main > span,.attachment-short-help,.attachment-plus,.attachment-chip,.attachment-shared-toggle) { color: #97abc6; }
+.modeldesk[data-theme=dark] .project-hub-bar > button:hover:not(:disabled) { background: var(--shell-soft); color: var(--ink); }
+.modeldesk[data-theme=dark] .project-hub-bar select:hover:not(:disabled) { background: var(--shell-soft); }
+.modeldesk[data-theme=dark] .project-materials-trigger > span { background: var(--shell-soft); color: #cbd8eb; }
 .modeldesk[data-theme=dark] :is(.attachment-composer,.asset-preview-button,.project-assets-toolbar input) { background: #202a39; border-color: #354255; }
 .modeldesk[data-theme=dark] :is(.project-manager-tabs,.project-assets-manager > header,.folder-import-dialog > header,.project-assets-list article,.folder-import-dialog footer,.asset-inline-preview,.asset-inline-preview > header,.project-folder-row,.project-job-list button) { border-color: #354255; }
 .job-attachments { margin: 12px 0; min-width: 0; }
@@ -137,4 +143,4 @@
 .attachment-local-folder label { display: grid; gap: 5px; flex: 1; min-width: 0; }
 .attachment-local-folder input { width: 100%; min-width: 0; padding: 8px; border: 1px solid var(--line, #e3e7ef); background: transparent; color: inherit; border-radius: 4px; }
 .attachment-local-folder button { flex-shrink: 0; }
-@media (max-width: 600px) { .project-hub-bar { padding: 8px 12px; gap: 7px 12px; }.project-hub-bar > label { flex: 1; }.project-hub-bar label > span { display: none; }.project-hub-bar select { max-width: 55vw; min-width: 100px; }.project-create-inline { left: 10px; padding: 16px; }.project-assets-manager { width: calc(100% - 20px); max-height: calc(100dvh - 20px); }.project-assets-manager > header { padding: 15px; }.project-manager-tabs { padding: 0 15px; gap: 19px; }.project-manager-body { padding: 15px; }.project-assets-list article { flex-wrap: wrap; }.asset-row-choices { width: 100%; justify-content: end; }.attachment-short-help { display: none; }.attachment-chip { max-width: min(210px, 44vw); }.attachment-chip > span { max-width: 130px; }.folder-import-dialog > header { padding: 15px; } }
+@media (max-width: 600px) { .project-hub-bar { flex-wrap: nowrap; padding: 4px 10px; gap: 4px; } .project-hub-bar > button, .project-hub-bar select { min-block-size: 34px; white-space: nowrap; } .project-hub-bar > button { padding: 4px 5px; flex-shrink: 0; gap: 3px; } .project-hub-bar > label { flex: 1 1 0; min-width: 72px; gap: 0; }.project-hub-bar label > span, .project-hub-bar > label > svg { display: none; }.project-hub-bar select { width: 100%; max-width: 100%; min-width: 0; padding-inline: 2px 4px; }.project-hub-bar .autonomy-center-trigger { flex-shrink: 0; margin-left: 0; }.project-create-inline { left: 10px; padding: 16px; }.project-assets-manager { width: calc(100% - 20px); max-height: calc(100dvh - 20px); }.project-assets-manager > header { padding: 15px; }.project-manager-tabs { padding: 0 15px; gap: 19px; }.project-manager-body { padding: 15px; }.project-assets-list article { flex-wrap: wrap; }.asset-row-choices { width: 100%; justify-content: end; }.attachment-short-help { display: none; }.attachment-chip { max-width: min(210px, 44vw); }.attachment-chip > span { max-width: 130px; }.folder-import-dialog > header { padding: 15px; } }

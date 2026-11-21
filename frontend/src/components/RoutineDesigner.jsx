@@ -279,7 +279,7 @@ export default function RoutineDesigner({
           {spec.name.trim() && spec.goal.trim() && <button type="button" className="subtle-button" disabled={Boolean(busy)} onClick={() => void runWalkthrough('')}>
             <Icon name="council" size={14} />{busy === 'walkthrough' ? '正在演练…' : '案例演练（无副作用）'}
           </button>}
-          <button type="submit" className="primary-button" disabled={Boolean(busy || !message.trim())}>
+          <button type="submit" className={!spec.goal.trim() || message.trim() ? 'primary-button' : 'subtle-button'} disabled={Boolean(busy || !message.trim())}>
             <Icon name="send" size={14} />{busy === 'interview' ? '正在思考…' : latest ? '继续对齐' : '开始访谈'}
           </button>
         </div>
@@ -336,8 +336,9 @@ export default function RoutineDesigner({
 
     <footer className="group-routine-editor-footer">
       <div>
+        {!spec.goal.trim() && <span className="group-routine-footer-hint">完成首轮访谈后可应用到编辑器</span>}
         <button type="button" className="subtle-button" disabled={Boolean(busy)} onClick={onBack}>返回</button>
-        <button type="button" className="primary-button" disabled={Boolean(busy || !spec.goal.trim())} onClick={() => onApply(draft)}>
+        <button type="button" className={spec.goal.trim() ? 'primary-button' : 'subtle-button'} disabled={Boolean(busy || !spec.goal.trim())} onClick={() => onApply(draft)}>
           应用到例程编辑器
         </button>
       </div>

@@ -32,3 +32,17 @@
 .modeldesk[data-theme=dark] :is(.format-record-note,.format-diagnostic-entry > summary,.format-diagnostic-metadata) { color: #a2b3cc; }
 .modeldesk[data-theme=dark] .format-diagnostic-entry { border-color: #354255; }
 .modeldesk[data-theme=dark] :is(.failed-task-output-label,.task-execution-status.task-status-failed) { color: #e5b2a2; }
+.modeldesk[data-theme=dark] .primary-button { background: #5468de; color: #ffffff; }
+.modeldesk[data-theme=dark] .primary-button:hover:not(:disabled) { background: #6578eb; }
+.modeldesk[data-theme=dark] .primary-button:disabled { background: #263245; color: #7e92ae; box-shadow: inset 0 0 0 1px #36455d; }
+.modeldesk[data-theme=dark] .subtle-button:hover:not(:disabled) { background: #2c3c53; border-color: #546a8c; color: #dce6f7; }
+.modeldesk[data-theme=dark] .stop-button:hover:not(:disabled) { background: #2c3c53; border-color: #546a8c; color: #dce6f7; }
+.modeldesk[data-theme=dark] .icon-button:hover:not(:disabled) { background: #263447; color: #dce6f7; }
+.modeldesk[data-theme=dark] .history-item:hover, .modeldesk[data-theme=dark] .history-item.selected { background: #243245; }
+.modeldesk[data-theme=dark] .mode-navigation button:hover:not(.active) { background: #222f41; }
+.modeldesk[data-theme=dark] .job-status { background: #263447; color: #a6b8d5; }
+.modeldesk[data-theme=dark] .status-completed, .modeldesk[data-theme=dark] .status-complete { color: #67c5b1; }
+.modeldesk[data-theme=dark] .status-running, .modeldesk[data-theme=dark] .status-queued { color: #9fb0ff; }
+.modeldesk[data-theme=dark] .status-failed, .modeldesk[data-theme=dark] .status-error { color: #f0958d; }
+.modeldesk[data-theme=dark] .history-meta { color: #8c9db8; }
+.modeldesk[data-theme=dark] .mode-header-icon { background: color-mix(in srgb, var(--accent) 16%, #232e3d); color: #a9b8ff; border-color: color-mix(in srgb, var(--accent) 32%, #354258); }

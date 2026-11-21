@@ -536,6 +536,12 @@ function ModelDeskWorkspace() {
     });
   }, []);
   useEffect(() => {
+    document.documentElement.dataset.theme = theme;
+    document.documentElement.style.colorScheme = theme;
+    document.querySelector('meta[name="theme-color"]')?.setAttribute('content', theme === 'dark' ? '#1b2330' : '#FAFBFD');
+    document.querySelector('meta[name="color-scheme"]')?.setAttribute('content', theme);
+  }, [theme]);
+  useEffect(() => {
     const onKeyDown = (event) => {
       if (!(event.metaKey || event.ctrlKey) || event.isComposing || event.defaultPrevented) return;
       const dialog = document.querySelector('dialog:modal');

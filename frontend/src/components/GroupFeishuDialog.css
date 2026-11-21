@@ -250,67 +250,6 @@ dialog.group-feishu-dialog :is(button, a, input, textarea, select, summary):focu
   margin-top: 2px;
 }
 
-.group-feishu-bot-bar {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 12px 14px;
-  border-radius: 10px;
-  border: 1px solid var(--line);
-  background: var(--shell-wash);
-}
-
-.group-feishu-bot-summary {
-  display: flex;
-  align-items: flex-start;
-  gap: 10px;
-  min-width: 0;
-  flex: 1 1 260px;
-}
-
-.group-feishu-status-chip {
-  flex-shrink: 0;
-  padding: 3px 8px;
-  border-radius: 6px;
-  font-size: 11px;
-  font-weight: 600;
-  border: 1px solid var(--line);
-  background: var(--shell-paper);
-  color: var(--muted);
-}
-
-.group-feishu-status-chip.connected {
-  border-color: var(--feishu-jade-line);
-  background: var(--feishu-jade-wash);
-  color: var(--jade);
-}
-
-.group-feishu-status-chip.bound {
-  border-color: var(--feishu-warn-line);
-  background: var(--feishu-warn-wash);
-  color: var(--feishu-warn);
-}
-
-.group-feishu-bot-meta {
-  display: grid;
-  gap: 2px;
-  min-width: 0;
-}
-
-.group-feishu-bot-meta strong {
-  font-size: 12.5px;
-  color: var(--ink);
-  overflow-wrap: anywhere;
-}
-
-.group-feishu-bot-meta span {
-  font-size: 11.5px;
-  color: var(--muted);
-  line-height: 1.5;
-}
-
 .group-feishu-bot-actions {
   display: flex;
   flex-wrap: wrap;
@@ -349,11 +288,6 @@ dialog.group-feishu-dialog :is(button, a, input, textarea, select, summary):focu
   background: var(--shell-paper);
   display: grid;
   gap: 8px;
-}
-
-.group-feishu-binding-card.all-groups {
-  border-color: var(--feishu-jade-line);
-  background: var(--feishu-jade-wash);
 }
 
 .group-feishu-binding-top {
@@ -579,7 +513,7 @@ dialog.group-feishu-dialog :is(button, a, input, textarea, select, summary):focu
   color: var(--ink);
 }
 
-.group-feishu-field :is(input, textarea) {
+.group-feishu-field :is(input, select, textarea) {
   box-sizing: border-box;
   width: 100%;
   min-width: 0;
@@ -594,7 +528,7 @@ dialog.group-feishu-dialog :is(button, a, input, textarea, select, summary):focu
   color-scheme: inherit;
 }
 
-.group-feishu-field input {
+.group-feishu-field :is(input, select) {
   min-block-size: 34px;
 }
 
@@ -842,9 +776,10 @@ dialog.group-feishu-dialog :is(button, a, input, textarea, select, summary):focu
   .group-feishu-field-grid {
     grid-template-columns: 1fr;
   }
-  .group-feishu-field :is(input, textarea) {
+  .group-feishu-field :is(input, select, textarea) {
     font-size: 16px;
   }
+  .group-feishu-cmd-row .copy-text-button { min-block-size: 36px; }
   .group-feishu-cmd-row {
     flex-direction: column;
     align-items: flex-start;

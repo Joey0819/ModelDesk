@@ -2,6 +2,7 @@
 import json
 import logging
 import os
+import re
 import sys
 import threading
 import time
@@ -70,22 +71,30 @@ def normalize_event(data, app_id, bot_open_id):
     text, input_error = message_text(message)
     # Feishu's group mentions use placeholders; remove only actual mention
     # keys supplied by this authenticated event, rather than arbitrary text.
-    bot_mentioned = False
-    for mention in message.mentions or []:
-        key = getattr(mention, "key", None)
-        if key and isinstance(text, str):
-            is_bot = getattr(getattr(mention, "id", None), "open_id", None) == bot_open_id
-            bot_mentioned = bot_mentioned or is_bot
-            if is_bot and text.lstrip().startswith(key):
-                text = text.lstrip()[len(key):].lstrip()
-            else:
-                text = text.replace(key, "@" + (getattr(mention, "name", None) or "成员"))
-    if message.chat_type == "group" and not bot_mentioned:
+    mentions = {mention.key: mention for mention in message.mentions or [] if getattr(mention, "key", None)}
+    bot_keys = {
+        key for key, mention in mentions.items()
+        if getattr(getattr(mention, "id", None), "open_id", None) == bot_open_id
+    }
+    keys = sorted(mentions, key=len, reverse=True)
+    text = text.lstrip()
+    leading_bot = next((key for key in keys if text.startswith(key)), None)
+    if leading_bot in bot_keys:
+        text = text[len(leading_bot):].lstrip()
+    task_prefix = re.match(r"^[/／]modeldesk\s+task\s+", text, re.IGNORECASE)
+    task_text = text[task_prefix.end():] if task_prefix else text
+    leading_key = next((key for key in keys if task_text.startswith(key)), None)
+    leading_user_mention = leading_key is not None and leading_key not in bot_keys
+    if keys:
+        pattern = "|".join(map(re.escape, keys))
+        text = re.sub(pattern, lambda match: "@" + (getattr(mentions[match[0]], "name", None) or "成员"), text)
+    if message.chat_type == "group" and not bot_keys:
         return None
     return {"app_id": app_id, "message_id": message.message_id, "chat_id": message.chat_id,
             "create_time": message.create_time,
             "parent_id": getattr(message, "parent_id", None), "root_id": getattr(message, "root_id", None),
             "chat_type": message.chat_type, "message_type": message.message_type, "text": text, "input_error": input_error,
+            "leading_user_mention": leading_user_mention,
             "sender_type": sender.sender_type, "sender_id": sender.sender_id.open_id}
 
 

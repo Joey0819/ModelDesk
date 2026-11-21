@@ -7,12 +7,13 @@ import re
 import sqlite3
 import sys
 import uuid
+from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from .feishu_sdk import FeishuAPIError, FeishuSDK, safe_error
-from .feishu_store import ConfigInput, FeishuStore, ROOT, now
+from .feishu_store import ConfigInput, FeishuStore, ROOT, binding_is_current, now
 from .task_context import feishu_task_ancestors
 from . import workbench
 
@@ -45,130 +46,78 @@ def list_all_rooms():
     return rooms
 
 
-def _format_room_disambiguation(selector, matches, rooms):
-    index_map = {room["id"]: idx for idx, room in enumerate(rooms, 1)}
-    lines = [f"找到多个匹配「{selector}」的项目群，请改用序号或完整名称："]
+ROOMS_PAGE_SIZE = 10
+
+
+def _room_labels(room):
+    return room["title"], f"{room['project_name']}/{room['title']}", f"{room['project_name']} · {room['title']}"
+
+
+def _selector_key(selector):
+    return " ".join(selector.casefold().split())
+
+
+def _format_room_disambiguation(selector, matches):
+    lines = [f"找到多个匹配「{selector}」的项目群，请复制其中一个完整群 ID："]
     for room in matches[:10]:
-        lines.append(f"{index_map.get(room['id'], '?')}. {room['project_name']} · {room['title']}")
+        lines.append(f"{room['project_name']} · {room['title']}\n{room['id']}")
+    if len(matches) > 10:
+        lines.append("发送 /modeldesk groups 可分页查看全部项目群。")
     return "\n".join(lines)
 
 
-def resolve_room_selector(selector, rooms):
-    cleaned = (selector or "").strip().lstrip("#").strip()
-    if not cleaned:
-        return None, "请指定项目群序号或名称；可先发送 /modeldesk groups 查看所有项目群。"
-    if not rooms:
-        return None, "当前 ModelDesk 中还没有可用的项目群。"
-    if cleaned.isdigit():
-        index = int(cleaned)
-        if 1 <= index <= len(rooms):
-            return rooms[index - 1], None
-    folded = cleaned.casefold()
-    exact_id = [room for room in rooms if room["id"].casefold() == folded]
-    if len(exact_id) == 1:
-        return exact_id[0], None
-    exact_name = [
-        room for room in rooms
-        if folded in {
-            room["title"].casefold(),
-            f"{room['project_name']}/{room['title']}".casefold(),
-            f"{room['project_name']} · {room['title']}".casefold(),
-        }
-    ]
-    if len(exact_name) == 1:
-        return exact_name[0], None
-    if len(exact_name) > 1:
-        return None, _format_room_disambiguation(cleaned, exact_name, rooms)
-    partial = [
-        room for room in rooms
-        if folded in room["title"].casefold() or folded in f"{room['project_name']} {room['title']}".casefold()
-    ]
-    if len(partial) == 1:
-        return partial[0], None
-    if len(partial) > 1:
-        return None, _format_room_disambiguation(cleaned, partial, rooms)
-    return None, f"未找到匹配「{cleaned}」的项目群。请发送 /modeldesk groups 查看可用序号和名称。"
-
-
-def parse_to_command(prompt, rooms):
-    text = (prompt or "").strip()
-    if not text:
-        return None, "", "请填写目标项目群和任务内容，例如：/modeldesk to 序号或群名 任务内容"
-    quoted = QUOTED_SELECTOR.match(text)
-    if quoted:
+def resolve_room_selector(selector, rooms, numbers):
+    selector = selector.strip()
+    quoted = QUOTED_SELECTOR.fullmatch(selector)
+    if quoted and not quoted[5]:
         selector = next(group for group in quoted.groups()[:4] if group is not None)
-        task_prompt = (quoted.group(5) or "").strip()
-        chosen, error = resolve_room_selector(selector, rooms)
-        if not chosen:
-            return None, "", error
-        if not task_prompt:
-            return None, "", "请在项目群名称后填写任务内容，例如：/modeldesk to 序号或群名 任务内容"
-        return chosen, task_prompt, None
-    first_token, *rest = text.split(maxsplit=1)
-    first_rest = rest[0].strip() if rest else ""
-    stripped_first = first_token.lstrip("#")
-    if (stripped_first.isdigit() and 1 <= int(stripped_first) <= len(rooms)) or TASK_ID.fullmatch(first_token):
-        chosen, error = resolve_room_selector(first_token, rooms)
-        if not chosen:
-            return None, "", error
-        if not first_rest:
-            return None, "", "请在项目群序号或 ID 后填写任务内容，例如：/modeldesk to 1 任务内容"
-        return chosen, first_rest, None
-    candidates = []
-    for room in rooms:
-        for label in (room["title"], f"{room['project_name']}/{room['title']}", f"{room['project_name']} · {room['title']}"):
-            if label:
-                candidates.append((label, room))
-    folded_text = text.casefold()
-    matched_label = None
-    matched_rooms = {}
-    for label, room in sorted(candidates, key=lambda item: len(item[0]), reverse=True):
-        if matched_label is not None and len(label) < len(matched_label):
-            break
-        if folded_text.startswith(label.casefold()) and (len(text) == len(label) or text[len(label)].isspace()):
-            if matched_label is None or label.casefold() == matched_label.casefold():
-                matched_label = label
-                matched_rooms[room["id"]] = room
-    if matched_label is not None:
-        if len(matched_rooms) > 1:
-            return None, "", _format_room_disambiguation(matched_label, list(matched_rooms.values()), rooms)
-        chosen = next(iter(matched_rooms.values()))
-        task_prompt = text[len(matched_label):].strip()
-        if not task_prompt:
-            return None, "", "请在项目群名称后填写任务内容，例如：/modeldesk to 序号或群名 任务内容"
-        return chosen, task_prompt, None
-    chosen, error = resolve_room_selector(first_token, rooms)
-    if not chosen:
+    if not selector:
+        return None, "请指定项目群 ID、名称或已显示的编号。发送 /modeldesk groups 查看项目群。"
+    identifier = selector.removeprefix("#").lower()
+    if TASK_ID.fullmatch(identifier):
+        matches = [room for room in rooms if room["id"] == identifier]
+    elif identifier.isdecimal() and not quoted:
+        matches = [room for room in rooms if room["id"] == numbers.get(identifier)]
+        if not matches:
+            return None, "该编号未在此会话为你显示，或对应群已不可用。发送 /modeldesk groups 查看群 ID。"
+    else:
+        folded = _selector_key(selector)
+        matches = [room for room in rooms if any(_selector_key(label) == folded for label in _room_labels(room))]
+    if len(matches) == 1:
+        return matches[0], None
+    if len(matches) > 1:
+        return None, _format_room_disambiguation(selector, matches)
+    return None, f"未找到匹配「{selector[:160]}」的项目群。发送 /modeldesk groups 查看群 ID 和完整名称。"
+
+
+def parse_to_command(prompt, rooms, numbers):
+    text = prompt.strip()
+    if not text:
+        return None, "", "请填写目标群和任务，例如 /modeldesk to 群ID 任务内容。"
+    quoted = QUOTED_SELECTOR.fullmatch(text)
+    if quoted:
+        selector = text[:quoted.start(5)].strip()
+        task_prompt = quoted[5].strip()
+    else:
+        first_token, *rest = text.split(maxsplit=1)
+        selector, task_prompt = first_token, rest[0].strip() if rest else ""
+        identifier = first_token.removeprefix("#")
+        if not (identifier.isdecimal() or TASK_ID.fullmatch(identifier)):
+            labels = {_selector_key(label) for room in rooms for label in _room_labels(room)}
+            max_label_length = max(map(len, labels), default=0)
+            folded = ""
+            for word in re.finditer(r"\S+", text):
+                folded = (folded + " " + word[0].casefold()).lstrip()
+                if len(folded) > max_label_length:
+                    break
+                if folded in labels:
+                    selector, task_prompt = text[:word.end()], text[word.end():].strip()
+    chosen, error = resolve_room_selector(selector, rooms, numbers)
+    if error:
         return None, "", error
-    if not first_rest:
-        return None, "", "请在项目群名称后填写任务内容，例如：/modeldesk to 序号或群名 任务内容"
-    return chosen, first_rest, None
-
-
-def match_at_room(prompt, rooms):
-    if not prompt.startswith("@"):
-        return None, prompt
-    body = prompt[1:]
-    candidates = []
-    for room in rooms:
-        for label in (room["title"], f"{room['project_name']}/{room['title']}", f"{room['project_name']} · {room['title']}"):
-            if label:
-                candidates.append((label, room))
-    matched_len = 0
-    matched_rooms = {}
-    folded_body = body.casefold()
-    for label, room in sorted(candidates, key=lambda item: len(item[0]), reverse=True):
-        if len(label) < matched_len:
-            break
-        if folded_body.startswith(label.casefold()) and len(body) > len(label) and body[len(label)].isspace():
-            rest = body[len(label):].strip()
-            if rest:
-                matched_len = len(label)
-                matched_rooms[room["id"]] = (room, rest)
-    if len(matched_rooms) == 1:
-        chosen, stripped = next(iter(matched_rooms.values()))
-        return chosen, stripped
-    return None, prompt
+    if not task_prompt:
+        return None, "", "请在项目群 ID 或名称后填写任务，例如 /modeldesk to 群ID 任务内容。"
+    return chosen, task_prompt, None
 
 
 class FeishuController:
@@ -325,18 +274,45 @@ class FeishuController:
     def active_target(self, record):
         binding = record["binding"]
         if binding.get("allow_all_groups"):
-            route = self.store.get_chat_route(record["app_id"], record["chat_id"], record["config_revision"])
+            route = self.store.get_chat_route(record["app_id"], record["chat_id"], record["config_revision"], record["sender_id"])
             if route:
-                from .groups import store as group_store
-                try:
-                    group_store.get(route["room_id"], route["project_id"])
-                    return route["project_id"], route["room_id"]
-                except HTTPException:
-                    pass
+                return route["project_id"], route["room_id"]
         return binding["project_id"], binding["room_id"]
 
+    async def send_rooms_page(self, record, prompt):
+        if "rooms_page" not in record:
+            rooms = sorted(list_all_rooms(), key=lambda room: (
+                room["project_name"].casefold(), room["title"].casefold(), room["id"]
+            ))
+            if not rooms:
+                await self.reply_once(record, "groups", "当前 ModelDesk 中暂无可用项目群。")
+                return
+            page_count = (len(rooms) + ROOMS_PAGE_SIZE - 1) // ROOMS_PAGE_SIZE
+            requested_page = prompt or "1"
+            page = int(requested_page) if re.fullmatch(r"[0-9]{1,6}", requested_page) else 0
+            if not 1 <= page <= page_count:
+                await self.reply_once(record, "groups", f"请用 /modeldesk groups 页码 查看第 1 至 {page_count} 页。")
+                return
+            start = (page - 1) * ROOMS_PAGE_SIZE
+            visible = rooms[start:start + ROOMS_PAGE_SIZE]
+            room_ids = [room["id"] for room in visible]
+            numbers = self.store.reserve_room_numbers(record, room_ids)
+            active_project_id, active_room_id = self.active_target(record)
+            lines = [f"可用项目群（共 {len(rooms)} 个，第 {page}/{page_count} 页，★ 为你的默认群）"]
+            for room in visible:
+                mark = "★ " if (room["project_id"], room["id"]) == (active_project_id, active_room_id) else ""
+                lines.append(f"{numbers[room['id']]}. {mark}{room['project_name']} · {room['title']}\n{room['id']}")
+            if page < page_count:
+                lines.append(f"下一页 /modeldesk groups {page + 1}")
+            elif page > 1:
+                lines.append("首页 /modeldesk groups")
+            lines.extend(["切换 /modeldesk use 群ID", "单次派发 /modeldesk to 群ID 任务内容"])
+            self.store.update(record, rooms_page={"room_ids": room_ids, "text": "\n".join(lines)})
+        snapshot = record["rooms_page"]
+        await self.reply_once(record, "groups", snapshot["text"])
+        self.store.mark_room_numbers_shown(record, snapshot["room_ids"])
+
     async def accept(self, record):
-        from .groups import MessageRequest, submit_message
         command = record["command"]
         if record.get("input_mode") == "bootstrap":
             await self.run_bootstrap(record)
@@ -349,6 +325,9 @@ class FeishuController:
                 self.store.update(record, state="monitoring", reason="已恢复已有任务记录，没有重复创建")
                 return
             self.store.update(record, state="needs_attention", reason="上次任务创建结果未确认；不会自动重复创建，请检查本机任务")
+            return
+        if record.get("task_prompt"):
+            await self.dispatch_task(record)
             return
         binding = record["binding"]
         parts = command.split(maxsplit=1)
@@ -370,19 +349,7 @@ class FeishuController:
             return
         if action in {"groups", "群列表"}:
             if binding.get("allow_all_groups"):
-                rooms = list_all_rooms()
-                active_project_id, active_room_id = self.active_target(record)
-                if not rooms:
-                    text = "当前 ModelDesk 中暂无可用项目群。"
-                else:
-                    lines = ["可用项目群列表（★ 为当前默认执行群）："]
-                    for idx, room in enumerate(rooms, 1):
-                        mark = "★ " if room["id"] == active_room_id and room["project_id"] == active_project_id else ""
-                        lines.append(f"{idx}. {mark}{room['project_name']} · {room['title']}")
-                    lines.append("")
-                    lines.append("切换默认群：/modeldesk use 序号或群名")
-                    lines.append("单次指定群：/modeldesk to 序号或群名 任务内容")
-                    text = "\n".join(lines)
+                await self.send_rooms_page(record, prompt)
             else:
                 room_title = binding["room_id"]
                 project_name = "独立项目"
@@ -401,9 +368,9 @@ class FeishuController:
                         project_name = binding["project_id"]
                 text = (
                     f"当前飞书会话仅绑定到以下项目群：\n1. ★ {project_name} · {room_title}\n\n"
-                    "如需在飞书中查看与切换其他项目群，请在 ModelDesk 群聊顶部「飞书」或「Agent 与连接 → 飞书远程」中开启「允许此会话访问与切换全部项目群」。"
+                    "如需切换项目群，请在本机项目群顶部的「飞书机器人」中为此会话开启全部项目群接入。"
                 )
-            await self.reply_once(record, "groups", text)
+                await self.reply_once(record, "groups", text)
             self.store.update(record, state="delivered", reason="群列表已回传")
             return
         if action in {"use", "切换群", "切换项目群"}:
@@ -411,28 +378,25 @@ class FeishuController:
                 await self.reply_once(
                     record,
                     "use",
-                    "当前飞书会话未开启「访问全部项目群」权限。请在 ModelDesk 群聊顶部「飞书」或「Agent 与连接 → 飞书远程」中开启后再切换。",
+                    "当前飞书会话未开启「访问全部项目群」权限。请在本机项目群顶部的「飞书机器人」中开启后再切换。",
                 )
                 self.store.update(record, state="delivered", reason="未开启访问全部项目群权限")
                 return
-            if not prompt:
-                await self.reply_once(record, "use", "请指定要切换的项目群序号或名称，例如：/modeldesk use 1\n可先发送 /modeldesk groups 查看群列表。")
-                self.store.update(record, state="delivered", reason="切换群缺少目标参数")
-                return
-            chosen, error = resolve_room_selector(prompt, list_all_rooms())
+            chosen, error = resolve_room_selector(prompt, list_all_rooms(), self.store.shown_room_numbers(record))
             if not chosen:
                 await self.reply_once(record, "use", error)
                 self.store.update(record, state="delivered", reason="切换群未匹配目标")
                 return
-            self.store.set_chat_route(record["app_id"], record["chat_id"], record["config_revision"], chosen["project_id"], chosen["id"])
+            self.store.set_chat_route(record["app_id"], record["chat_id"], record["config_revision"], record["sender_id"],
+                                      chosen["project_id"], chosen["id"])
             await self.reply_once(
                 record,
                 "use",
-                f"已切换默认项目群为：{chosen['project_name']} · {chosen['title']}\n接下来发送的任务都将交给该群执行。",
+                f"你在此会话的默认项目群已切换为 {chosen['project_name']} · {chosen['title']}\n{chosen['id']}",
             )
             self.store.update(record, state="delivered", reason=f"已切换默认群为 {chosen['title']}")
             return
-        if command in {"status", "状态"}:
+        if action in {"status", "状态"} and not prompt:
             if binding.get("allow_all_groups"):
                 related = [job for job in self.jobs.jobs.values() if self.chat_owns(job, record)]
                 latest = sorted(related, key=lambda job: job.get("created_at", ""))[-5:]
@@ -443,7 +407,7 @@ class FeishuController:
                     room_titles = {}
                 receipts = {row["job_id"]: row for row in self.store.events() if row["state"] not in {"received", "dispatching"}}
                 if not latest:
-                    text = "当前飞书会话暂无任务。"
+                    text = "你在当前飞书会话暂无任务。"
                 else:
                     lines = []
                     for job in latest:
@@ -475,16 +439,20 @@ class FeishuController:
             self.store.update(record, state="delivered", reason="停止指令已处理")
             return
         explicit_target = None
-        if action == "to":
+        room_mention = action == "task" and prompt.startswith("@") and not record.get("leading_user_mention")
+        if action == "to" or room_mention:
             if not binding.get("allow_all_groups"):
                 await self.reply_once(
                     record,
                     "to",
-                    "当前飞书会话未开启「访问全部项目群」权限。请在 ModelDesk 群聊顶部「飞书」或「Agent 与连接 → 飞书远程」中开启后再指定其他项目群。",
+                    "当前飞书会话未开启「访问全部项目群」权限。请在本机项目群顶部的「飞书机器人」中开启后再指定其他项目群。",
                 )
                 self.store.update(record, state="delivered", reason="未开启访问全部项目群权限")
                 return
-            chosen, task_prompt, error = parse_to_command(prompt, list_all_rooms())
+            selector_and_task = prompt[1:] if room_mention else prompt
+            chosen, task_prompt, error = parse_to_command(
+                selector_and_task, list_all_rooms(), self.store.shown_room_numbers(record)
+            )
             if error:
                 await self.reply_once(record, "to", error)
                 self.store.update(record, state="delivered", reason="指定群指令未匹配目标")
@@ -495,7 +463,7 @@ class FeishuController:
         if action not in {"task", "continue"} or not prompt:
             direct_help = ('直接描述需求可开始新任务。回复任务回执，或用“继续：完整任务ID 修改要求”继续该任务。\n'
                            if binding.get('natural_language_tasks') else '')
-            multi_help = ("\n/modeldesk groups（查看全部项目群）\n/modeldesk use 序号或群名（切换默认群）\n/modeldesk to 序号或群名 任务内容（单次指定群）"
+            multi_help = ("\n/modeldesk groups（查看全部项目群）\n/modeldesk use 群ID（切换默认群）\n/modeldesk to 群ID 任务内容（单次指定群）"
                           if binding.get("allow_all_groups") else "")
             await self.reply_once(record, "usage", direct_help + "使用方法：\n/modeldesk task 完整任务（新任务）\n/modeldesk continue 完整任务ID 修改要求\n回复任务回执：/modeldesk continue 修改要求\n/modeldesk status\n/modeldesk cancel 完整任务ID" + multi_help)
             self.store.update(record, state="delivered", reason="已回传指令用法，没有创建任务")
@@ -506,11 +474,6 @@ class FeishuController:
                 raise RuntimeError("job identity conflict")
             self.store.update(record, state="monitoring", reason="已恢复已有任务记录，没有重复创建")
             return
-        if action == "task" and explicit_target is None and binding.get("allow_all_groups") and prompt.startswith("@"):
-            chosen, stripped = match_at_room(prompt, list_all_rooms())
-            if chosen:
-                explicit_target = (chosen["project_id"], chosen["id"])
-                prompt = stripped
         target = None
         if action == "continue":
             try:
@@ -519,8 +482,6 @@ class FeishuController:
                 await self.reply_once(record, "continue_target", f"{error.detail}\n{CONTINUE_USAGE}")
                 self.store.update(record, state="delivered", reason=error.detail)
                 return
-        if sum(job.get("status") not in workbench.TERMINAL for job in self.jobs.jobs.values()) >= 4:
-            return
         if target:
             parent_job = self.jobs.jobs[target]
             target_project_id, target_room_id = parent_job["project_id"], parent_job["group_room_id"]
@@ -528,15 +489,34 @@ class FeishuController:
             target_project_id, target_room_id = explicit_target
         else:
             target_project_id, target_room_id = self.active_target(record)
-        # Commit the deterministic job ID and resolved room target before any awaited
-        # validation or model dispatch. Restart reconciles an existing job, never guesses absence.
+        # Freeze the destination before waiting for capacity or processing a later switch.
         self.store.update(
             record,
-            state="dispatching",
             target_project_id=target_project_id,
             target_room_id=target_room_id,
-            reason="正在创建已授权的后台任务",
+            task_prompt=prompt,
+            parent_job_id=target,
         )
+        await self.dispatch_task(record)
+
+    async def dispatch_task(self, record):
+        from .groups import MessageRequest, store as group_store, submit_message
+
+        if sum(job.get("status") not in workbench.TERMINAL for job in self.jobs.jobs.values()) >= 4:
+            return
+        binding = record["binding"]
+        target = record.get("parent_job_id")
+        target_project_id, target_room_id = record["target_project_id"], record["target_room_id"]
+        if binding.get("allow_all_groups"):
+            try:
+                group_store.get(target_room_id, target_project_id)
+            except HTTPException:
+                text = "选定的项目群已不可用。发送 /modeldesk groups 重新选择项目群。"
+                await self.reply_once(record, "target_unavailable", text)
+                self.store.update(record, state="delivered", reason=text)
+                return
+        # Restart reconciles a job in this state without guessing dispatch success.
+        self.store.update(record, state="dispatching", reason="正在创建已授权的后台任务")
         source = {"platform": "feishu", "app_id": record["app_id"], "chat_id": record["chat_id"],
                   "message_id": record["message_id"], "sender_id": record["sender_id"], "config_revision": record["config_revision"]}
         if target:
@@ -547,7 +527,7 @@ class FeishuController:
             if target:
                 self.checked_continuation_job(record, target)
 
-        await submit_message(target_room_id, MessageRequest(prompt=prompt, context_mode="continue" if target else "fresh",
+        await submit_message(target_room_id, MessageRequest(prompt=record["task_prompt"], context_mode="continue" if target else "fresh",
                              delivery_mode="auto", background_mode=True),
                              target_project_id, native_allowed=binding["allow_native"], job_id=record["job_id"], external_source=source,
                              admission_check=assert_admission)
@@ -665,7 +645,8 @@ class FeishuController:
                 and source.get("chat_id") == record["chat_id"] and source.get("config_revision") == record["config_revision"]):
             return False
         if binding.get("allow_all_groups"):
-            return bool(job.get("group_room_id"))
+            return (source.get("sender_id") == record["sender_id"] and job.get("mode") == "group"
+                    and bool(job.get("group_room_id")) and job.get("conversation_id") == job.get("group_room_id"))
         return FeishuController.belongs(job, record)
 
     def assert_current(self, record):
@@ -808,7 +789,7 @@ class FeishuController:
                 live["enabled"]
                 and live["app_id"] == app_id
                 and live["revision"] == expected_revision
-                and binding_snapshot in live["bindings"]
+                and binding_is_current(binding_snapshot, live["bindings"])
             )
 
         room_titles = {}
@@ -828,7 +809,10 @@ class FeishuController:
                         or job.get("project_id") != binding["project_id"]
                         or job.get("group_room_id") != binding["room_id"]):
                     continue
-                if (job.get("external_source") or {}).get("chat_id") == binding["chat_id"]:
+                # Chat requests deliver to their origin. Room subscriptions cover
+                # desktop and scheduled work only, even if several chats share a room.
+                source = job.get("external_source")
+                if source and source.get("platform") != "routine":
                     continue
                 if (job.get("created_at") or "") < cutoff:
                     continue
@@ -930,6 +914,46 @@ store = FeishuStore()
 controller = FeishuController(store, workbench.manager)
 
 
+def room_summary(room_id, project_id):
+    result = {"room_id": room_id, "project_id": project_id, "mode": "none", "status": "disconnected",
+              "destination": None, "switch_command": None, "bot_url": None}
+    try:
+        config = store.config(readonly=True)
+    except (HTTPException, OSError):
+        return result
+    if not config["app_id"] or not config["app_secret"]:
+        result["status"] = "not_configured"
+    elif not config["enabled"]:
+        result["status"] = "disabled"
+    else:
+        result["status"] = {"connected": "connected", "connecting": "connecting", "reconnecting": "connecting"}.get(
+            controller.status.get("state"), "disconnected"
+        )
+
+    applicable = [binding for binding in config["bindings"]
+                  if binding.get("allow_all_groups") or (binding["room_id"], binding.get("project_id")) == (room_id, project_id)]
+    if not applicable:
+        return result
+    try:
+        types = store.observed_chat_types(config["app_id"], [binding["chat_id"] for binding in applicable])
+    except (OSError, sqlite3.Error, ValueError, TypeError, AttributeError):
+        types = {}
+    # Keep the command and destination on the same route. Prefer a known chat
+    # the user can open with an AppLink, then a known group or unclassified chat.
+    binding = min(applicable, key=lambda item: (
+        {"p2p": 0, "group": 1}.get(types.get(item["chat_id"]), 2), bool(item.get("allow_all_groups")),
+    ))
+    all_groups = binding.get("allow_all_groups")
+    destination = {"p2p": "private", "group": "group"}.get(types.get(binding["chat_id"]), "unknown")
+    result.update(mode="all_groups" if all_groups else "direct", destination=destination)
+    if result["status"] == "connected":
+        if all_groups:
+            result["switch_command"] = f"/modeldesk use {room_id}"
+        if destination == "private":
+            result["bot_url"] = "https://applink.feishu.cn/client/bot/open?" + urlencode({"appId": config["app_id"]})
+    return result
+
+
 def local_admin(request: Request):
     from .remote_access import require_local
     require_local(request)
@@ -1009,6 +1033,11 @@ class RoomBindingInput(BaseModel):
         return values
 
 
+class AllowAllRoomGroupsInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    project_id: uuid.UUID | None = None
+
+
 def rooms_payload():
     public = controller.public()
     try:
@@ -1026,6 +1055,15 @@ def rooms_payload():
 @router.get("/rooms")
 async def get_rooms():
     return rooms_payload()
+
+
+@router.put("/rooms/{room_id}/binding/{chat_id}/allow-all-groups")
+async def allow_all_room_groups(room_id: uuid.UUID, chat_id: str, body: AllowAllRoomGroupsInput):
+    if not re.fullmatch(r"oc_[A-Za-z0-9_-]{1,180}", chat_id):
+        raise HTTPException(422, "飞书会话 ID 格式无效")
+    async with controller.config_lock:
+        store.allow_all_room_groups(str(room_id), chat_id, str(body.project_id) if body.project_id else None)
+    return {"allow_all_groups": True}
 
 
 @router.put("/rooms/{room_id}/binding")

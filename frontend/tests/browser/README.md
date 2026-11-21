@@ -23,6 +23,7 @@ PLAYWRIGHT_MODULE="$(.venv/bin/python -c 'from pathlib import Path; import playw
 node frontend/tests/browser/check-navigation.mjs
 node frontend/tests/browser/check-platform-catalogs.mjs
 node frontend/tests/browser/check-model-picker-refresh.mjs
+node frontend/tests/browser/check-room-feishu.mjs
 node frontend/tests/browser/check-conversation-actions.mjs
 node frontend/tests/browser/check-group-dispatch.mjs
 node frontend/tests/browser/check-group-routines.mjs

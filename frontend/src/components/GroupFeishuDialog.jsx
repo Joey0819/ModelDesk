@@ -3,12 +3,10 @@ import { REMOTE_CLIENT } from '../api-base';
 import { feishuApi } from '../feishu-api';
 import {
   feishuBinding,
-  feishuConnectionStatus,
   feishuSenderIds,
   roomFeishuSummary,
   safeFeishuError,
 } from '../feishu-state';
-import { machineInfo } from '../machine';
 import { CopyTextButton } from './ConversationActions';
 import { Icon } from './WorkbenchResults';
 import './GroupFeishuDialog.css';
@@ -23,6 +21,91 @@ const RECEIPT_STATES = {
   rejected: '指令已拒绝',
 };
 
+const CONNECTION_LABELS = {
+  connected: '长连接在线',
+  connecting: '正在连接',
+  disconnected: '长连接离线',
+  disabled: '连接已停用',
+  not_configured: '未配置机器人',
+};
+
+export function GroupFeishuAccess({ access, error, remote = REMOTE_CLIENT, onRetry, onConfigure, onManage }) {
+  if (error) return <section className="group-feishu-callout">
+    <p role="alert">{error}</p>
+    <div className="group-feishu-callout-actions"><button type="button" className="subtle-button" onClick={onRetry}>重试</button></div>
+  </section>;
+  if (!access) return <p className="group-feishu-loading" role="status">正在读取飞书机器人连接状态…</p>;
+
+  if (access.status === 'not_configured' || access.mode === 'none') {
+    const configured = access.status !== 'not_configured';
+    return <section className="group-feishu-callout">
+      <h3>{configured ? '本群尚未接入飞书会话' : '先配置飞书机器人'}</h3>
+      <p>{configured
+        ? '可绑定一个飞书会话到本群，或让已有会话访问全部 ModelDesk 项目群。'
+        : '在运行 ModelDesk 的电脑上配置一次机器人凭据，即可将它用于多个项目群。'}</p>
+      {!remote && <div className="group-feishu-callout-actions">
+        <button type="button" className="primary-button" onClick={configured ? onManage : onConfigure}>{configured ? '绑定或复用飞书会话' : '配置飞书机器人'}</button>
+      </div>}
+      {remote && configured && <p>请在运行 ModelDesk 的电脑上打开本群的「飞书机器人」完成接入。</p>}
+    </section>;
+  }
+
+  const shared = access.mode === 'all_groups';
+  const heading = shared ? '本群已接入飞书' : '本群已绑定飞书会话';
+  if (access.status !== 'connected') return <section className="group-feishu-callout">
+    <h3>{heading}</h3>
+    <p>长连接在线后即可收发任务。</p>
+    <div className="group-feishu-callout-actions"><button type="button" className="subtle-button" onClick={onRetry}>刷新连接状态</button></div>
+  </section>;
+
+  const switchCommand = access.switch_command;
+  const taskCommand = shared ? `/modeldesk to ${access.room_id} ` : '/modeldesk task ';
+  return <section className="group-feishu-callout">
+    <h3>{heading}</h3>
+    <p>{access.destination === 'private' && access.bot_url
+      ? '打开机器人私聊，将指令粘贴到该会话。'
+      : access.destination === 'group'
+        ? '打开已接入的飞书群，@ 机器人后粘贴指令。'
+        : '打开已接入的飞书会话并粘贴指令。在飞书群内请先 @ 机器人。'}</p>
+    {access.destination === 'private' && access.bot_url && <div className="group-feishu-callout-actions">
+      <a className="subtle-button group-feishu-bot-link" href={access.bot_url} target="_blank" rel="noreferrer">打开飞书机器人</a>
+    </div>}
+    <div className="group-feishu-cmd-list">
+      {switchCommand && <div className="group-feishu-cmd-row">
+        <code>{switchCommand}</code><CopyTextButton text={switchCommand} label="复制切换指令" />
+      </div>}
+      <div className="group-feishu-cmd-row">
+        <code>{taskCommand}任务内容</code><CopyTextButton text={taskCommand} label="复制任务指令" />
+      </div>
+    </div>
+    <p>{shared ? '用任务指令可单次指定本群。将指令粘贴到飞书后，在末尾填写实际任务。' : '将任务指令粘贴到飞书后，在末尾填写实际任务。'}</p>
+  </section>;
+}
+
+export function FeishuReuseChoices({ bindings, busy, onEnable }) {
+  const inputId = useId();
+  const [chatId, setChatId] = useState('');
+  const selected = bindings.length === 1 ? bindings[0] : bindings.find((binding) => binding.chat_id === chatId);
+  return <section className="group-feishu-shortcut-card">
+    <div className="group-feishu-shortcut-text">
+      <strong>复用已有飞书会话</strong>
+      <p>允许已有会话中的授权成员访问并切换到全部 ModelDesk 项目群。</p>
+      {bindings.length === 1 ? <p>飞书会话 · {selected.name || selected.chat_id}</p> : (
+        <div className="group-feishu-field">
+          <label htmlFor={inputId}>选择要复用的飞书会话</label>
+          <select id={inputId} value={selected?.chat_id || ''} onChange={(event) => setChatId(event.target.value)} disabled={busy}>
+            <option value="">请选择会话</option>
+            {bindings.map((binding) => <option key={binding.chat_id} value={binding.chat_id}>
+              {binding.name ? `${binding.name} · ${binding.chat_id}` : binding.chat_id}
+            </option>)}
+          </select>
+        </div>
+      )}
+    </div>
+    <button type="button" className="primary-button" disabled={busy || !selected} onClick={() => onEnable(selected)}>开启全部项目群接入</button>
+  </section>;
+}
+
 function receiptTimeLabel(value) {
   const date = new Date(value);
   return Number.isNaN(date.getTime())
@@ -33,9 +116,9 @@ function receiptTimeLabel(value) {
 export default function GroupFeishuDialog({
   room,
   projectId,
-  status,
-  feishuData,
-  onUpdated,
+  access,
+  accessError,
+  onRetry,
   onOpenFeishuSettings,
   onClose,
 }) {
@@ -44,15 +127,14 @@ export default function GroupFeishuDialog({
   const busyRef = useRef(false);
   const closedRef = useRef(false);
   const onCloseRef = useRef(onClose);
-  const onUpdatedRef = useRef(onUpdated);
 
   const datalistId = useId();
   const chatIdInputId = useId();
   const nameInputId = useId();
   const senderInputId = useId();
 
-  const [localData, setLocalData] = useState(null);
-  const [loading, setLoading] = useState(!feishuData && !REMOTE_CLIENT);
+  const [adminOpen, setAdminOpen] = useState(false);
+  const [effectiveData, setLocalData] = useState(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
@@ -71,13 +153,8 @@ export default function GroupFeishuDialog({
   const [enableConnection, setEnableConnection] = useState(true);
 
   useEffect(() => {
-    busyRef.current = busy;
-  }, [busy]);
-
-  useEffect(() => {
     onCloseRef.current = onClose;
-    onUpdatedRef.current = onUpdated;
-  }, [onClose, onUpdated]);
+  }, [onClose]);
 
   useEffect(() => {
     aliveRef.current = true;
@@ -129,25 +206,6 @@ export default function GroupFeishuDialog({
     };
   }, []);
 
-  useEffect(() => {
-    if (REMOTE_CLIENT) return undefined;
-    let disposed = false;
-    feishuApi.rooms().then((result) => {
-      if (disposed || !aliveRef.current) return;
-      setLocalData(result);
-      onUpdatedRef.current?.(result);
-      setError('');
-    }).catch((failure) => {
-      if (disposed || !aliveRef.current) return;
-      setError(safeFeishuError(failure));
-    }).finally(() => {
-      if (!disposed && aliveRef.current) setLoading(false);
-    });
-    return () => { disposed = true; };
-  }, []);
-
-  const effectiveData = localData ?? feishuData;
-  const machine = machineInfo(status);
   const pid = projectId || null;
   const roomId = room?.id || '';
   const roomTitle = room?.title || '当前项目群';
@@ -156,7 +214,6 @@ export default function GroupFeishuDialog({
     [effectiveData, pid, roomId],
   );
   const config = effectiveData?.config && typeof effectiveData.config === 'object' ? effectiveData.config : null;
-  const feishuStatus = effectiveData?.status && typeof effectiveData.status === 'object' ? effectiveData.status : null;
   const roomsCatalog = useMemo(
     () => (Array.isArray(effectiveData?.rooms) ? effectiveData.rooms : []),
     [effectiveData],
@@ -165,16 +222,9 @@ export default function GroupFeishuDialog({
     () => (Array.isArray(config?.bindings) ? config.bindings.map(feishuBinding) : []),
     [config],
   );
-  const connectionLabel = loading && !effectiveData
-    ? '正在读取状态'
-    : feishuConnectionStatus(feishuStatus, config);
-  const botLink = config?.app_id
-    ? `https://applink.feishu.cn/client/bot/open?appId=${encodeURIComponent(config.app_id)}`
-    : '';
-
   const reusableBindings = useMemo(
-    () => allBindings.filter((item) => !item.allow_all_groups && item.chat_id && item.room_id),
-    [allBindings],
+    () => allBindings.filter((item) => !item.allow_all_groups && item.chat_id && roomsCatalog.some((entry) => entry.id === item.room_id && (entry.project_id || null) === item.project_id)),
+    [allBindings, roomsCatalog],
   );
 
   const quickPickChats = useMemo(() => {
@@ -280,33 +330,42 @@ export default function GroupFeishuDialog({
 
   const applyServerUpdate = (nextData, message) => {
     setLocalData(nextData);
-    onUpdatedRef.current?.(nextData);
-    if (typeof window !== 'undefined') {
-      window.dispatchEvent(new Event('modeldesk-feishu-changed'));
-    }
+    window.dispatchEvent(new Event('modeldesk-feishu-changed'));
     if (message) setNotice(message);
   };
 
   const runAction = async (action) => {
-    if (busy) return;
+    if (busyRef.current) return;
+    busyRef.current = true;
     setBusy(true);
     setError('');
     setNotice('');
     try {
       await action();
     } catch (failure) {
-      if (aliveRef.current) setError(safeFeishuError(failure));
-      if (failure?.status === 409) {
-        feishuApi.rooms().then((fresh) => {
-          if (aliveRef.current) {
-            setLocalData(fresh);
-            onUpdatedRef.current?.(fresh);
-          }
-        }).catch(() => {});
+      if (aliveRef.current) {
+        setError(safeFeishuError(failure));
+        if (failure?.status === 409 || failure?.status === 404) {
+          setLocalData(null);
+          onRetry?.();
+          try {
+            const fresh = await feishuApi.rooms();
+            if (aliveRef.current) setLocalData(fresh);
+          } catch { /* The user can retry reading the local settings. */ }
+        }
       }
     } finally {
+      busyRef.current = false;
       if (aliveRef.current) setBusy(false);
     }
+  };
+
+  const openAdmin = () => {
+    setAdminOpen(true);
+    if (!effectiveData) runAction(async () => {
+      const data = await feishuApi.rooms();
+      if (aliveRef.current) setLocalData(data);
+    });
   };
 
   const discoverChats = () => runAction(async () => {
@@ -321,20 +380,10 @@ export default function GroupFeishuDialog({
   });
 
   const enableExistingForAllGroups = (targetBinding) => runAction(async () => {
-    const nextData = await feishuApi.saveRoomBinding(targetBinding.room_id, {
-      chat_id: targetBinding.chat_id,
-      name: targetBinding.name || '',
-      project_id: targetBinding.project_id || null,
-      allowed_sender_ids: targetBinding.allowed_sender_ids || [],
-      allow_native: targetBinding.allow_native === true,
-      natural_language_tasks: targetBinding.natural_language_tasks === true,
-      allow_all_groups: true,
-      push_group_results: targetBinding.push_group_results === true,
-      replace_existing: true,
-      enable_connection: !config?.enabled,
-    });
+    await feishuApi.enableAllGroups(targetBinding.room_id, targetBinding.chat_id, targetBinding.project_id);
     if (!aliveRef.current) return;
-    applyServerUpdate(nextData, `已开启全群接入！现在可在飞书发送 /modeldesk use ${roomTitle} 切换到本群。`);
+    setAdminOpen(false);
+    applyServerUpdate(null, '已开启全群接入。现在可以复制指令，指定当前项目群。');
   });
 
   const removeBinding = (targetChatId) => runAction(async () => {
@@ -373,11 +422,7 @@ export default function GroupFeishuDialog({
     });
   };
 
-  const statusTone = summary.online
-    ? 'online'
-    : summary.configured
-      ? 'idle'
-      : 'unconfigured';
+  const statusTone = access?.status === 'connected' ? 'online' : access && access.status !== 'not_configured' ? 'idle' : 'unconfigured';
 
   return (
     <dialog
@@ -389,20 +434,20 @@ export default function GroupFeishuDialog({
       <div className="group-feishu-frame">
         <header className="group-feishu-header">
           <div className="group-feishu-title-group">
-            <span className={`group-feishu-icon ${summary.connected ? 'connected' : ''}`} aria-hidden="true">
+            <span className={`group-feishu-icon ${access?.status === 'connected' && access.mode !== 'none' ? 'connected' : ''}`} aria-hidden="true">
               <Icon name="phone" size={19} />
             </span>
             <div className="group-feishu-heading-text">
               <h2 id="group-feishu-heading">飞书机器人连接</h2>
-              <p title={`${roomTitle} · 让当前项目群接入飞书收发任务与成果`}>
-                {roomTitle} · 让当前项目群接入飞书收发任务与成果
+              <p title={roomTitle}>
+                {roomTitle}
               </p>
             </div>
           </div>
           <div className="group-feishu-header-right">
             <span className={`group-feishu-pill ${statusTone}`}>
               <span className="group-feishu-pill-dot" aria-hidden="true" />
-              {connectionLabel}
+              {accessError ? '状态读取失败' : access ? CONNECTION_LABELS[access.status] : '正在读取状态'}
             </span>
             <button
               type="button"
@@ -420,164 +465,56 @@ export default function GroupFeishuDialog({
           {error && <div className="group-feishu-error" role="alert">{error}</div>}
           {notice && <p className="group-feishu-notice" role="status">{notice}</p>}
 
-          {REMOTE_CLIENT ? (
-            <section className="group-feishu-callout">
-              <h3>请在{machine.short}管理飞书连接</h3>
-              <p>
-                飞书机器人的 App Secret 与项目群绑定仅保存在{machine.label}。请在{machine.short}的「项目群聊 → 飞书」或「Agent 与连接 → 飞书远程」中完成配置，随后即可随时从手机飞书向本群派发任务并接收成果回传。
-              </p>
-            </section>
-          ) : loading && !effectiveData ? (
-            <p className="group-feishu-loading" role="status">
-              <span className="small-spinner" aria-hidden="true" />
-              正在读取飞书机器人连接状态…
-            </p>
-          ) : !summary.configured ? (
-            <section className="group-feishu-callout">
-              <h3>只需配置一次飞书机器人凭据，即可接入全部项目群</h3>
-              <p>
-                在「Agent 与连接 → 飞书远程」填写一次飞书企业自建应用的 App ID 与 App Secret 后，ModelDesk 中的每一个项目群都可以直接收发飞书任务、同步群聊成果，无需重复创建机器人。
-              </p>
-              <div className="group-feishu-callout-actions">
-                <button type="button" className="primary-button" onClick={openGlobalSettings}>
-                  前往配置飞书机器人凭据
-                </button>
-              </div>
-            </section>
-          ) : (
+          <GroupFeishuAccess access={access} error={accessError} onRetry={onRetry} onConfigure={openGlobalSettings} onManage={openAdmin} />
+          {!REMOTE_CLIENT && access && access.status !== 'not_configured' && <div className="group-feishu-bot-actions">
+            {access.mode !== 'none' && <button type="button" className="subtle-button" aria-expanded={adminOpen} onClick={adminOpen ? () => setAdminOpen(false) : openAdmin}>{adminOpen ? '收起会话绑定' : '管理飞书会话绑定'}</button>}
+            <button type="button" className="subtle-button" onClick={openGlobalSettings}>飞书连接设置</button>
+          </div>}
+          {!REMOTE_CLIENT && adminOpen && !accessError && (effectiveData ? (
             <>
-              <div className="group-feishu-bot-bar">
-                <div className="group-feishu-bot-summary">
-                  <span className={`group-feishu-status-chip ${summary.connected ? 'connected' : summary.bound ? 'bound' : 'unbound'}`}>
-                    {summary.statusLabel}
-                  </span>
-                  <div className="group-feishu-bot-meta">
-                    <strong>应用 {config.app_id}</strong>
-                    <span>
-                      {summary.connected
-                        ? '本群已可接收手机飞书任务并回传成果。'
-                        : summary.bound
-                          ? '本群已绑定飞书会话，启用并保持长连接在线即可收发。'
-                          : '机器人凭据已就绪，将飞书会话绑定到此群或开启全群接入即可使用。'}
-                    </span>
-                  </div>
+              {summary.directBindings.length > 0 && <section className="group-feishu-section">
+                <h3>本群专属绑定</h3>
+                <div className="group-feishu-binding-list">
+                  {summary.directBindings.map((binding) => (
+                    <article className="group-feishu-binding-card" key={binding.chat_id}>
+                      <div className="group-feishu-binding-top">
+                        <div className="group-feishu-binding-info">
+                          <strong>{binding.name || '已绑定的飞书会话'}</strong>
+                          <code>{binding.chat_id}</code>
+                        </div>
+                        <div className="group-feishu-binding-actions">
+                          <button
+                            type="button"
+                            className="subtle-button"
+                            aria-label={`编辑 ${binding.name || binding.chat_id}`}
+                            disabled={busy}
+                            onClick={() => loadBindingForEdit(binding)}
+                          >
+                            编辑
+                          </button>
+                          <button
+                            type="button"
+                            className="subtle-button group-feishu-danger-btn"
+                            aria-label={`解除绑定 ${binding.name || binding.chat_id}`}
+                            disabled={busy}
+                            onClick={() => removeBinding(binding.chat_id)}
+                          >
+                            解除绑定
+                          </button>
+                        </div>
+                      </div>
+                      <div className="group-feishu-badges">
+                        <span className="group-feishu-badge primary">专属绑定</span>
+                        {binding.natural_language_tasks && <span className="group-feishu-badge">自然语言派发</span>}
+                        {binding.allow_all_groups && <span className="group-feishu-badge accent">全群可切换</span>}
+                        {binding.push_group_results && <span className="group-feishu-badge jade">自动推送成果</span>}
+                        {binding.allow_native && <span className="group-feishu-badge warn">原生 Agent</span>}
+                      </div>
+                    </article>
+                  ))}
                 </div>
-                <div className="group-feishu-bot-actions">
-                  {botLink && (
-                    <a
-                      className="subtle-button group-feishu-bot-link"
-                      href={botLink}
-                      target="_blank"
-                      rel="noreferrer"
-                    >
-                      打开飞书机器人 ↗
-                    </a>
-                  )}
-                  <button type="button" className="subtle-button" onClick={openGlobalSettings}>
-                    管理全局凭据
-                  </button>
-                </div>
-              </div>
-
-              <section className="group-feishu-section">
-                <h3>当前群接入状态</h3>
-
-                {summary.directBindings.length > 0 && (
-                  <div className="group-feishu-binding-list">
-                    {summary.directBindings.map((binding) => (
-                      <article className="group-feishu-binding-card" key={binding.chat_id}>
-                        <div className="group-feishu-binding-top">
-                          <div className="group-feishu-binding-info">
-                            <strong>{binding.name || '已绑定的飞书会话'}</strong>
-                            <code>{binding.chat_id}</code>
-                          </div>
-                          <div className="group-feishu-binding-actions">
-                            <button
-                              type="button"
-                              className="subtle-button"
-                              aria-label={`编辑 ${binding.name || binding.chat_id}`}
-                              disabled={busy}
-                              onClick={() => loadBindingForEdit(binding)}
-                            >
-                              编辑
-                            </button>
-                            <button
-                              type="button"
-                              className="subtle-button group-feishu-danger-btn"
-                              aria-label={`解除绑定 ${binding.name || binding.chat_id}`}
-                              disabled={busy}
-                              onClick={() => removeBinding(binding.chat_id)}
-                            >
-                              解除绑定
-                            </button>
-                          </div>
-                        </div>
-                        <div className="group-feishu-badges">
-                          <span className="group-feishu-badge primary">专属绑定</span>
-                          {binding.natural_language_tasks && <span className="group-feishu-badge">自然语言派发</span>}
-                          {binding.allow_all_groups && <span className="group-feishu-badge accent">全群可切换</span>}
-                          {binding.push_group_results && <span className="group-feishu-badge jade">自动推送成果</span>}
-                          {binding.allow_native && <span className="group-feishu-badge warn">原生 Agent</span>}
-                        </div>
-                      </article>
-                    ))}
-                  </div>
-                )}
-
-                {summary.allGroupsBindings.length > 0 && (
-                  <div className="group-feishu-binding-list">
-                    {summary.allGroupsBindings.map((binding) => (
-                      <article className="group-feishu-binding-card all-groups" key={binding.chat_id}>
-                        <div className="group-feishu-binding-top">
-                          <div className="group-feishu-binding-info">
-                            <strong>{binding.name || '共享飞书会话'}</strong>
-                            <code>{binding.chat_id}</code>
-                          </div>
-                          <span className="group-feishu-badge jade">全群机器人已接入</span>
-                        </div>
-                        <p className="group-feishu-hint">
-                          该会话已开启全群切换，复制下方指令到飞书即可切换到本群或直接派发任务：
-                        </p>
-                        <div className="group-feishu-cmd-list">
-                          <div className="group-feishu-cmd-row">
-                            <code>{`/modeldesk use ${roomTitle}`}</code>
-                            <CopyTextButton text={`/modeldesk use ${roomTitle}`} label="复制切换指令" />
-                          </div>
-                          <div className="group-feishu-cmd-row">
-                            <code>{`/modeldesk to ${roomTitle} 帮我整理本轮任务`}</code>
-                            <CopyTextButton text={`/modeldesk to ${roomTitle} 帮我整理本轮任务`} label="复制派发指令" />
-                          </div>
-                        </div>
-                      </article>
-                    ))}
-                  </div>
-                )}
-
-                {!summary.bound && reusableBindings.length > 0 && (
-                  <div className="group-feishu-shortcut-card">
-                    <div className="group-feishu-shortcut-text">
-                      <strong>一键复用已有飞书机器人</strong>
-                      <p>
-                        检测到已有飞书绑定（<code>{reusableBindings[0].name || reusableBindings[0].chat_id}</code>）。点击下方按钮为该会话开启「全部项目群接入」，本群和所有其他 ModelDesk 项目群将立即可用，且保留原有绑定不变。
-                      </p>
-                    </div>
-                    <button
-                      type="button"
-                      className="primary-button"
-                      disabled={busy}
-                      onClick={() => enableExistingForAllGroups(reusableBindings[0])}
-                    >
-                      {busy ? '正在启用…' : '让已有飞书机器人接入全部项目群'}
-                    </button>
-                  </div>
-                )}
-
-                {!summary.bound && reusableBindings.length === 0 && (
-                  <p className="group-feishu-hint">
-                    当前群尚未接入飞书会话。可在下方读取飞书会话或粘贴 Chat ID 完成绑定。
-                  </p>
-                )}
-              </section>
+              </section>}
+              {access?.mode === 'none' && reusableBindings.length > 0 && <FeishuReuseChoices bindings={reusableBindings} busy={busy} onEnable={enableExistingForAllGroups} />}
 
               <form className="group-feishu-form" autoComplete="off" onSubmit={submitBinding}>
                 <div className="group-feishu-form-header">
@@ -738,7 +675,7 @@ export default function GroupFeishuDialog({
                           checked={allowNative}
                           onChange={(event) => setAllowNative(event.target.checked)}
                         />
-                        <span>允许此会话触发{machine.short}原生 Agent（如 Muse）</span>
+                        <span>允许此会话触发主机上的原生 Agent（如 Muse）</span>
                       </label>
                     </div>
                   </details>
@@ -767,7 +704,7 @@ export default function GroupFeishuDialog({
               </form>
 
               <details className="group-feishu-receipts">
-                <summary>本群相关飞书指令回执（{roomReceipts.length}）</summary>
+                <summary>关联飞书会话的近期回执（{roomReceipts.length}）</summary>
                 {roomReceipts.length === 0 ? (
                   <p className="group-feishu-hint">
                     暂无与本群绑定的飞书指令回执。绑定并在线后，从飞书发送任务会在此记录实际收发状态。
@@ -795,7 +732,9 @@ export default function GroupFeishuDialog({
                 )}
               </details>
             </>
-          )}
+          ) : busy ? <p className="group-feishu-loading" role="status">正在读取飞书会话绑定…</p> : (
+            <button type="button" className="subtle-button" onClick={openAdmin}>重试读取飞书会话绑定</button>
+          ))}
         </div>
       </div>
     </dialog>

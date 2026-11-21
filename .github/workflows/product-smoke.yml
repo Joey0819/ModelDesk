@@ -108,6 +108,7 @@ jobs:
             backend.test_routines \
             backend.test_routine_store \
             backend.test_feishu \
+            backend.test_feishu_room_summary \
             backend.test_feishu_bootstrap \
             backend.test_antigravity_agent \
             backend.test_antigravity_catalog \
@@ -134,6 +135,7 @@ jobs:
           node frontend/tests/browser/check-model-picker-refresh.mjs
           node frontend/tests/browser/check-conversation-actions.mjs
           node frontend/tests/browser/check-group-dispatch.mjs
+          node frontend/tests/browser/check-room-feishu.mjs
           node frontend/tests/browser/check-group-routines.mjs
           node frontend/tests/browser/check-group-routine-loops.mjs
           node frontend/tests/browser/check-muse-panel-dispatch.mjs

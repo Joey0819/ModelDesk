@@ -194,13 +194,17 @@ def gateway_running():
         return False
 
 
-def require_local(request: Request):
+def is_local_api_request(request: Request):
     try:
         is_local = ipaddress.ip_address(request.client.host).is_loopback
     except (ValueError, AttributeError):
         is_local = False
+    return is_local and request.url.hostname in {"localhost", "127.0.0.1", "::1"}
+
+
+def require_local(request: Request):
     # Host and Origin are both checked: a web page cannot configure via DNS rebinding.
-    if not is_local or request.url.hostname not in {"localhost", "127.0.0.1", "::1"}:
+    if not is_local_api_request(request):
         raise HTTPException(403, f"手机配对和设备管理只能在{machine_label()}操作")
     if request.headers.get("sec-fetch-site") == "cross-site":
         raise HTTPException(403, "不接受跨站配置请求")

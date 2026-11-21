@@ -9,7 +9,7 @@ import sqlite3
 import tempfile
 import threading
 import uuid
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from datetime import datetime, timedelta, timezone
 
 from fastapi import HTTPException
@@ -44,6 +44,15 @@ class Binding(BaseModel):
 
 OWNER_PATTERN = re.compile(r"^ou_[A-Za-z0-9_-]{1,180}$")
 SETUP_COMMAND = re.compile(r"^[/／]modeldesk\s+(setup|confirm)\b", re.IGNORECASE)
+
+
+def binding_is_current(snapshot, bindings):
+    # The local allow-all grant can widen the live binding without invalidating
+    # a pending event that retains the original, narrower authorization.
+    return snapshot in bindings or (
+        isinstance(snapshot, dict) and not snapshot.get("allow_all_groups")
+        and {**snapshot, "allow_all_groups": True} in bindings
+    )
 
 
 def parse_setup_command(command):
@@ -105,16 +114,21 @@ class FeishuStore:
         self.directory.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.directory.chmod(0o700)
 
-    def config(self):
+    def config(self, *, readonly=False):
         with self.lock:
-            self.prepare()
+            if readonly:
+                if self.directory.is_symlink():
+                    raise HTTPException(409, "飞书配置路径无效")
+            else:
+                self.prepare()
             path = self.directory / "config.json"
             if path.is_symlink():
                 raise HTTPException(409, "飞书配置路径无效")
             if not path.exists():
                 return {"enabled": False, "app_id": "", "app_secret": "", "bindings": [], "revision": "", "updated_at": None}
             try:
-                path.chmod(0o600)
+                if not readonly:
+                    path.chmod(0o600)
                 value = json.loads(path.read_text())
                 if not isinstance(value, dict) or not {"enabled", "app_id", "app_secret", "bindings", "revision", "updated_at"} <= value.keys():
                     raise ValueError()
@@ -147,17 +161,20 @@ class FeishuStore:
             if all(previous.get(key) == value for key, value in {**data, "app_secret": secret}.items()):
                 return self.public_config()
             data.update(app_secret=secret, revision=str(uuid.uuid4()), updated_at=now())
-            descriptor, temporary = tempfile.mkstemp(prefix=".config-", dir=self.directory)
-            try:
-                with os.fdopen(descriptor, "w") as output:
-                    json.dump(data, output, ensure_ascii=False)
-                    output.flush()
-                    os.fsync(output.fileno())
-                os.replace(temporary, self.directory / "config.json")
-            finally:
-                if os.path.exists(temporary):
-                    os.unlink(temporary)
+            self._write_config(data)
             return self.public_config()
+
+    def _write_config(self, data):
+        descriptor, temporary = tempfile.mkstemp(prefix=".config-", dir=self.directory)
+        try:
+            with os.fdopen(descriptor, "w") as output:
+                json.dump(data, output, ensure_ascii=False)
+                output.flush()
+                os.fsync(output.fileno())
+            os.replace(temporary, self.directory / "config.json")
+        finally:
+            if os.path.exists(temporary):
+                os.unlink(temporary)
 
     def save_binding(self, config, binding):
         """Append/update one binding without touching credentials or owners.
@@ -247,6 +264,23 @@ class FeishuStore:
             self.clear_chat_route(current["app_id"], chat_id)
             return result
 
+    def allow_all_room_groups(self, room_id, chat_id, project_id):
+        with self.lock:
+            config = self.config()
+            binding = next((item for item in config["bindings"] if item["chat_id"] == chat_id), None)
+            if not binding or (binding["room_id"], binding.get("project_id")) != (room_id, project_id):
+                raise HTTPException(409, "该飞书会话的绑定已变更，请刷新后重试")
+            from .groups import store as rooms
+            from .projects import store as projects
+            rooms.get(room_id, project_id)
+            if project_id:
+                projects.get(project_id)
+            if not binding.get("allow_all_groups"):
+                binding["allow_all_groups"] = True
+                # Preserve the existing authorization epoch and outbound cutoff.
+                # This edit grants new events access without revoking prior events.
+                self._write_config(config)
+
     def remove_room_binding(self, room_id, chat_id, project_id=None):
         """Atomically remove one room's Feishu chat binding without touching credentials or owners."""
         with self.lock:
@@ -291,14 +325,25 @@ class FeishuStore:
                 code TEXT NOT NULL, payload TEXT NOT NULL, created_at TEXT NOT NULL, expires_at TEXT NOT NULL, used_at TEXT);
             CREATE INDEX IF NOT EXISTS plans_chat ON plans(app_id, chat_id);
             CREATE INDEX IF NOT EXISTS plans_rate ON plans(app_id, chat_id, created_at);
-            CREATE TABLE IF NOT EXISTS chat_routes (
-                id TEXT PRIMARY KEY,
+            CREATE TABLE IF NOT EXISTS sender_routes (
                 app_id TEXT NOT NULL,
                 chat_id TEXT NOT NULL,
+                sender_id TEXT NOT NULL,
                 config_revision TEXT NOT NULL,
                 project_id TEXT,
                 room_id TEXT NOT NULL,
-                updated_at TEXT NOT NULL
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (app_id, chat_id, sender_id)
+            );
+            CREATE TABLE IF NOT EXISTS sender_room_numbers (
+                app_id TEXT NOT NULL,
+                chat_id TEXT NOT NULL,
+                sender_id TEXT NOT NULL,
+                room_id TEXT NOT NULL,
+                number INTEGER NOT NULL,
+                shown_revision TEXT,
+                PRIMARY KEY (app_id, chat_id, sender_id, room_id),
+                UNIQUE (app_id, chat_id, sender_id, number)
             );
         """)
         try:
@@ -307,24 +352,24 @@ class FeishuStore:
         finally:
             db.close()
 
-    def get_chat_route(self, app_id, chat_id, config_revision):
+    def get_chat_route(self, app_id, chat_id, config_revision, sender_id):
         with self.db() as db:
             row = db.execute(
-                "SELECT project_id, room_id, updated_at FROM chat_routes WHERE id=? AND app_id=? AND chat_id=? AND config_revision=?",
-                (f"{app_id}:{chat_id}", app_id, chat_id, config_revision),
+                "SELECT project_id, room_id, updated_at FROM sender_routes WHERE app_id=? AND chat_id=? AND config_revision=? AND sender_id=?",
+                (app_id, chat_id, config_revision, sender_id),
             ).fetchone()
             if not row:
                 return None
             return {"project_id": row["project_id"], "room_id": row["room_id"], "updated_at": row["updated_at"]}
 
-    def set_chat_route(self, app_id, chat_id, config_revision, project_id, room_id):
+    def set_chat_route(self, app_id, chat_id, config_revision, sender_id, project_id, room_id):
         stamp = now()
         project_str = str(project_id) if project_id else None
         room_str = str(room_id)
         with self.db() as db:
             db.execute(
-                "INSERT OR REPLACE INTO chat_routes (id, app_id, chat_id, config_revision, project_id, room_id, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (f"{app_id}:{chat_id}", app_id, chat_id, config_revision, project_str, room_str, stamp),
+                "INSERT OR REPLACE INTO sender_routes VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (app_id, chat_id, sender_id, config_revision, project_str, room_str, stamp),
             )
         return {"project_id": project_str, "room_id": room_str, "updated_at": stamp}
 
@@ -333,16 +378,60 @@ class FeishuStore:
             return {}
         with self.db() as db:
             rows = db.execute(
-                "SELECT chat_id, project_id, room_id FROM chat_routes WHERE app_id=? AND config_revision=?",
+                """SELECT DISTINCT chat_id, project_id, room_id FROM sender_routes
+                   WHERE app_id=? AND config_revision=?""",
                 (app_id, config_revision),
             ).fetchall()
-            return {row["chat_id"]: {"project_id": row["project_id"], "room_id": row["room_id"]} for row in rows}
+            routes = {}
+            ambiguous = set()
+            for row in rows:
+                chat_id = row["chat_id"]
+                if chat_id in routes:
+                    ambiguous.add(chat_id)
+                routes[chat_id] = {"project_id": row["project_id"], "room_id": row["room_id"]}
+            return {chat_id: route for chat_id, route in routes.items() if chat_id not in ambiguous}
 
     def clear_chat_route(self, app_id, chat_id):
         if not app_id or not chat_id:
             return
         with self.db() as db:
-            db.execute("DELETE FROM chat_routes WHERE id=?", (f"{app_id}:{chat_id}",))
+            db.execute("DELETE FROM sender_routes WHERE app_id=? AND chat_id=?", (app_id, chat_id))
+
+    def reserve_room_numbers(self, record, room_ids):
+        scope = (record["app_id"], record["chat_id"], record["sender_id"])
+        with self.db() as db:
+            db.execute("BEGIN IMMEDIATE")
+            existing = db.execute(
+                "SELECT room_id, number FROM sender_room_numbers WHERE app_id=? AND chat_id=? AND sender_id=?", scope
+            ).fetchall()
+            numbers = {row["room_id"]: row["number"] for row in existing}
+            next_number = max(numbers.values(), default=0) + 1
+            for room_id in room_ids:
+                if room_id not in numbers:
+                    db.execute(
+                        "INSERT INTO sender_room_numbers VALUES (?, ?, ?, ?, ?, NULL)", (*scope, room_id, next_number)
+                    )
+                    numbers[room_id] = next_number
+                    next_number += 1
+            return {room_id: numbers[room_id] for room_id in room_ids}
+
+    def mark_room_numbers_shown(self, record, room_ids):
+        scope = (record["app_id"], record["chat_id"], record["sender_id"])
+        with self.db() as db:
+            db.executemany(
+                """UPDATE sender_room_numbers SET shown_revision=?
+                   WHERE app_id=? AND chat_id=? AND sender_id=? AND room_id=?""",
+                [(record["config_revision"], *scope, room_id) for room_id in room_ids],
+            )
+
+    def shown_room_numbers(self, record):
+        with self.db() as db:
+            rows = db.execute(
+                """SELECT number, room_id FROM sender_room_numbers
+                   WHERE app_id=? AND chat_id=? AND sender_id=? AND shown_revision=?""",
+                (record["app_id"], record["chat_id"], record["sender_id"], record["config_revision"]),
+            ).fetchall()
+            return {str(row["number"]): row["room_id"] for row in rows}
 
     def ingest(self, event):
         """Called by the authenticated SDK worker; commit before acknowledging it."""
@@ -421,19 +510,19 @@ class FeishuStore:
                 command = ''  # A greeting or unknown slash command shows help, never runs a task.
             elif text.casefold() in {'status', '状态'}:
                 command = 'status'
-            elif binding and binding.get("allow_all_groups") and text.casefold() in {"groups", "群列表", "所有群", "全部群", "项目群列表"}:
-                command = "groups"
+            elif groups := re.fullmatch(r"(?:groups|群列表|所有群|全部群|项目群列表)(?:\s+([0-9]+))?", text, re.IGNORECASE):
+                command = "groups " + (groups[1] or "")
             else:
-                switch_match = (re.match(r"^(?:切换群|切换项目群|use)[：:\s]+(.+)$", text, flags=re.IGNORECASE)
-                                if binding and binding.get("allow_all_groups") else None)
+                switch_match = re.fullmatch(r"(?:切换群|切换项目群|use)(?:[：:\s]+(.*))?", text, re.IGNORECASE | re.DOTALL)
                 if switch_match:
-                    command = "use " + switch_match[1].strip()
+                    command = "use " + (switch_match[1] or "").strip()
                 else:
                     continuation = re.match(r'^(?:继续|continue)(?:[：:\s]+(.*)|$)', text, flags=re.IGNORECASE | re.DOTALL)
                     if continuation:
                         command = 'continue ' + (continuation[1] or '')
                     else:
-                        command = ('continue ' if is_reply else 'task ') + text
+                        room_request = text.startswith("@") and event.get("leading_user_mention") is not True
+                        command = ('continue ' if is_reply and not room_request else 'task ') + text
         identifier = str(uuid.uuid5(uuid.NAMESPACE_URL, "modeldesk:feishu:" + config["app_id"] + ":" + message_id))
         with self.db() as db:
             db.execute("BEGIN IMMEDIATE")
@@ -451,6 +540,8 @@ class FeishuStore:
                       "job_id": None if input_mode == "bootstrap" else str(uuid.uuid5(uuid.NAMESPACE_URL, "modeldesk:feishu-job:" + identifier)),
                       "state": "rejected" if reason else "received", "reason": reason, "created_at": stamp, "updated_at": stamp,
                       "notifications": []}
+            if event.get("leading_user_mention") is True:
+                record["leading_user_mention"] = True
             if is_reply:
                 # A reply's root can point at a different revision from its parent.
                 record["reply_message_id"] = parent_id if isinstance(parent_id, str) and re.fullmatch(r"om_[A-Za-z0-9_-]{1,197}", parent_id) else None
@@ -519,6 +610,20 @@ class FeishuStore:
         with self.db() as db:
             return [json.loads(row[0]) for row in db.execute("SELECT data FROM observed WHERE app_id=? ORDER BY rowid DESC LIMIT 50", (app_id,))]
 
+    def observed_chat_types(self, app_id, chat_ids):
+        path = self.directory / "receipts.sqlite3"
+        if path.is_symlink() or not path.is_file():
+            return {}
+        result = {}
+        with closing(sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True, timeout=1)) as db:
+            for chat_id in chat_ids:
+                row = db.execute("SELECT data FROM observed WHERE id=? AND app_id=?", (f"{app_id}:{chat_id}", app_id)).fetchone()
+                if row:
+                    chat_type = json.loads(row[0]).get("chat_type")
+                    if chat_type in ("p2p", "group"):
+                        result[chat_id] = chat_type
+        return result
+
     def current(self, record):
         config = self.config()
         if not config["enabled"] or config["app_id"] != record["app_id"] or config["revision"] != record["config_revision"]:
@@ -527,4 +632,4 @@ class FeishuStore:
             # Bootstrap events carry no binding; their authority is the owner
             # allowlist at ingest time plus this revision check.
             return record["sender_id"] in (config.get("owner_sender_ids") or [])
-        return record["binding"] in config["bindings"]
+        return binding_is_current(record["binding"], config["bindings"])

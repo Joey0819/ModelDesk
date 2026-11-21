@@ -455,7 +455,14 @@ class FeishuTests(unittest.IsolatedAsyncioTestCase):
         data = NS(header=NS(app_id="cli_test"), event=NS(message=message, sender=NS(sender_type="user", sender_id=NS(open_id="ou_person"))))
         result = normalize_event(data, "cli_test", "ou_bot")
         self.assertEqual(result["text"], "/modeldesk task 请参考 @Alice 的要求")
+        self.assertFalse(result["leading_user_mention"])
         self.assertIsNone(normalize_event(data, "cli_test", "ou_otherbot"))
+        message.content = json.dumps({"text": "@_user_1 /modeldesk task @_user_2 的要求"})
+        result = normalize_event(data, "cli_test", "ou_bot")
+        self.assertEqual(result["text"], "/modeldesk task @Alice 的要求")
+        self.assertTrue(result["leading_user_mention"])
+        message.content = json.dumps({"text": "@_user_1 @Alice 请参考 @_user_2 的要求"})
+        self.assertFalse(normalize_event(data, "cli_test", "ou_bot")["leading_user_mention"])
 
     async def test_mobile_rich_post_keeps_text_links_and_rejects_unsupported_assets(self):
         message = NS(message_id='om_mobile', chat_id='oc_one', chat_type='p2p', message_type='post',
@@ -585,7 +592,7 @@ class FeishuTests(unittest.IsolatedAsyncioTestCase):
                 app_id="cli_test",
                 bindings=[
                     {**self.binding, "allow_all_groups": True, "natural_language_tasks": True},
-                    {**self.binding, "chat_id": "oc_locked", "allow_all_groups": False},
+                    {**self.binding, "chat_id": "oc_locked", "allow_all_groups": False, "natural_language_tasks": True},
                 ],
             ))
             revision = self.store.config()["revision"]
@@ -593,13 +600,15 @@ class FeishuTests(unittest.IsolatedAsyncioTestCase):
             self.received(chat_id="oc_locked", text="/modeldesk groups")
             self.received(chat_id="oc_locked", text="/modeldesk use AI 架构设计")
             self.received(chat_id="oc_locked", text="/modeldesk to 2 紧急调研")
+            self.received(chat_id="oc_locked", text="@AI 架构设计 不得派发")
             await self.controller.tick()
             submit_mock.assert_not_awaited()
-            self.assertEqual(len(self.sdk.calls), 3)
+            self.assertEqual(len(self.sdk.calls), 4)
             self.assertIn("产品规划群", self.sdk.calls[0][3]["text"])
             self.assertNotIn("AI 架构设计", self.sdk.calls[0][3]["text"])
             self.assertIn("未开启", self.sdk.calls[1][3]["text"])
             self.assertIn("未开启", self.sdk.calls[2][3]["text"])
+            self.assertIn("未开启", self.sdk.calls[3][3]["text"])
 
             self.sdk.calls.clear()
 
@@ -649,10 +658,10 @@ class FeishuTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(by_id[task2["id"]]["state"], "delivered")
 
             # /modeldesk to 1 紧急调研 routes to Room 1; natural-language @<Room 2 title> routes to Room 2!
-            # Also verify unknown @mention falls back untouched to the active room, and cross-room continue stays in Room 1.
+            # Genuine Feishu user mentions remain prompt text, and cross-room continue stays in Room 1.
             to_rec = self.received(text="/modeldesk to 1 紧急调研")
             at_rec = self.received(text="@AI 架构设计 输出大纲")
-            at_unknown = self.received(text="@Alice 请同步进展")
+            self.received(text="@Alice 请同步进展", leading_user_mention=True)
             cont_rec = self.received(text=f"/modeldesk continue {task1['job_id']} 补充里程碑")
             self.received(text="/modeldesk status")
             await self.controller.tick()
@@ -733,26 +742,127 @@ class FeishuTests(unittest.IsolatedAsyncioTestCase):
             self.received(text="切换群 项目乙/核心群")  # exact project/title -> switches
             bad_to = self.received(text="/modeldesk to 不存在群 任务")
             ambig_to = self.received(text="/modeldesk to 核心群 任务")
+            bad_at = self.received(text="@不存在群 执行任务")
+            ambig_at = self.received(text="@核心群 执行任务")
+            partial_to = self.received(text="/modeldesk to 项目甲 错填的群名 执行任务")
             empty_to = self.received(text="/modeldesk to 2")
             quoted_to = self.received(text='/modeldesk to "项目甲/核心群" 写周报')
             await self.controller.tick()
 
         self.assertEqual(len(destinations), 1)
         self.assertEqual(destinations[0], (self.project_id, self.room_id, "写周报"))
-        self.assertEqual(self.store.get_chat_route("cli_test", "oc_one", revision)["room_id"], room2_id)
+        self.assertEqual(self.store.get_chat_route("cli_test", "oc_one", revision, "ou_person")["room_id"], room2_id)
         by_id = {row["id"]: row for row in self.store.events()}
         self.assertEqual(by_id[bad_to["id"]]["state"], "delivered")
         self.assertEqual(by_id[ambig_to["id"]]["state"], "delivered")
         self.assertEqual(by_id[empty_to["id"]]["state"], "delivered")
         self.assertEqual(by_id[quoted_to["id"]]["state"], "monitoring")
-        self.assertNotIn(bad_to["job_id"], self.jobs.jobs)
-        self.assertNotIn(ambig_to["job_id"], self.jobs.jobs)
-        self.assertNotIn(empty_to["job_id"], self.jobs.jobs)
+        for rejected in (bad_to, ambig_to, bad_at, ambig_at, partial_to, empty_to):
+            self.assertNotIn(rejected["job_id"], self.jobs.jobs)
         replies = [call[3]["text"] for call in self.sdk.calls if call[0] == "reply"]
         self.assertTrue(any("找到多个匹配" in text for text in replies))
         self.assertTrue(any("未找到匹配" in text for text in replies))
 
-    async def test_push_group_results_sends_once_skips_historical_and_skips_same_chat_origin(self):
+    async def test_all_groups_room_numbers_survive_reorder_and_every_room_is_listed(self):
+        rooms = [
+            {"id": str(uuid.uuid4()), "project_id": self.project_id,
+             "project_name": "测试项目", "title": f"场景 {index:02}"}
+            for index in range(49)
+        ]
+        self.store.save_config(ConfigInput(enabled=True, app_id="cli_test", bindings=[
+            {**self.binding, "allow_all_groups": True, "allowed_sender_ids": ["ou_person", "ou_colleague"]},
+        ]))
+        with patch.object(feishu, "list_all_rooms", return_value=rooms):
+            for page in range(1, 6):
+                self.received(text=f"/modeldesk groups {page}")
+                await self.controller.tick()
+            replies = [call[3]["text"] for call in self.sdk.calls]
+            self.assertIn("共 49 个，第 1/5 页", replies[0])
+            self.assertIn("第 5/5 页", replies[-1])
+            for index, room in enumerate(rooms, 1):
+                self.assertIn(f"{index}. 测试项目 · {room['title']}\n{room['id']}", "\n".join(replies))
+            self.assertTrue(all(len(reply.encode()) < 4500 for reply in replies))
+
+            self.received(text="/modeldesk use 49", sender_id="ou_colleague")
+            self.received(text="/modeldesk groups 6")
+            await self.controller.tick()
+            self.assertIn("未在此会话为你显示", self.sdk.calls[-2][3]["text"])
+            self.assertIn("第 1 至 5 页", self.sdk.calls[-1][3]["text"])
+
+            target = rooms[-1]
+            target["title"] = "改名后的最后一群"
+            rooms.reverse()
+            self.received(text="/modeldesk use 49")
+            await self.controller.tick()
+            self.assertIn(target["id"], self.sdk.calls[-1][3]["text"])
+            rooms.remove(target)
+            self.received(text="/modeldesk use 49")
+            await self.controller.tick()
+            self.assertIn("对应群已不可用", self.sdk.calls[-1][3]["text"])
+
+    async def test_default_target_is_personal_and_queued_tasks_and_replies_keep_their_room(self):
+        project2, room2 = str(uuid.uuid4()), str(uuid.uuid4())
+        rooms = [
+            {"id": self.room_id, "project_id": self.project_id, "project_name": "项目甲", "title": "日常工作"},
+            {"id": room2, "project_id": project2, "project_name": "项目乙", "title": "研发评审"},
+        ]
+        binding = {**self.binding, "allow_all_groups": True, "natural_language_tasks": True,
+                   "allowed_sender_ids": ["ou_person", "ou_colleague"]}
+        self.store.save_config(ConfigInput(enabled=True, app_id="cli_test",
+            bindings=[binding, {**binding, "chat_id": "oc_other"}]))
+
+        async def submit(room, request, project, **kwargs):
+            job_id = kwargs["job_id"]
+            kwargs["admission_check"]()
+            job = {"id": job_id, "mode": "group", "status": "running", "project_id": project,
+                   "group_room_id": room, "conversation_id": room, "group_context_mode": request.context_mode,
+                   "external_source": kwargs["external_source"], "created_at": workbench.now()}
+            self.jobs.jobs[job_id] = job
+            return job
+
+        with patch.object(feishu, "list_all_rooms", return_value=rooms), \
+             patch.object(groups, "submit_message", AsyncMock(side_effect=submit)) as submit_mock, \
+             patch.object(self.jobs, "cancel", AsyncMock()) as cancel_mock:
+            self.jobs.jobs.update({str(index): {"status": "running"} for index in range(4)})
+            queued = self.received(text="处理已排队任务")
+            self.received(text=f"/modeldesk use {room2.upper()}")
+            colleague = self.received(text="处理同事任务", sender_id="ou_colleague")
+            other_chat = self.received(text="处理另一会话", chat_id="oc_other")
+            after_switch = self.received(text="处理切换后的任务")
+            await self.controller.tick()
+            submit_mock.assert_not_awaited()
+            frozen = {row["id"]: row["target_room_id"] for row in self.store.events() if row["state"] == "received"}
+            self.assertEqual(frozen, {queued["id"]: self.room_id, colleague["id"]: self.room_id,
+                                     other_chat["id"]: self.room_id, after_switch["id"]: room2})
+
+            self.jobs.jobs.clear()
+            restarted = feishu.FeishuController(FeishuStore(self.store.directory), self.jobs, sdk_factory=lambda _: self.sdk)
+            await restarted.tick()
+            self.assertEqual([call.args[0] for call in submit_mock.await_args_list],
+                             [self.room_id, self.room_id, self.room_id, room2])
+            ack_index = next(index for index, call in enumerate(self.sdk.calls, 1) if call[1] == queued["message_id"])
+
+            self.jobs.jobs[other_chat["job_id"]]["status"] = "cancelled"
+            status = self.received(text="/modeldesk status", sender_id="ou_colleague")
+            self.received(text=f"/modeldesk cancel {queued['job_id']}", sender_id="ou_colleague")
+            self.received(text=f"/modeldesk cancel {after_switch['job_id']}")
+            self.received(text="/modeldesk continue 改报告", parent_id=f"om_reply_{ack_index}", sender_id="ou_colleague")
+            self.received(text="@不存在群 处理新任务", parent_id=f"om_reply_{ack_index}")
+            self.received(text="修改已排队任务", parent_id=f"om_reply_{ack_index}")
+            await restarted.tick()
+
+        status_text = next(call[3]["text"] for call in self.sdk.calls if call[1] == status["message_id"])
+        self.assertIn(colleague["job_id"], status_text)
+        self.assertNotIn(after_switch["job_id"], status_text)
+        self.assertNotIn(queued["job_id"], status_text)
+        cancel_mock.assert_awaited_once_with(after_switch["job_id"])
+        self.assertEqual(submit_mock.await_count, 5)
+        last = submit_mock.await_args
+        self.assertEqual((last.args[0], last.args[1].context_mode, last.args[1].prompt),
+                         (self.room_id, "continue", "修改已排队任务"))
+        self.assertEqual(last.kwargs["external_source"]["parent_job_id"], queued["job_id"])
+
+    async def test_push_group_results_sends_desktop_output_once_and_keeps_chat_results_private(self):
         from backend import document_delivery
         from backend.document_exports import render_document
         document_store = document_delivery.DocumentStore(self.root / "documents")
@@ -793,6 +903,14 @@ class FeishuTests(unittest.IsolatedAsyncioTestCase):
             "external_source": {"platform": "feishu", "app_id": "cli_test", "chat_id": "oc_one"},
             "autonomy": {"state": "complete", "notification_id": "feishu-1", "reason": "done"},
             "result": {"delivery": {"status": "complete", "title": "飞书任务", "content": "飞书正文", "documents": [], "media": []}},
+        }
+
+        # A second authorized Feishu chat may target this same ModelDesk room.
+        private_job_id = str(uuid.uuid4())
+        self.jobs.jobs[private_job_id] = {
+            **self.jobs.jobs[same_chat_id],
+            "id": private_job_id,
+            "external_source": {"platform": "feishu", "app_id": "cli_test", "chat_id": "oc_private"},
         }
 
         # Job in another room must NOT be pushed.
@@ -846,6 +964,7 @@ class FeishuTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("竞品分析", send_calls[0][3]["text"])
         self.assertNotIn(historical_id, str(first_calls))
         self.assertNotIn(same_chat_id, str(first_calls))
+        self.assertNotIn(private_job_id, str(first_calls))
         self.assertNotIn(other_room_id, str(first_calls))
         self.assertEqual(len(upload_calls), 1)
         self.assertEqual(send_calls[1][1], "oc_one")
@@ -858,6 +977,7 @@ class FeishuTests(unittest.IsolatedAsyncioTestCase):
             "id": bad_job_id,
             "mode": "group",
             "status": "complete",
+            "external_source": {"platform": "routine", "run_id": "scheduled-run"},
             "project_id": self.project_id,
             "group_room_id": self.room_id,
             "conversation_id": self.room_id,
@@ -973,7 +1093,7 @@ class FeishuTests(unittest.IsolatedAsyncioTestCase):
 
                 # Record a chat route for oc_one to ensure rebinding clears stale routes.
                 rev = self.store.config()["revision"]
-                self.store.set_chat_route("cli_test", "oc_one", rev, project2_id, room2_id)
+                self.store.set_chat_route("cli_test", "oc_one", rev, "ou_person", project2_id, room2_id)
                 self.assertIn("oc_one", (await client.get("/api/feishu/rooms")).json()["active_routes"])
 
                 # Conflict: binding oc_one to Room 2 without replace_existing returns 409.

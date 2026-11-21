@@ -10,6 +10,8 @@ export function feishuBinding(value = {}) {
     project_id: typeof value.project_id === 'string' && value.project_id ? value.project_id : null,
     room_id: typeof value.room_id === 'string' ? value.room_id : '', allowed_sender_ids: strings(value.allowed_sender_ids), allow_native: value.allow_native === true,
     natural_language_tasks: value.natural_language_tasks === true,
+    allow_all_groups: value.allow_all_groups === true,
+    push_group_results: value.push_group_results === true,
   };
 }
 /** Only whitelisted public fields enter the draft; saved credentials never return to inputs. */
@@ -26,7 +28,20 @@ export function feishuBody(draft) {
     enabled: draft.enabled === true, app_id: String(draft.app_id || '').trim(),
     owner_sender_ids: feishuOwnerIds(draft.owner_sender_ids).slice(0, 10),
     ...(String(draft.app_secret || '').trim() ? { app_secret: draft.app_secret.trim() } : {}),
-    bindings: (draft.bindings || []).map((item) => { const binding = feishuBinding(item); return { ...binding, chat_id: binding.chat_id.trim(), name: binding.name.trim(), room_id: binding.room_id.trim() }; }),
+    bindings: (draft.bindings || []).map((item) => {
+      const binding = feishuBinding(item);
+      return {
+        chat_id: binding.chat_id.trim(),
+        name: binding.name.trim(),
+        project_id: binding.project_id,
+        room_id: binding.room_id.trim(),
+        allowed_sender_ids: binding.allowed_sender_ids,
+        allow_native: binding.allow_native,
+        natural_language_tasks: binding.natural_language_tasks,
+        ...(binding.allow_all_groups ? { allow_all_groups: true } : {}),
+        ...(binding.push_group_results ? { push_group_results: true } : {}),
+      };
+    }),
   };
 }
 export function feishuIssue(draft) {
@@ -48,4 +63,27 @@ export function feishuConnectionStatus(status, config) {
 export function safeFeishuError(error, secret = '') {
   const message = typeof error === 'string' ? error : error?.message || '飞书请求未完成，请重新检查配置。';
   return secret ? message.split(secret).join('[密钥已隐藏]') : message;
+}
+export function roomFeishuSummary(feishuData, projectId, roomId) {
+  const data = feishuData && typeof feishuData === 'object' && !Array.isArray(feishuData) ? feishuData : null;
+  const config = data?.config && typeof data.config === 'object' ? data.config : null;
+  const status = data?.status && typeof data.status === 'object' ? data.status : null;
+  const pid = projectId || null;
+  const configured = Boolean(config?.app_id && config?.has_app_secret);
+  const enabled = Boolean(config?.enabled);
+  const online = status?.state === 'connected' && enabled;
+  const bindings = Array.isArray(config?.bindings) ? config.bindings.map(feishuBinding) : [];
+  const isDirect = (item) => Boolean(roomId) && item.room_id === roomId && (item.project_id || null) === pid;
+  const directBindings = bindings.filter(isDirect);
+  const allGroupsBindings = bindings.filter((item) => item.allow_all_groups === true && !isDirect(item));
+  const bound = directBindings.length > 0 || allGroupsBindings.length > 0;
+  const connected = online && bound;
+  const statusLabel = connected
+    ? '已连接'
+    : bound && !online
+      ? '已绑定（未在线）'
+      : !configured
+        ? '未配置机器人'
+        : '未连接';
+  return { configured, enabled, online, directBindings, allGroupsBindings, bound, connected, statusLabel };
 }

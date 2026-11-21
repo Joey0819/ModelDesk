@@ -3,6 +3,10 @@ export const CONNECTION_PRESETS = {
   gemini: { name: 'Google Gemini API', base_url: 'https://generativelanguage.googleapis.com/v1beta/openai', help: '填写 Google AI Studio 的 Gemini API Key，保存后读取该密钥可访问的模型。', link: 'https://aistudio.google.com/apikey', linkLabel: '打开 Google AI Studio' },
   openai_compatible: { name: '', base_url: '', help: '适用于提供 OpenAI 兼容 Chat Completions 接口的服务。', link: null },
 };
+export function isGeminiConnection(connection) {
+  return connection.provider === 'gemini' || (connection.provider === 'openai_compatible'
+    && /^https:\/\/generativelanguage\.googleapis\.com\/(?:v1|v1beta(?:\/openai)?)\/?$/.test(connection.base_url));
+}
 export function connectionDraft(connection, provider = 'xai') {
   const preset = CONNECTION_PRESETS[connection?.provider || provider] || CONNECTION_PRESETS.openai_compatible;
   return { id: connection?.id || null, provider: connection?.provider || provider, name: connection?.name ?? preset.name, base_url: connection?.base_url ?? preset.base_url, enabled: connection?.enabled ?? true, allow_local: Boolean(connection?.allow_local), testing: Boolean(connection?.testing), models: (connection?.models || []).map(({ id, label }) => ({ id, label: label || id })), api_key: '', has_api_key: Boolean(connection?.has_api_key), original_base_url: connection?.base_url || '' };

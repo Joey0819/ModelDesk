@@ -4,11 +4,37 @@ import unittest
 from unittest.mock import AsyncMock, patch
 
 import httpx
-from backend import readiness
+from backend import antigravity_catalog, readiness, workbench
 from fastapi import HTTPException
 
 
 class ReadinessTests(unittest.IsolatedAsyncioTestCase):
+    async def test_native_status_distinguishes_installed_from_verified_when_gateway_is_down(self):
+        model = antigravity_catalog.DEFAULT_ID
+        jobs = {}
+        with patch.object(workbench.manager, "jobs", jobs), \
+             patch.object(workbench, "subscription_catalog", AsyncMock(side_effect=httpx.ConnectError("offline"))), \
+             patch.object(workbench, "connection_models", return_value=[]), \
+             patch.object(workbench.connection_store, "list", return_value=[]), \
+             patch.object(antigravity_catalog, "read_cache", return_value={"checked_at": None, "models": []}), \
+             patch("backend.antigravity_agent.find_cli", return_value="fixture-cli"), \
+             patch("backend.antigravity_agent.run_antigravity_agent", AsyncMock()) as generation:
+            installed = await workbench.status()
+            jobs["fixture"] = {"id": "fixture", "models": [model], "events": [{"type": "stage", "stage": "native_text_response",
+                "created_at": datetime.now(timezone.utc).isoformat(), "data": {"model": model, "execution_source": "native_agent"}}]}
+            verified = await workbench.status()
+        generation.assert_not_awaited()
+        for status, verified_ids in [(installed, []), (verified, [model])]:
+            self.assertFalse(status["gateway"]["online"])
+            self.assertTrue(status["tools"]["group"]["available"])
+            self.assertFalse(status["tools"]["chat"]["available"])
+            providers = {row["id"]: row for row in status["providers"]}
+            self.assertEqual(providers["antigravity"]["available_models"], [])
+            self.assertEqual(providers["antigravity-agent"]["available_models"], [model])
+            self.assertEqual(providers["antigravity-agent"]["verified_models"], verified_ids)
+            self.assertEqual(status["models"][0]["capability"], "text")
+            self.assertEqual(status["models"][0]["verified"], bool(verified_ids))
+
     def test_success_evidence_expires_and_future_or_undated_records_are_not_green(self):
         now = datetime.now(timezone.utc)
         self.assertTrue(readiness.recent_test({"ok": True, "checked_at": now.isoformat()}))
@@ -20,12 +46,14 @@ class ReadinessTests(unittest.IsolatedAsyncioTestCase):
         with patch('backend.group_tasks.engine_status', AsyncMock(return_value={"engines": [{"id":"codex", "label":"Codex", "available":True, "authenticated":False}]})), \
              patch('backend.muse_bridge.manager.status', AsyncMock(return_value={"installed":True, "permission":True, "native_ready":False})), \
              patch('backend.workbench.subscription_catalog', AsyncMock(return_value=['model-a'])), \
+             patch('backend.antigravity_agent.find_cli', return_value=None), \
              patch('backend.model_connections.store.list', return_value=[]), \
              patch('scripts.modeldesk_worker.read_status', return_value={"online":False}):
             result=await readiness.inspect()
         states={row['id']:row['state'] for row in result['agents']}
         expected_muse = 'unavailable' if is_linux else 'needs_attention'
-        self.assertEqual(states, {'subscription':'reachable', 'codex':'unauthorized', 'muse':expected_muse})
+        self.assertEqual(states, {'subscription':'reachable', 'antigravity-agent':'unavailable',
+                                  'codex':'unauthorized', 'muse':expected_muse})
         self.assertFalse(result['checks_generate_content'])
 
     async def test_connection_probe_never_generates_or_follows_redirects(self):

@@ -15,7 +15,7 @@
 .model-picker-trigger > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .model-picker-trigger > svg { flex: none; }
 .model-picker-trigger:hover { border-color: var(--accent, #5965ce); }
-.model-picker-dialog { box-sizing: border-box; width: min(620px, calc(100vw - 32px)); max-height: min(750px, calc(100dvh - 40px)); padding: 0; border: 1px solid #dfe5f0; border-radius: 14px; background: #fff; color: #263446; box-shadow: 0 18px 65px #19283b30; font-size: 14px; }
+.model-picker-dialog { box-sizing: border-box; width: min(620px, calc(100vw - 32px)); max-width: none; max-height: min(750px, calc(100dvh - 40px)); padding: 0; border: 1px solid #dfe5f0; border-radius: 14px; background: #fff; color: #263446; box-shadow: 0 18px 65px #19283b30; font-size: 14px; }
 .model-picker-dialog[open] { display: flex; flex-direction: column; }
 .model-picker-dialog::backdrop { background: #14213542; }
 .model-picker-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding: 20px 20px 12px; }
@@ -30,7 +30,10 @@
 .model-picker-dialog .model-picker-filters select { width: auto; max-width: 230px; padding: 6px 9px; font: inherit; }
 .model-picker-dialog .model-picker-filters label { display: flex; align-items: center; gap: 5px; margin-left: auto; font-size: 12px; }
 .model-picker-dialog input[type=checkbox] { width: 14px; height: 14px; margin: 0; }
+.model-picker-refresh-result { margin: 0 20px 10px; padding: 7px 10px; background: #edf3fc; border-radius: 6px; color: #385881; font-size: 12px; overflow-wrap: anywhere; }
 .model-picker-list { overflow-y: auto; overscroll-behavior: contain; min-height: 110px; padding: 4px 10px 10px; border-block: 1px solid #e4e8f0; }
+.model-picker-other-models { border-top: 1px solid #e4e8f0; margin: 4px 0 0; }
+.model-picker-other-models summary { padding: 10px; color: #52647c; font-size: 12px; cursor: pointer; }
 .model-picker-dialog .model-picker-option { display: flex; align-items: center; justify-content: space-between; gap: 14px; width: 100%; padding: 12px 10px; margin: 2px 0; border: 1px solid transparent; border-radius: 8px; color: inherit; background: transparent; text-align: left; cursor: pointer; }
 .model-picker-dialog .model-picker-option:hover { background: #f5f7fb; }
 .model-picker-dialog .model-picker-option.is-selected { background: #f0f2ff; border-color: #ccd2f5; }
@@ -39,8 +42,19 @@
 .model-picker-identity { min-width: 0; }
 .model-picker-badges { display: flex; align-items: center; gap: 9px; flex-shrink: 0; }
 .model-picker-dialog .model-picker-badges .is-verified { color: #307b60; }
+.model-picker-dialog .model-picker-badges .is-new { color: #385881; font-weight: 600; }
 .model-picker-dialog .model-picker-option:disabled { opacity: .6; cursor: default; }
-.model-picker-dialog :is(button, select):focus-visible { outline: 2px solid #5965ce; outline-offset: 1px; }
+.model-picker-dialog :is(button, select, summary):focus-visible { outline: 2px solid #5965ce; outline-offset: 1px; }
+.model-picker-published { flex: none; min-width: 0; margin: 12px 20px 0; padding: 8px 10px; border: 1px solid #dde5f0; border-radius: 8px; background: #f5f7fb; }
+.model-picker-published h3 { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; margin: 0 0 6px; font-size: 12px; font-weight: 600; }
+.model-picker-published h3 small { color: #52647c; font-size: 11px; font-weight: 400; }
+.model-picker-published ul { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 3px 8px; max-height: 115px; overflow: auto; margin: 0; padding: 0; list-style: none; }
+.model-picker-published code { display: block; color: #40516a; font-size: 11px; line-height: 1.5; overflow-wrap: anywhere; }
+.model-picker-agent { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px 12px; margin: 8px 20px 0; padding: 8px 10px; border: 1px solid #dde5f0; border-radius: 8px; font-size: 12px; }
+.model-picker-agent strong, .model-picker-agent small { display: block; line-height: 1.5; }
+.model-picker-agent small { color: #52647c; }
+.model-picker-agent a { color: var(--accent, #4959bb); font-size: 11px; }
+.model-picker-agent-actions { display: flex; flex-wrap: wrap; gap: 6px; }
 .model-picker-footer { display: flex; flex-direction: column; gap: 12px; padding: 14px 20px; }
 .model-picker-footer > div:last-child { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .model-picker-footer span, .model-picker-footer small { display: block; font-size: 11px; color: #65758c; line-height: 1.65; }
@@ -48,15 +62,19 @@
 .model-picker-empty { padding: 20px 10px; color: #65758c; line-height: 1.65; }
 .modeldesk[data-theme=dark] .model-picker-trigger, .modeldesk[data-theme=dark] .model-picker-dialog { background: #232e3d; color: #dbe4f1; border-color: #40516c; }
 .modeldesk[data-theme=dark] .model-picker-dialog :is(small, p, .model-picker-filters, .model-picker-footer span) { color: #a2afc4; }
-.modeldesk[data-theme=dark] .model-picker-dialog :is(.model-picker-search, .model-picker-list) { border-color: #40516c; }
+.modeldesk[data-theme=dark] .model-picker-dialog :is(.model-picker-search, .model-picker-list, .model-picker-other-models, .model-picker-published, .model-picker-agent) { border-color: #40516c; }
 .modeldesk[data-theme=dark] .model-picker-dialog .model-picker-search input { background: transparent; }
 .modeldesk[data-theme=dark] .model-picker-dialog .model-picker-option:hover { background: #2a384d; }
 .modeldesk[data-theme=dark] .model-picker-dialog .model-picker-option.is-selected { background: #2d3c59; border-color: #6476a0; }
 .modeldesk[data-theme=dark] .model-picker-dialog .model-picker-badges .is-verified { color: #83cdb4; }
+.modeldesk[data-theme=dark] .model-picker-dialog .model-picker-badges .is-new, .modeldesk[data-theme=dark] .model-picker-dialog .model-picker-refresh-result { color: #b3caee; }
+.modeldesk[data-theme=dark] .model-picker-refresh-result, .modeldesk[data-theme=dark] .model-picker-published { background: #2b384d; }
+.modeldesk[data-theme=dark] .model-picker-other-models summary, .modeldesk[data-theme=dark] .model-picker-published code { color: #c2d1e7; }
 .modeldesk[data-theme=dark] .model-picker-warning, .modeldesk[data-theme=dark] .model-picker-sources { background: #3a3225; color: #d8c6a3; }
 @media (max-width: 600px) {
   .model-picker-dialog { width: calc(100vw - 16px); max-height: calc(100dvh - 24px); }
   .model-picker-heading, .model-picker-tools, .model-picker-filters, .model-picker-footer { padding-left: 14px; padding-right: 14px; }
+  .model-picker-refresh-result, .model-picker-published, .model-picker-agent { margin-left: 14px; margin-right: 14px; }
   .model-picker-badges { max-width: 100px; }
-  .model-picker-filters select { max-width: 175px; }
+  .model-picker-dialog .model-picker-filters select { max-width: 175px; }
 }

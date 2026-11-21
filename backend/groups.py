@@ -215,7 +215,7 @@ def room_roles(room):
 
 
 def room_models(room):
-    """Only actual model endpoints enter the gateway; agents keep their runtimes."""
+    """Collect the room's selected text routes, including its coordinator."""
     snapshot = room["team_snapshot"]
     models = [member["model"] for member in snapshot["members"] if member_kind(member) == "model"]
     if snapshot.get("coordinator_model"):
@@ -479,18 +479,36 @@ async def create_room_message(room, request, *, native_allowed, job_id, external
         raise HTTPException(422, "MCP Agent 需要选择自动完成，由实际工具执行")
     if request.delivery_mode == 'discussion' and any(member_kind(member) == 'image' for member in members if member['id'] in (request.recipient_member_ids or [])):
         raise HTTPException(422, '绘图角色需要选择“自动完成”，不能通过文字讨论接口生图')
-    try:
-        catalog = await workbench.model_catalog()
-    except Exception as error:
-        raise HTTPException(503, workbench.public_error(error)) from error
     requested_models = [member["model"] for member in members if member["id"] in selected and member_kind(member) == "model"]
-    if (broadcast or any(member_kind(member) in {"mcp", "image"} for member in members if member["id"] in selected)) and room["team_snapshot"].get("coordinator_model"):
-        requested_models.append(room["team_snapshot"]["coordinator_model"])
-    missing = list(dict.fromkeys(model for model in requested_models if model not in catalog))
-    if missing:
-        raise HTTPException(422, "这些接收成员的模型尚未连接：" + "、".join(missing))
+    needs_coordinator = request.delivery_mode == "auto" and any(
+        member_kind(member) in {"mcp", "image"} for member in members if member["id"] in selected
+    )
+    if broadcast or needs_coordinator:
+        coordinator = room["team_snapshot"].get("coordinator_model")
+        if needs_coordinator and not coordinator and not requested_models:
+            coordinator = next((member["model"] for member in members if member_kind(member) == "model"), None)
+        if coordinator:
+            requested_models.append(coordinator)
+    from .antigravity_catalog import is_agent_id, native_catalog
+    native_models = {model for model in requested_models if is_agent_id(model)}
+    if native_models:
+        rows = {row["id"]: row for row in native_catalog()}
+        if not any(row["installed"] for row in rows.values()):
+            raise HTTPException(503, "未找到官方 Antigravity CLI。请安装 agy 并在本机登录 Google。")
+        missing = sorted(model for model in native_models if model not in rows or rows[model].get("unavailable"))
+        if missing:
+            raise HTTPException(422, "Antigravity Agent 当前未提供这些型号，请刷新原生 Agent 目录并重新选择：" + "、".join(missing))
+    endpoint_models = [model for model in requested_models if model not in native_models]
+    if endpoint_models:
+        try:
+            catalog = await workbench.model_catalog()
+        except Exception as error:
+            raise HTTPException(503, workbench.public_error(error)) from error
+        missing = list(dict.fromkeys(model for model in endpoint_models if model not in catalog))
+        if missing:
+            raise HTTPException(422, "这些接收成员的模型尚未连接：" + "、".join(missing))
     from .readiness import preflight_connections
-    await preflight_connections(requested_models)
+    await preflight_connections(endpoint_models)
     body = request.model_dump(mode="json", exclude={"client_request_id", "recipient_member_ids", "muse_task_id", "delivery_mode", "background_mode", "output_format", "image_count", "media_provider", "context_mode", "document_formats", "document_layout"})
     try:
         job_request = workbench.JobRequest(**body, mode="group", project_id=room["project_id"], conversation_id=room["id"],

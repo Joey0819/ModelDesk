@@ -50,10 +50,13 @@ class TeamMember(BaseModel):
     @model_validator(mode="after")
     def no_credentials(self):
         from ..attachments import secret_text
+        from ..antigravity_catalog import is_agent_id
         if not self.name or (self.kind in {"model", "image"} and not self.model):
             raise ValueError("模型成员需要名称与模型标识")
         if self.kind in {"muse", "mcp"} and self.model:
             raise ValueError("应用与 MCP Agent 使用自己的执行能力，不配置底层模型")
+        if self.kind != "model" and is_agent_id(self.model):
+            raise ValueError("Antigravity Agent 仅可配置为文字成员")
         if self.kind == "mcp" and (not self.mcp_server_id or not self.mcp_tool):
             raise ValueError("MCP Agent 需要已注册服务、获准工具和任务参数名")
         if self.kind != "mcp" and (self.mcp_server_id or self.mcp_tool or self.mcp_prompt_field != "prompt" or self.mcp_can_plan or self.mcp_document_worker):

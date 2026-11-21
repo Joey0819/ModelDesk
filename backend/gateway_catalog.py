@@ -6,6 +6,7 @@ from pathlib import Path
 import stat
 import tempfile
 from datetime import datetime, timezone
+from functools import lru_cache
 
 import httpx
 import yaml
@@ -145,20 +146,62 @@ def install_catalog(path, data):
     return True
 
 
-def read_managed_cache(config_path):
-    """Read only the active catalog from a managed gateway for display metadata."""
+def file_identity(info):
+    if stat.S_ISREG(info.st_mode):
+        return info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns, info.st_mode
+
+
+def read_matching_file(path, identity, limit=-1):
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+    with os.fdopen(os.open(path, flags), "rb") as source:
+        if file_identity(os.fstat(source.fileno())) != identity:
+            raise OSError("catalog file changed before reading")
+        data = source.read(limit)
+        if file_identity(os.fstat(source.fileno())) != identity:
+            raise OSError("catalog file changed while reading")
+        return data
+
+
+@lru_cache(maxsize=2)
+def managed_cache_source(config_path, identity):
     try:
-        if config_path.is_symlink() or config_path.parent.is_symlink():
-            return None
-        target = config_target(config_path, config_path.read_bytes())
-        current = target[0] if target else None
-        if current is None or current.parent.is_symlink() or current.is_symlink() or not current.is_file():
-            return None
-        with current.open("rb") as source:
-            data = source.read(MAX_BYTES + 1)
+        target = config_target(config_path, read_matching_file(config_path, identity))
+        return target[0] if target else None
+    except (ValueError, RecursionError, yaml.YAMLError):
+        return None
+
+
+@lru_cache(maxsize=2)
+def read_cached_publication(path, identity):
+    data = read_matching_file(path, identity, MAX_BYTES + 1)
+    try:
         if len(data) <= MAX_BYTES:
-            return parse_catalog(data)
-    except (OSError, ValueError, RecursionError, yaml.YAMLError):
+            return published_models(parse_catalog(data), SUBSCRIPTION_SECTIONS)
+    except (ValueError, RecursionError):
+        return None
+    return None
+
+
+def read_managed_cache(config_path):
+    """Read the active managed catalog's provider IDs for display metadata."""
+    try:
+        if config_path.parent.is_symlink():
+            return None
+        config_identity = file_identity(config_path.stat(follow_symlinks=False))
+        if config_identity is None:
+            return None
+        current = managed_cache_source(config_path, config_identity)
+        if current is None or current.parent.is_symlink():
+            return None
+        info = current.stat(follow_symlinks=False)
+        identity = file_identity(info)
+        if identity is None or info.st_size > MAX_BYTES:
+            return None
+        published = read_cached_publication(current, identity)
+        if (file_identity(config_path.stat(follow_symlinks=False)) == config_identity
+                and file_identity(current.stat(follow_symlinks=False)) == identity):
+            return published
+    except OSError:
         return None
     return None
 
@@ -166,9 +209,13 @@ def read_managed_cache(config_path):
 async def listed_models(providers):
     from .workbench import subscription_catalog
 
+    entries = await subscription_catalog(with_metadata=True)
+    return group_listed_models((subscription_entry(entry) for entry in entries), providers)
+
+
+def group_listed_models(entries, providers):
     listed = {provider: set() for provider in providers}
-    for entry in await subscription_catalog(with_metadata=True):
-        model = subscription_entry(entry)
+    for model in entries:
         if model["provider"] in listed:
             listed[model["provider"]].add(model["id"])
     return listed
@@ -188,6 +235,20 @@ def provider_reports(listed, published):
     }
 
 
+def cached_publication(entries):
+    try:
+        if not (WORKSPACE / "runtime/cli-proxy-api").is_file():
+            return None
+    except OSError:
+        return None
+    published = read_managed_cache(WORKSPACE / ".private/config.yaml")
+    if published is None:
+        return None
+    listed = group_listed_models(entries, SUBSCRIPTION_SECTIONS)
+    return {provider: {"catalog_only": sorted(published[provider] - models)}
+            for provider, models in listed.items()}
+
+
 async def refresh_gateway_catalog(source=None):
     providers = (source,) if source else tuple(SUBSCRIPTION_SECTIONS)
     path = WORKSPACE / ".private/config.yaml"
@@ -205,7 +266,8 @@ async def refresh_gateway_catalog(source=None):
                 cached = await asyncio.to_thread(read_managed_cache, path)
                 warning = ("暂时无法更新发布方模型目录。已读取本机网关，并沿用已缓存的发布方目录。" if cached is not None
                            else "暂时无法更新发布方模型目录。已读取本机网关，暂无可用的发布方目录缓存。")
-                return checked(updated=False, providers=provider_reports(before, published_models(cached or {}, providers)),
+                published = cached if cached is not None else published_models({}, providers)
+                return checked(updated=False, providers=provider_reports(before, published),
                                publisher_warning=warning)
             published = published_models(json.loads(data), providers)
             stage = "保存模型目录"

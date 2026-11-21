@@ -2,40 +2,42 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { REMOTE_CLIENT } from '../api-base';
 import { modelConnectionApi } from '../model-connection-api';
 import { ModelCatalogContext } from '../model-catalog-context';
-import { catalogOptions, failCatalogRefresh, gatewayDiscovery, isSubscriptionSource, mergeDiscoveries, publisherOnlyModels, subscriptionSources } from '../model-catalog-state';
+import { catalogOptions, failCatalogRefresh, gatewayDiscovery, isSubscriptionSource, mergeDiscoveries, mergeHostModelRead, nativeAgentSource, publisherOnlyModels, subscriptionSources } from '../model-catalog-state';
 import ModelConnections from './ModelConnections';
 import { machineShort } from '../machine';
 import { Icon } from './WorkbenchResults';
 
-function ConnectionsDialog({ onClose, onRefresh, theme }) {
-  const dialog = useRef(null);
+function ConnectionsDialog({ initialProvider, onClose, onRefresh, status, theme }) {
+  const dialog = useRef(null), savedConnection = useRef(null);
+  const close = () => onClose(savedConnection.current);
   useEffect(() => { const element = dialog.current; element.showModal(); return () => element.close(); }, []);
-  return <dialog ref={dialog} className="model-connections-dialog" data-theme={theme} aria-label="模型连接设置" onCancel={(event) => { event.preventDefault(); event.stopPropagation(); onClose(); }}><header><strong>模型连接</strong><button type="button" className="icon-button" aria-label="关闭模型连接设置" onClick={onClose}><Icon name="close" size={18} /></button></header><div className="model-connections-dialog-body"><ModelConnections onRefresh={onRefresh} /></div></dialog>;
+  return <dialog ref={dialog} className="model-connections-dialog" data-theme={theme} aria-label="模型连接设置" onCancel={(event) => { event.preventDefault(); event.stopPropagation(); close(); }}><header><strong>{initialProvider === 'gemini' ? 'Gemini API 连接' : '模型连接'}</strong><button type="button" className="icon-button" aria-label="关闭模型连接设置" onClick={close}><Icon name="close" size={18} /></button></header><div className="model-connections-dialog-body"><ModelConnections initialProvider={initialProvider} onChooseConnection={onClose} onModelsSaved={(id) => { savedConnection.current = id; }} onRefresh={onRefresh} status={status} /></div></dialog>;
 }
 
 export default function ModelCatalogProvider({ status, onRefresh, theme, children }) {
   const [discovery, setDiscovery] = useState(null);
   const [refreshingSource, setRefreshingSource] = useState(null);
   const pending = useRef(null);
-  const [connectionsOpen, setConnectionsOpen] = useState(false);
+  const [connections, setConnections] = useState(null);
   const refresh = useCallback((requestedSource = '') => {
     if (pending.current) return pending.current;
-    const source = isSubscriptionSource(requestedSource) ? requestedSource : '';
+    const source = isSubscriptionSource(requestedSource) || requestedSource === nativeAgentSource ? requestedSource : '';
     setRefreshingSource(source);
     pending.current = (async () => {
       if (!REMOTE_CLIENT) {
         try {
           const next = await modelConnectionApi.refreshCatalog(source);
-          setDiscovery((previous) => mergeDiscoveries(previous, next));
+          setDiscovery((previous) => mergeDiscoveries(previous, next, status));
         } catch (failure) {
           setDiscovery((previous) => failCatalogRefresh(previous, source, `无法刷新模型目录，保留上次读取的结果。${failure.message}`));
         }
       }
       // The host refreshes the gateway in the POST. Read its results only once it completes.
-      await onRefresh();
+      const current = await onRefresh();
+      if (REMOTE_CLIENT) setDiscovery((previous) => mergeHostModelRead(previous, source, status, current));
     })().finally(() => { pending.current = null; setRefreshingSource(null); });
     return pending.current;
-  }, [onRefresh]);
+  }, [onRefresh, status]);
   const ensureModel = async (model) => {
     if (model.registered) return model.id;
     if (REMOTE_CLIENT) throw new Error(`请先在${machineShort(status)}上把此模型加入连接。`);
@@ -46,6 +48,12 @@ export default function ModelCatalogProvider({ status, onRefresh, theme, childre
   };
   const catalog = useMemo(() => catalogOptions(status, discovery), [status, discovery]);
   const sourceDetails = (source = '') => {
+    if (source === nativeAgentSource) {
+      const entry = catalog.find((item) => item.provider === nativeAgentSource);
+      const report = discovery?.nativeAgent;
+      return { checkedAt: report?.checked_at || entry?.catalog_checked_at, error: report?.error,
+        stale: Boolean(report?.stale), changes: report?.changes, sources: [], publisherOnly: [] };
+    }
     const gateway = gatewayDiscovery(discovery, source);
     const subscription = isSubscriptionSource(source);
     const apiConnection = source.startsWith('connection:');
@@ -65,13 +73,19 @@ export default function ModelCatalogProvider({ status, onRefresh, theme, childre
       gatewayReread: !apiConnection && Boolean(gateway?.skipped),
       sources: subscription ? [] : (discovery?.sources || []).filter((item) => !apiConnection || source === `connection:${item.connection.id}`),
       publisherOnly: subscription ? publisherOnlyModels(status, discovery, source) : [],
-      publisherStale: stale || Boolean(gateway?.publisher_warning),
+      changes: subscription && !stale ? gateway?.changes : null,
+      publisherStale: stale || Boolean(gateway?.publisher_warning || (!gateway?.providers?.[source]?.catalog_only && status?.gateway?.cached_publication?.[source])),
       publisherWarning: [...new Set(publisherWarnings.filter(Boolean))].join(' '),
     };
   };
   const service = {
-    catalog, refresh, refreshing: refreshingSource !== null, refreshingSource, sourceDetails, ensureModel, onOpenConnections: () => setConnectionsOpen(true),
+    catalog, refresh, refreshing: refreshingSource !== null, refreshingSource, sourceDetails, ensureModel,
+    onOpenConnections: (initialProvider, onReturn) => setConnections({ initialProvider, onReturn }),
     remote: REMOTE_CLIENT,
   };
-  return <ModelCatalogContext.Provider value={service}>{children}{connectionsOpen && <ConnectionsDialog theme={theme} onClose={() => setConnectionsOpen(false)} onRefresh={refresh} />}</ModelCatalogContext.Provider>;
+  const closeConnections = (savedId) => {
+    connections?.onReturn?.(savedId);
+    setConnections(null);
+  };
+  return <ModelCatalogContext.Provider value={service}>{children}{connections && <ConnectionsDialog theme={theme} initialProvider={connections.initialProvider} status={status} onClose={closeConnections} onRefresh={connections.initialProvider === 'gemini' ? onRefresh : refresh} />}</ModelCatalogContext.Provider>;
 }

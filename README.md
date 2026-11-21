@@ -2,13 +2,14 @@
 
 **A local workspace where LLMs and executable Agents collaborate in project groups.**
 
-ModelDesk 把项目资料、协作成员和交付文件保存在同一处。统筹者（Ruler）负责分工，可以使用 LLM，或使用团队中能返回结构化计划的 MCP Agent。Codex、Claude Code、Muse、绘图模型和 MCP 成员按各自的能力执行任务。成果面板可以查看正文、图片和视频，也可以下载 Word、PDF 和独立网页。
+ModelDesk 把项目资料、协作成员和交付文件保存在同一处。统筹者（Ruler）负责分工，可以使用 LLM，或使用团队中能返回结构化计划的 MCP Agent。Antigravity Agent、Codex、Claude Code、Muse、绘图模型和 MCP 成员按各自的能力执行任务。成果面板可以查看正文、图片和视频，也可以下载 Word、PDF 和独立网页。
 
-**当前桌面版本 2.29.3** · macOS / Apple Silicon · Linux x64（Beta） · 中文界面 · 本机服务与私有手机入口
+**当前桌面版本 2.29.4** · macOS / Apple Silicon · Linux x64（Beta） · 中文界面 · 本机服务与私有手机入口
 
 ### 模型与飞书任务
 
-- 在 **Agent 与连接 → 模型连接 / API Key → 已有登录连接** 找到 **Gemini** 或 **ChatGPT**，点 **刷新列表** 查看该登录网关当前提供的模型。统筹和成员的模型选择框也支持按来源刷新。网关发布目录里、当前连接暂不可选的模型可展开查看。
+- 在 **Agent 与连接 → 模型连接 / API Key → 已有登录连接** 找到 **Gemini** 或 **ChatGPT**，点 **刷新列表** 查看该登录网关当前提供的模型。在统筹或成员的模型框选 **Google / Antigravity 网关**，可直接看到当前角色能选的 Gemini、该登录尚未提供的已发布型号，以及刷新前后的增减。点 **设置 Gemini API 连接** 可选用已有 Google API 连接或添加密钥，完成后回到同一模型框。
+- **用 Antigravity Agent 参加项目群**。在「成员与分工」打开成员或统筹的选择框，选择 **Google / Antigravity 网关 → 查看 Agent 可选型号**，挑选 Google CLI 在本机实际列出的 Gemini 型号并保存团队。点 **改用 Antigravity Agent** 可交给 CLI 选择默认型号。此成员可以在群里撰写、审阅文字或统筹交付，执行记录保留所选来源。指定的型号缺席或调用失败时会显示原因。初次使用可通过官方 `agy` 登录 Google，`agy models` 可核对账号的 CLI 目录。 [Google Antigravity CLI](https://antigravity.google/docs/getting-started?tab=cli)
 - 使用 Google AI Studio 密钥时，点 **添加 Gemini API**，在本机保存后选 **读取模型列表**。ModelDesk 会逐页读取 Google 提供的模型，可勾选加入项目使用。
 - 一个飞书机器人可绑定多个 ModelDesk 项目群。直接发新需求会建立独立任务。回复自己的任务回执即可修改那一份成果，也可发送 `/modeldesk continue <完整任务ID> <修改要求>`。群聊中请 @机器人。
 

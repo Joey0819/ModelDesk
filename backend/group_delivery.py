@@ -14,6 +14,8 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from .attachment_io import image_content_parts
 from .group_chat import GATEWAY
+from .antigravity_catalog import is_agent_id
+from .group_text import execution_metadata, native_text
 from .model_connections import request_options
 from .vision import public_text, user_content
 
@@ -58,8 +60,11 @@ def parse_plan(content, members):
 
 
 async def model_output(job, model, system, prompt, *, max_tokens=8192, image_parts=None):
-    payload = {"model": model, "messages": [{"role": "system", "content": system},
-               {"role": "user", "content": user_content(prompt, image_content_parts(job) if image_parts is None else image_parts)}], "max_tokens": max_tokens}
+    messages = [{"role": "system", "content": system},
+                {"role": "user", "content": user_content(prompt, image_content_parts(job) if image_parts is None else image_parts)}]
+    if is_agent_id(model):
+        return await native_text(job, model, messages), False
+    payload = {"model": model, "messages": messages, "max_tokens": max_tokens}
     # Native operations are never retried here. A failed model request is safe
     # to retry once; it has no tools or access to the execution managers.
     for attempt in range(2):
@@ -95,6 +100,7 @@ def evidence(result):
         content = raw[:min(5000, remaining)]
         remaining -= len(content)
         items.append({key: message.get(key) for key in ("member_id", "member_name", "model", "phase", "error", "incomplete")}
+                     | execution_metadata(message.get("model"))
                      | {"content": content, "truncated": len(content) < len(raw)})
     return list(reversed(items))
 
@@ -105,6 +111,7 @@ def execution_evidence(steps, output_limit=5000):
     for step in steps:
         entry = {key: step.get(key) for key in ("id", "supersedes_step_id", "member_id", "member_name", "kind", "status", "task_id", "error",
                  "output_sha256", "patch_sha256", "exit_code", "thread_url", "commands_observed", "commands_omitted")}
+        entry.update(execution_metadata(step.get("model")))
         raw = str(step.get("output") or "")
         if step.get("role_contract"):
             entry["role_contract"] = step["role_contract"]
@@ -171,7 +178,8 @@ async def _run_delivery(manager, job, result):
     native_instruction = native_media_instruction(contract)
     delivery = {"status": "planning", "title": "完整交付结果", "content": "", "model": model,
                 "steps": [], "limitations": [], "sources": [], "media": [],
-                "media_requirements": {key: contract[key] for key in ("images", "videos")}, "media_tasks": []}
+                "media_requirements": {key: contract[key] for key in ("images", "videos")}, "media_tasks": [],
+                **execution_metadata(model)}
     progress(manager, job, result, delivery)
     quoted = evidence(result)
     # Current goal stays ahead of cited context. The prepared execution prompt

@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, patch
 
 import httpx
 import yaml
+from fastapi import FastAPI
 
 from backend import gateway_catalog as catalog
 from backend import workbench
@@ -45,6 +46,72 @@ class GatewayCatalogTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((path_a.read_bytes(), path_b.read_bytes()), (first, second))
         for f in (self.config, path_a, path_b):
             self.assertEqual(f.stat().st_mode & 0o777, 0o600)
+
+    async def test_first_status_reports_cached_publication_without_exposing_it_as_live(self):
+        doc = json.loads(directory("gpt-publisher"))
+        doc["codex-plus"].append({"id": "gpt-live"})
+        doc["antigravity"] = [{"id": "gemini-live"}, {"id": "gemini-publisher", "display_name": "unused"}]
+        doc["gemini"] = [{"id": "gemini-api-only"}]
+        self.assertTrue(catalog.install_catalog(self.config, json.dumps(doc).encode()))
+        app = FastAPI()
+        app.include_router(workbench.router)
+        entries = [{"id": "gemini-live", "owned_by": "antigravity"}, {"id": "gpt-live", "owned_by": "openai"}]
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+            with patch.object(workbench, "subscription_catalog", new=AsyncMock(return_value=entries)) as listing, \
+                 patch.object(workbench, "TOOLS", self.workspace), \
+                 patch.object(workbench, "connection_models", return_value=[]), \
+                 patch.object(workbench.connection_store, "list", return_value=[]), \
+                 patch.object(catalog, "install_catalog", side_effect=AssertionError("unexpected install")), \
+                 patch.object(httpx, "AsyncClient", side_effect=AssertionError("unexpected network client")):
+                response = await client.get("/api/workbench/status")
+                listing.assert_awaited_once_with(with_metadata=True)
+                listing.side_effect = httpx.ConnectError("offline")
+                offline = await client.get("/api/workbench/status")
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["gateway"], {"online": True, "cached_publication": {
+            "antigravity": {"catalog_only": ["gemini-publisher"]}, "codex": {"catalog_only": ["gpt-publisher"]},
+        }})
+        self.assertEqual({row["id"] for row in body["models"] if row.get("source") == "gateway"}, {"gemini-live", "gpt-live"})
+        google = next(row for row in body["providers"] if row["id"] == "antigravity")
+        self.assertEqual(google["available_models"], ["gemini-live"])
+        self.assertFalse(offline.json()["gateway"]["online"])
+        self.assertNotIn("cached_publication", offline.json()["gateway"])
+
+    def test_cached_publication_is_reused_then_invalidated_on_file_or_config_changes(self):
+        entries = [{"id": "one", "provider": "other"}]
+        self.assertIsNone(catalog.cached_publication(entries))
+        self.assertTrue(catalog.install_catalog(self.config, directory("one")))
+
+        def google_published():
+            return catalog.cached_publication(entries)["antigravity"]["catalog_only"]
+
+        with patch.object(catalog, "parse_catalog", wraps=catalog.parse_catalog) as parse:
+            self.assertEqual(google_published(), ["one"])
+            self.assertEqual(google_published(), ["one"])
+            self.assertEqual(parse.call_count, 1)
+            entries.append({"id": "one", "provider": "antigravity"})
+            self.assertEqual(google_published(), [])
+            self.assertEqual(parse.call_count, 1)
+
+            self.assertTrue(catalog.install_catalog(self.config, directory("two")))
+            self.assertEqual(google_published(), ["two"])
+            source = Path(yaml.safe_load(self.config.read_bytes())["models"]["catalog"])
+            catalog.atomic_write(source, directory("red"))
+            self.assertEqual(google_published(), ["red"])
+            source.write_bytes(directory("new"))
+            self.assertEqual(google_published(), ["new"])
+            self.assertEqual(parse.call_count, 4)
+
+            source.write_bytes(b'{"antigravity":[{"id":"broken"}]}')
+            self.assertIsNone(catalog.cached_publication(entries))
+            self.assertIsNone(catalog.cached_publication(entries))
+            self.assertEqual(parse.call_count, 5)
+            source.write_bytes(directory("valid"))
+            self.assertEqual(google_published(), ["valid"])
+            self.config.write_bytes(self.original + b"models: {catalog: /operator-custom/models.json}\n")
+            self.assertIsNone(catalog.cached_publication(entries))
+            self.assertEqual(parse.call_count, 6)
 
     async def test_custom_source_and_unmanaged_gateway_are_left_to_the_operator(self):
         self.config.write_bytes(self.original + b"models: {catalog: /another-directory/models.json}\n")

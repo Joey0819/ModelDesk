@@ -5,6 +5,7 @@ import time
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException
+from .antigravity_catalog import DEFAULT_ID, LABEL, PROVIDER_ID, is_agent_id, native_catalog
 from .model_connections import require_local_admin
 
 RECENT_SECONDS = 86400
@@ -33,7 +34,29 @@ def recent_test(value):
 def model_evidence(jobs):
     """Only dated complete text steps, never the mere presence of an alias."""
     evidence = {}
+
+    def keep(model, stamp, job, **fields):
+        age = evidence_age(stamp)
+        if not model or age is None:
+            return False
+        if model not in evidence or datetime.fromisoformat(stamp) > datetime.fromisoformat(evidence[model]["checked_at"]):
+            evidence[model] = {"checked_at": stamp, "age_seconds": int(age), "job_id": job["id"],
+                               "capability": "text", "recent": age <= RECENT_SECONDS, **fields}
+        return True
+
     for job in jobs.values():
+        native_models = {model for model in job.get("models", []) if is_agent_id(model)}
+        if native_models:
+            for event in reversed(job.get("events", [])):
+                if event.get("type") != "stage" or event.get("stage") != "native_text_response":
+                    continue
+                data = event.get("data") or {}
+                model = data.get("model")
+                if (is_agent_id(model) and model in native_models and data.get("execution_source") == "native_agent"
+                        and keep(model, event.get("created_at"), job, execution_source="native_agent")):
+                    native_models.remove(model)
+                    if not native_models:
+                        break
         delivery = (job.get("result") or {}).get("delivery") or {}
         for step in delivery.get("steps", []):
             if step.get("kind") != "model" or step.get("status") != "complete" or not step.get("output") or step.get("truncated"):
@@ -42,10 +65,8 @@ def model_evidence(jobs):
                            if member.get("id") == step.get("member_id")), {})
             model = member.get("model")
             stamp = (step.get("attempts") or [{}])[-1].get("finished_at") or job.get("updated_at")
-            age = evidence_age(stamp)
-            if model and age is not None and (model not in evidence or age < evidence[model]["age_seconds"]):
-                evidence[model] = {"checked_at": stamp, "age_seconds": int(age), "job_id": job["id"],
-                                   "capability": "text", "recent": age <= RECENT_SECONDS}
+            if not is_agent_id(model):
+                keep(model, stamp, job)
     return evidence
 
 
@@ -103,7 +124,7 @@ async def inspect():
     from .group_tasks import engine_status
     from .muse_bridge import manager as muse
     from .model_connections import store
-    from .workbench import subscription_catalog
+    from .workbench import manager, subscription_catalog
     from scripts.modeldesk_worker import read_status
 
     async def bounded(call):
@@ -117,6 +138,13 @@ async def inspect():
     rows = [{"id": "subscription", "label": "本机模型网关", "state": "reachable" if models is not None else "unreachable",
              "reason": "目录可访问；模型授权和生成能力以实际调用为准" if models is not None else "启动本机模型网关后重试",
              "capabilities": ["text"], "model_count": len(models or [])}]
+    recent_native = {model for model, receipt in model_evidence(manager.jobs).items() if is_agent_id(model) and receipt["recent"]}
+    catalog = native_catalog(recent_native)
+    installed = any(row["id"] == DEFAULT_ID and row["installed"] for row in catalog)
+    verified = installed and any(row["id"] in recent_native and not row.get("unavailable") for row in catalog)
+    rows.append({"id": PROVIDER_ID, "label": LABEL, "capabilities": ["text"],
+                 "state": "ready" if verified else "unknown" if installed else "unavailable",
+                 "reason": "已有近期原生文字回复" if verified else "已安装，等待实际文字回复验证登录" if installed else "未找到官方 Antigravity CLI (agy)"})
     for engine in (engines or {}).get("engines", []):
         if engine["id"] == "member_model":
             continue

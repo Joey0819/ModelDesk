@@ -341,8 +341,12 @@ async def create_connection(request: Request):
 
 
 @router.post("/refresh-catalog")
-async def refresh_catalog(source: Literal["antigravity", "codex"] | None = None):
+async def refresh_catalog(source: Literal["antigravity", "codex", "antigravity-agent"] | None = None):
     """Refresh the host routing directory and discover models on enabled API connections."""
+    if source == "antigravity-agent":
+        from .antigravity_catalog import refresh_native_catalog
+        agent = await refresh_native_catalog()
+        return {"scope": source, "checked_at": agent["checked_at"], "native_agent": agent, "sources": []}
     if source:
         gateway = await refresh_gateway_catalog(source)
         return {"scope": source, "checked_at": gateway["checked_at"], "gateway": gateway, "sources": []}

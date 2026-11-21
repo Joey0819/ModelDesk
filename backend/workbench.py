@@ -24,6 +24,7 @@ from fastapi import APIRouter, Header, HTTPException, Query
 from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from .antigravity_catalog import LABEL as ANTIGRAVITY_LABEL, PROVIDER_ID as ANTIGRAVITY_AGENT_PROVIDER, is_agent_id, native_catalog
 from .council import (
     calculate_aggregate_rankings,
     stage1_collect_responses,
@@ -32,6 +33,7 @@ from .council import (
 )
 from .workflow_config import WorkflowConfig, validate_workflow
 from .conversations import build_history, encoded, quoted_history
+from .gateway_catalog import cached_publication
 from .model_connections import model_catalog as connection_models, request_options, store as connection_store, grant_worker, revoke_worker
 
 
@@ -86,10 +88,12 @@ async def model_catalog():
         if not connected:
             raise
         existing = []
-    return sorted(set(existing + connected))
+    return sorted({model for model in existing + connected if not is_agent_id(model)})
 
 
 def provider_for(model):
+    if is_agent_id(model):
+        return ANTIGRAVITY_AGENT_PROVIDER
     if model.startswith("connection:"):
         return ":".join(model.split(":")[:2])
     if model.startswith("gpt-") or model.startswith("o3") or model.startswith("o4"):
@@ -140,6 +144,8 @@ class JobRequest(BaseModel):
 
     @model_validator(mode="after")
     def role_limits(self):
+        if self.mode != "group" and (any(is_agent_id(model) for model in self.models) or is_agent_id(self.chairman)):
+            raise ValueError("Antigravity Agent 可在项目群中选择使用")
         if any(model not in self.models or len(role) > 2000 for model, role in self.roles.items()):
             raise ValueError("角色仅能对应所选模型，且每个角色要求不得超过 2000 字符")
         if self.workflow is not None:
@@ -1126,12 +1132,17 @@ async def status():
     from .model_catalog import subscription_entry
     try:
         entries = [subscription_entry(item) for item in await subscription_catalog(with_metadata=True)]
+        entries = [item for item in entries if not is_agent_id(item["id"])]
         catalog = [item["id"] for item in entries]
         gateway = {"online": True}
     except Exception as exc:
         entries = []
         catalog = []
         gateway = {"online": False, "error": public_error(exc)}
+    else:
+        publication = await asyncio.to_thread(cached_publication, entries)
+        if publication is not None:
+            gateway["cached_publication"] = publication
     connections_error = None
     try:
         api_models = connection_models()
@@ -1151,6 +1162,9 @@ async def status():
     from .readiness import model_evidence
     evidence = model_evidence(manager.jobs)
     verified_models = {model for model, item in evidence.items() if item["recent"]}
+    native_models = native_catalog(verified_models)
+    native_available = [row["id"] for row in native_models if row["installed"] and not row.get("unavailable")]
+    native_verified = [model for model in native_available if model in verified_models]
     providers = []
     for identifier, label in [("codex", "ChatGPT"), ("antigravity", "Gemini")]:
         available = [item["id"] for item in entries if item["provider"] == identifier]
@@ -1159,6 +1173,15 @@ async def status():
             provider["expires_at"] = auth[identifier][0]["expires_at"]
         providers.append(provider)
     providers.append({"id": "claude", "label": "Claude", "authenticated": False, "available_models": [], "verified_models": [], "reason": "Claude 订阅 OAuth 未接入；可继续使用官方应用。"})
+    native_provider = {"id": ANTIGRAVITY_AGENT_PROVIDER, "label": ANTIGRAVITY_LABEL, "source": "native_agent",
+                       "installed": bool(native_available), "authenticated": bool(native_verified),
+                       "authentication_evidence": "recent_native_text_call" if native_verified else "unknown",
+                       "available_models": native_available, "verified_models": native_verified}
+    if not native_available:
+        native_provider["reason"] = "未找到官方 Antigravity CLI (agy)"
+    elif not native_verified:
+        native_provider["reason"] = "已找到官方 CLI；登录状态需通过实际文字回复验证"
+    providers.append(native_provider)
     for connection in saved_connections:
         available = [model for model in api_models if model["connection_id"] == connection["id"]]
         providers.append({"id": "connection:" + connection["id"], "label": connection["name"],
@@ -1170,14 +1193,19 @@ async def status():
     for identifier, label in [("chat", "多模型聊天"), ("council", "LLM Council"), ("camel", "CAMEL"), ("crewai", "CrewAI"), ("group", "MultiBot Chat"), ("review", "代码评审"), ("camel_workforce", "CAMEL Workforce"), ("crewai_flow", "CrewAI Flow"), ("sdk_script", "原生 SDK 工作室")]:
         sdk = "camel" if identifier.startswith("camel") else "crewai"
         installed = identifier in {"chat", "council", "group", "review", "sdk_script"} or (TOOLS / (".venv-" + sdk) / "bin/python").exists()
-        tools[identifier] = {"available": installed and (gateway["online"] or bool(api_models)), "label": label}
+        reachable = gateway["online"] or bool(api_models) or (identifier == "group" and bool(native_available))
+        tools[identifier] = {"available": installed and reachable, "label": label}
         if not installed:
             tools[identifier]["reason"] = "独立运行环境尚未安装"
-        elif not gateway["online"] and not api_models:
+        elif not reachable:
             tools[identifier]["reason"] = "本地模型网关未启动"
     api_by_id = {model["id"]: model for model in api_models}
     gateway_by_id = {item["id"]: item for item in entries}
     models = [api_by_id.get(model) or {**gateway_by_id[model], "verified": model in verified_models, "last_success": evidence.get(model), "verification_scope": "recent_text_call" if model in verified_models else "not_recently_verified"} for model in catalog]
+    for row in native_models:
+        model = row["id"]
+        models.append({**row, "last_success": evidence.get(model),
+                       "verification_scope": "recent_native_text_call" if model in native_verified else "not_recently_verified"})
     from .media_providers import capabilities
     from .platform_support import get_platform_info
     # Reuse the exact fetched catalogs; reading stored image receipts does not

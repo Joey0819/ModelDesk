@@ -6,13 +6,13 @@ import { fileURLToPath } from 'node:url';
 import { buildSync } from 'esbuild';
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { FEISHU_SETUP_URL, feishuBinding, feishuBody, feishuConnectionStatus, feishuDraft, feishuIssue, feishuSenderIds, safeFeishuError } from '../src/feishu-state.js';
+import { FEISHU_SETUP_URL, feishuBinding, feishuBody, feishuConnectionStatus, feishuDraft, feishuIssue, feishuSenderIds, roomFeishuSummary, safeFeishuError } from '../src/feishu-state.js';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const compiled = buildSync({ stdin: { contents: 'export {FeishuConfigurationForm,FeishuConnectionOverview,FeishuRecentReceipts} from "./src/components/FeishuConnection.jsx"; export {feishuApi} from "./src/feishu-api.js"; export {machineInfo} from "./src/machine.js";', resolveDir: root }, bundle: true, platform: 'node', format: 'cjs', jsx: 'automatic', write: false, external: ['react', 'react/jsx-runtime'], define: { 'import.meta.env': '{}' }, loader: { '.css': 'empty' } });
+const compiled = buildSync({ stdin: { contents: 'export {FeishuAllGroupsMatrix,FeishuConfigurationForm,FeishuConnectionOverview,FeishuRecentReceipts} from "./src/components/FeishuConnection.jsx"; export {default as GroupFeishuDialog} from "./src/components/GroupFeishuDialog.jsx"; export {feishuApi} from "./src/feishu-api.js"; export {machineInfo} from "./src/machine.js";', resolveDir: root }, bundle: true, platform: 'node', format: 'cjs', jsx: 'automatic', write: false, external: ['react', 'react/jsx-runtime'], define: { 'import.meta.env': '{}' }, loader: { '.css': 'empty' } });
 const filename = path.join(root, 'tests/feishu-virtual.cjs');
 const module = new Module(filename); module.paths = Module._nodeModulePaths(path.dirname(filename)); module._compile(compiled.outputFiles[0].text, filename);
-const { FeishuConfigurationForm, FeishuConnectionOverview, FeishuRecentReceipts, feishuApi, machineInfo } = module.exports;
+const { FeishuAllGroupsMatrix, FeishuConfigurationForm, FeishuConnectionOverview, FeishuRecentReceipts, GroupFeishuDialog, feishuApi, machineInfo } = module.exports;
 const binding = { chat_id: 'oc_allowed', name: 'Work group', project_id: 'project-a', room_id: 'room-a', allowed_sender_ids: ['ou_owner'], allow_native: false, natural_language_tasks: false };
 const config = { app_id: 'cli_myapp', enabled: true, has_app_secret: true, bindings: [binding] };
 
@@ -162,4 +162,165 @@ test('Feishu configuration form exposes the owner allowlist with p2p-only self-s
   assert.match(html, /最多 10 个/);
   const noOwners = renderToStaticMarkup(React.createElement(FeishuConfigurationForm, { draft: feishuDraft(config), projects: [], chats: [], onChange() {}, onSave() {} }));
   assert.match(noOwners, /留空则完全关闭飞书内自助开通/);
+});
+
+test('roomFeishuSummary resolves direct bindings, all-groups coverage, offline, unbound and unconfigured states', () => {
+  const onlineStatus = { state: 'connected' };
+  const direct = roomFeishuSummary({ config, status: onlineStatus }, 'project-a', 'room-a');
+  assert.equal(direct.configured, true);
+  assert.equal(direct.enabled, true);
+  assert.equal(direct.online, true);
+  assert.equal(direct.directBindings.length, 1);
+  assert.equal(direct.allGroupsBindings.length, 0);
+  assert.equal(direct.bound, true);
+  assert.equal(direct.connected, true);
+  assert.equal(direct.statusLabel, '已连接');
+
+  const allGroupsConfig = { ...config, bindings: [{ ...binding, allow_all_groups: true }] };
+  const covered = roomFeishuSummary({ config: allGroupsConfig, status: onlineStatus }, 'project-b', 'room-b');
+  assert.equal(covered.directBindings.length, 0);
+  assert.equal(covered.allGroupsBindings.length, 1);
+  assert.equal(covered.bound, true);
+  assert.equal(covered.connected, true);
+  assert.equal(covered.statusLabel, '已连接');
+
+  const directWithAllGroups = roomFeishuSummary({ config: allGroupsConfig, status: onlineStatus }, 'project-a', 'room-a');
+  assert.equal(directWithAllGroups.directBindings.length, 1);
+  assert.equal(directWithAllGroups.allGroupsBindings.length, 0);
+
+  const offline = roomFeishuSummary({ config, status: { state: 'reconnecting' } }, 'project-a', 'room-a');
+  assert.equal(offline.online, false);
+  assert.equal(offline.bound, true);
+  assert.equal(offline.connected, false);
+  assert.equal(offline.statusLabel, '已绑定（未在线）');
+
+  const disabled = roomFeishuSummary({ config: { ...config, enabled: false }, status: onlineStatus }, 'project-a', 'room-a');
+  assert.equal(disabled.online, false);
+  assert.equal(disabled.statusLabel, '已绑定（未在线）');
+
+  const unbound = roomFeishuSummary({ config, status: onlineStatus }, 'project-b', 'room-b');
+  assert.equal(unbound.configured, true);
+  assert.equal(unbound.bound, false);
+  assert.equal(unbound.connected, false);
+  assert.equal(unbound.statusLabel, '未连接');
+
+  const unconfigured = roomFeishuSummary({ config: {}, status: { state: 'not_configured' } }, 'project-a', 'room-a');
+  assert.equal(unconfigured.configured, false);
+  assert.equal(unconfigured.statusLabel, '未配置机器人');
+
+  const defensive = roomFeishuSummary([], null, 'room-x');
+  assert.equal(defensive.configured, false);
+  assert.equal(defensive.connected, false);
+  assert.equal(defensive.statusLabel, '未配置机器人');
+});
+
+test('feishuBody omits false multi-group flags for compatibility and emits them when enabled', () => {
+  const baseDraft = feishuDraft(config);
+  assert.equal(baseDraft.bindings[0].allow_all_groups, false);
+  assert.equal(baseDraft.bindings[0].push_group_results, false);
+  const defaultBody = feishuBody(baseDraft);
+  assert.deepEqual(Object.keys(defaultBody.bindings[0]).sort(), ['allow_native', 'allowed_sender_ids', 'chat_id', 'name', 'natural_language_tasks', 'project_id', 'room_id']);
+
+  const enabledBody = feishuBody({
+    ...baseDraft,
+    bindings: [{ ...baseDraft.bindings[0], allow_all_groups: true, push_group_results: true }],
+  });
+  assert.equal(enabledBody.bindings[0].allow_all_groups, true);
+  assert.equal(enabledBody.bindings[0].push_group_results, true);
+});
+
+test('feishuApi room binding endpoints construct expected URLs, methods and payloads', async () => {
+  const previous = globalThis.fetch;
+  const calls = [];
+  globalThis.fetch = async (url, options) => {
+    calls.push({ url, ...options });
+    return { ok: true, json: async () => ({ config, status: { state: 'connected' }, rooms: [] }) };
+  };
+  try {
+    await feishuApi.rooms();
+    await feishuApi.saveRoomBinding('room/1', { chat_id: 'oc_1', allow_all_groups: true });
+    await feishuApi.removeRoomBinding('room/1', 'oc_1', 'proj a');
+    await feishuApi.removeRoomBinding('room-2', 'oc_2', null);
+    assert.deepEqual(
+      calls.map((call) => [new URL(call.url).pathname + new URL(call.url).search, call.method]),
+      [
+        ['/api/feishu/rooms', 'GET'],
+        ['/api/feishu/rooms/room%2F1/binding', 'PUT'],
+        ['/api/feishu/rooms/room%2F1/binding/oc_1?project_id=proj%20a', 'DELETE'],
+        ['/api/feishu/rooms/room-2/binding/oc_2', 'DELETE'],
+      ],
+    );
+    assert.deepEqual(JSON.parse(calls[1].body), { chat_id: 'oc_1', allow_all_groups: true });
+  } finally {
+    globalThis.fetch = previous;
+  }
+});
+
+test('FeishuConfigurationForm, FeishuConnectionOverview, FeishuAllGroupsMatrix and GroupFeishuDialog expose multi-group controls', () => {
+  const formHtml = renderToStaticMarkup(React.createElement(FeishuConfigurationForm, {
+    draft: feishuDraft({ ...config, bindings: [{ ...binding, allow_all_groups: true, push_group_results: true }] }),
+    projects: [{ id: 'project-a', name: 'My project' }],
+    chats: [],
+    onChange() {},
+    onSave() {},
+  }));
+  assert.match(formHtml, /允许此会话访问与切换全部 ModelDesk 项目群/);
+  assert.match(formHtml, /将本群在桌面端 \/ 自动化完成的成果自动推送到飞书/);
+  assert.match(formHtml, /\/modeldesk groups/);
+
+  const overviewHtml = renderToStaticMarkup(React.createElement(FeishuConnectionOverview, {
+    connection: { config, status: { state: 'not_configured' } },
+    onRefresh() {},
+    onTest() {},
+    onDiscover() {},
+  }));
+  assert.match(overviewHtml, /\/modeldesk groups/);
+  assert.match(overviewHtml, /\/modeldesk use 序号或群名/);
+  assert.match(overviewHtml, /\/modeldesk to 序号或群名 整理方案/);
+
+  const rooms = [
+    { id: 'room-a', project_id: 'project-a', project_name: '项目甲', title: '研发群', member_count: 4 },
+    { id: 'room-b', project_id: 'project-b', project_name: '项目乙', title: '增长群', member_count: 3 },
+  ];
+  const matrixSingleHtml = renderToStaticMarkup(React.createElement(FeishuAllGroupsMatrix, {
+    rooms,
+    config,
+    status: { state: 'connected' },
+    onOpenGroupRoom() {},
+    onEnableAllGroups() {},
+    onAddRoomBinding() {},
+  }));
+  assert.match(matrixSingleHtml, /全部项目群飞书接入总览（已接入 1 \/ 总共 2 个群）/);
+  assert.match(matrixSingleHtml, /一键开启「全部项目群接入」/);
+  assert.match(matrixSingleHtml, /专属飞书绑定/);
+  assert.match(matrixSingleHtml, /未接入/);
+  assert.match(matrixSingleHtml, /打开群聊/);
+  assert.match(matrixSingleHtml, /添加到绑定/);
+
+  const matrixAllHtml = renderToStaticMarkup(React.createElement(FeishuAllGroupsMatrix, {
+    rooms,
+    config: { ...config, bindings: [{ ...binding, allow_all_groups: true }] },
+    status: { state: 'connected' },
+    onOpenGroupRoom() {},
+    onEnableAllGroups() {},
+    onAddRoomBinding() {},
+  }));
+  assert.match(matrixAllHtml, /全部项目群飞书接入总览（已接入 2 \/ 总共 2 个群）/);
+  assert.doesNotMatch(matrixAllHtml, /一键开启「全部项目群接入」/);
+  assert.match(matrixAllHtml, /全群机器人已接入/);
+
+  const dialogHtml = renderToStaticMarkup(React.createElement(GroupFeishuDialog, {
+    room: { id: 'room-b', title: '增长群' },
+    projectId: 'project-b',
+    status: null,
+    feishuData: { config, status: { state: 'connected' }, rooms, recent: [], observed_chats: [] },
+    onUpdated() {},
+    onOpenFeishuSettings() {},
+    onClose() {},
+  }));
+  assert.match(dialogHtml, /<dialog[^>]*closedby="any"/);
+  assert.doesNotMatch(dialogHtml, /role="dialog"|aria-modal/);
+  assert.match(dialogHtml, /飞书机器人连接/);
+  assert.match(dialogHtml, /让已有飞书机器人接入全部项目群/);
+  assert.match(dialogHtml, /保存当前群飞书绑定/);
 });

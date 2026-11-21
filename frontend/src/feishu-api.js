@@ -12,7 +12,9 @@ async function request(path = '', method = 'GET', body) {
     let detail;
     try { detail = (await response.json()).detail; } catch { /* Preserve the failure. */ }
     if (Array.isArray(detail)) detail = detail.map((item) => item.msg).join('；');
-    throw new Error(typeof detail === 'string' ? detail : `飞书请求失败（${response.status}）`);
+    const error = new Error(typeof detail === 'string' ? detail : `飞书请求失败（${response.status}）`);
+    error.status = response.status;
+    throw error;
   }
   return response.json();
 }
@@ -21,4 +23,7 @@ export const feishuApi = {
   save: (body) => request('', 'PUT', body),
   test: () => request('/test', 'POST'),
   chats: (pageToken) => request(`/chats${pageToken ? `?page_token=${encodeURIComponent(pageToken)}` : ''}`),
+  rooms: () => request('/rooms'),
+  saveRoomBinding: (roomId, body) => request(`/rooms/${encodeURIComponent(roomId)}/binding`, 'PUT', body),
+  removeRoomBinding: (roomId, chatId, projectId) => request(`/rooms/${encodeURIComponent(roomId)}/binding/${encodeURIComponent(chatId)}${projectId ? `?project_id=${encodeURIComponent(projectId)}` : ''}`, 'DELETE'),
 };

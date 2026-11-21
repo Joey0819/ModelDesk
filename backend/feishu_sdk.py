@@ -57,6 +57,16 @@ class FeishuSDK:
             raise FeishuAPIError("飞书未返回可确认的消息回执")
         return data.message_id
 
+    def send(self, chat_id, msg_type, content, dispatch_id):
+        from lark_oapi.api.im.v1 import CreateMessageRequest, CreateMessageRequestBody
+        request = (CreateMessageRequest.builder().receive_id_type("chat_id").request_body(
+            CreateMessageRequestBody.builder().receive_id(chat_id).msg_type(msg_type)
+            .content(json.dumps(content, ensure_ascii=False)).uuid(dispatch_id).build()).build())
+        data = self.checked(self.client.im.v1.message.create(request))
+        if not data or not data.message_id:
+            raise FeishuAPIError("飞书未返回可确认的消息回执")
+        return data.message_id
+
     def upload(self, entry, raw):
         from lark_oapi.api.im.v1 import CreateFileRequest, CreateFileRequestBody
         request = CreateFileRequest.builder().request_body(CreateFileRequestBody.builder()

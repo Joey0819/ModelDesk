@@ -13,7 +13,7 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 
 from fastapi import HTTPException
-from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, ValidationError, field_validator, model_validator
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -31,6 +31,8 @@ class Binding(BaseModel):
     allowed_sender_ids: list[str] = Field(default_factory=list, max_length=100)
     allow_native: bool = False
     natural_language_tasks: bool = False
+    allow_all_groups: bool = False
+    push_group_results: bool = False
 
     @field_validator("allowed_sender_ids")
     @classmethod
@@ -184,7 +186,91 @@ class FeishuStore:
             request = ConfigInput(enabled=current["enabled"], app_id=current["app_id"],
                                    owner_sender_ids=current.get("owner_sender_ids") or [], bindings=bindings)
             self.save_config(request)
+            self.clear_chat_route(current["app_id"], chat_id)
             return True
+
+    def upsert_room_binding(
+        self,
+        room_id,
+        *,
+        chat_id,
+        name="",
+        project_id=None,
+        allowed_sender_ids=None,
+        allow_native=False,
+        natural_language_tasks=False,
+        allow_all_groups=False,
+        push_group_results=False,
+        replace_existing=False,
+        enable_connection=False,
+    ):
+        """Atomically bind or update one Feishu chat for a room without touching credentials or owners."""
+        with self.lock:
+            current = self.config()
+            if not current.get("app_id") or not current.get("app_secret"):
+                raise HTTPException(422, "请先在「Agent 与连接 → 飞书远程」填写并保存 App ID 和 App Secret")
+            room_id_str = str(room_id)
+            project_id_str = str(project_id) if project_id else None
+            from .groups import store as rooms
+            rooms.get(room_id_str, project_id_str)
+            existing = next((item for item in current["bindings"] if item["chat_id"] == chat_id), None)
+            if (existing and (existing.get("room_id") != room_id_str or existing.get("project_id") != project_id_str)
+                    and not replace_existing):
+                raise HTTPException(
+                    409,
+                    "此飞书会话已绑定到其他项目群。请确认改绑到当前群，或为该会话开启「允许访问与切换全部项目群」。",
+                )
+            new_binding = {
+                "chat_id": chat_id,
+                "name": name or "",
+                "project_id": project_id_str,
+                "room_id": room_id_str,
+                "allowed_sender_ids": list(allowed_sender_ids or []),
+                "allow_native": bool(allow_native),
+                "natural_language_tasks": bool(natural_language_tasks),
+                "allow_all_groups": bool(allow_all_groups),
+                "push_group_results": bool(push_group_results),
+            }
+            bindings = [item for item in current["bindings"] if item["chat_id"] != chat_id] + [new_binding]
+            enabled = True if enable_connection else current["enabled"]
+            try:
+                request = ConfigInput(
+                    enabled=enabled,
+                    app_id=current["app_id"],
+                    owner_sender_ids=current.get("owner_sender_ids") or [],
+                    bindings=bindings,
+                )
+            except ValidationError as error:
+                detail = error.errors()[0].get("msg", "飞书绑定参数无效") if error.errors() else "飞书绑定参数无效"
+                raise HTTPException(422, detail) from None
+            result = self.save_config(request)
+            self.clear_chat_route(current["app_id"], chat_id)
+            return result
+
+    def remove_room_binding(self, room_id, chat_id, project_id=None):
+        """Atomically remove one room's Feishu chat binding without touching credentials or owners."""
+        with self.lock:
+            current = self.config()
+            room_id_str = str(room_id)
+            project_id_str = str(project_id) if project_id is not None else None
+            target = next(
+                (item for item in current["bindings"]
+                 if item["chat_id"] == chat_id and item["room_id"] == room_id_str
+                 and (project_id_str is None or item.get("project_id") == project_id_str)),
+                None,
+            )
+            if not target:
+                raise HTTPException(404, "未找到此项目群对应的飞书会话绑定")
+            bindings = [item for item in current["bindings"] if item is not target]
+            request = ConfigInput(
+                enabled=current["enabled"],
+                app_id=current["app_id"],
+                owner_sender_ids=current.get("owner_sender_ids") or [],
+                bindings=bindings,
+            )
+            result = self.save_config(request)
+            self.clear_chat_route(current["app_id"], chat_id)
+            return result
 
     @contextmanager
     def db(self):
@@ -205,12 +291,58 @@ class FeishuStore:
                 code TEXT NOT NULL, payload TEXT NOT NULL, created_at TEXT NOT NULL, expires_at TEXT NOT NULL, used_at TEXT);
             CREATE INDEX IF NOT EXISTS plans_chat ON plans(app_id, chat_id);
             CREATE INDEX IF NOT EXISTS plans_rate ON plans(app_id, chat_id, created_at);
+            CREATE TABLE IF NOT EXISTS chat_routes (
+                id TEXT PRIMARY KEY,
+                app_id TEXT NOT NULL,
+                chat_id TEXT NOT NULL,
+                config_revision TEXT NOT NULL,
+                project_id TEXT,
+                room_id TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
         """)
         try:
             with db:
                 yield db
         finally:
             db.close()
+
+    def get_chat_route(self, app_id, chat_id, config_revision):
+        with self.db() as db:
+            row = db.execute(
+                "SELECT project_id, room_id, updated_at FROM chat_routes WHERE id=? AND app_id=? AND chat_id=? AND config_revision=?",
+                (f"{app_id}:{chat_id}", app_id, chat_id, config_revision),
+            ).fetchone()
+            if not row:
+                return None
+            return {"project_id": row["project_id"], "room_id": row["room_id"], "updated_at": row["updated_at"]}
+
+    def set_chat_route(self, app_id, chat_id, config_revision, project_id, room_id):
+        stamp = now()
+        project_str = str(project_id) if project_id else None
+        room_str = str(room_id)
+        with self.db() as db:
+            db.execute(
+                "INSERT OR REPLACE INTO chat_routes (id, app_id, chat_id, config_revision, project_id, room_id, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (f"{app_id}:{chat_id}", app_id, chat_id, config_revision, project_str, room_str, stamp),
+            )
+        return {"project_id": project_str, "room_id": room_str, "updated_at": stamp}
+
+    def active_routes(self, app_id, config_revision):
+        if not app_id or not config_revision:
+            return {}
+        with self.db() as db:
+            rows = db.execute(
+                "SELECT chat_id, project_id, room_id FROM chat_routes WHERE app_id=? AND config_revision=?",
+                (app_id, config_revision),
+            ).fetchall()
+            return {row["chat_id"]: {"project_id": row["project_id"], "room_id": row["room_id"]} for row in rows}
+
+    def clear_chat_route(self, app_id, chat_id):
+        if not app_id or not chat_id:
+            return
+        with self.db() as db:
+            db.execute("DELETE FROM chat_routes WHERE id=?", (f"{app_id}:{chat_id}",))
 
     def ingest(self, event):
         """Called by the authenticated SDK worker; commit before acknowledging it."""
@@ -289,12 +421,19 @@ class FeishuStore:
                 command = ''  # A greeting or unknown slash command shows help, never runs a task.
             elif text.casefold() in {'status', '状态'}:
                 command = 'status'
+            elif binding and binding.get("allow_all_groups") and text.casefold() in {"groups", "群列表", "所有群", "全部群", "项目群列表"}:
+                command = "groups"
             else:
-                continuation = re.match(r'^(?:继续|continue)(?:[：:\s]+(.*)|$)', text, flags=re.IGNORECASE | re.DOTALL)
-                if continuation:
-                    command = 'continue ' + (continuation[1] or '')
+                switch_match = (re.match(r"^(?:切换群|切换项目群|use)[：:\s]+(.+)$", text, flags=re.IGNORECASE)
+                                if binding and binding.get("allow_all_groups") else None)
+                if switch_match:
+                    command = "use " + switch_match[1].strip()
                 else:
-                    command = ('continue ' if is_reply else 'task ') + text
+                    continuation = re.match(r'^(?:继续|continue)(?:[：:\s]+(.*)|$)', text, flags=re.IGNORECASE | re.DOTALL)
+                    if continuation:
+                        command = 'continue ' + (continuation[1] or '')
+                    else:
+                        command = ('continue ' if is_reply else 'task ') + text
         identifier = str(uuid.uuid5(uuid.NAMESPACE_URL, "modeldesk:feishu:" + config["app_id"] + ":" + message_id))
         with self.db() as db:
             db.execute("BEGIN IMMEDIATE")

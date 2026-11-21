@@ -32,6 +32,13 @@ class FakeSDK:
             raise TimeoutError("unconfirmed secret must never be displayed")
         return "om_reply_" + str(len(self.calls))
 
+    def send(self, chat_id, kind, content, dispatch):
+        self.calls.append(("send", chat_id, kind, content, dispatch))
+        if self.fail:
+            self.fail = False
+            raise TimeoutError("unconfirmed secret must never be displayed")
+        return "om_send_" + str(len(self.calls))
+
     def upload(self, entry, raw):
         self.calls.append(("upload", entry, raw))
         return "file_confirmed"
@@ -513,6 +520,509 @@ class FeishuTests(unittest.IsolatedAsyncioTestCase):
         finally:
             await self.controller.shutdown()
 
+    async def test_all_groups_list_switch_direct_to_and_at_routing_preserves_inflight_revision(self):
+        from backend import projects
+        project2_id, room2_id = str(uuid.uuid4()), str(uuid.uuid4())
+        rooms_data = [
+            {
+                "id": self.room_id,
+                "project_id": self.project_id,
+                "title": "产品规划群",
+                "team_snapshot": {"members": [{"id": "a"}, {"id": "b"}]},
+                "updated_at": "2026-11-21T10:00:00+00:00",
+            },
+            {
+                "id": room2_id,
+                "project_id": project2_id,
+                "title": "AI 架构设计",
+                "team_snapshot": {"members": [{"id": "a"}, {"id": "b"}, {"id": "c"}]},
+                "updated_at": "2026-11-21T09:00:00+00:00",
+            },
+        ]
+        registry = {
+            self.project_id: {"id": self.project_id, "name": "核心产品"},
+            project2_id: {"id": project2_id, "name": "研发平台"},
+        }
+
+        def fake_room_get(rid, pid=None):
+            for item in rooms_data:
+                if item["id"] == rid and item["project_id"] == pid:
+                    return item
+            raise HTTPException(404, "项目群不存在")
+
+        destinations = []
+
+        async def submit_multi(room, request, project, **kwargs):
+            record = next(row for row in self.store.events() if row["job_id"] == kwargs["job_id"])
+            self.assertEqual(record["state"], "dispatching")
+            self.assertEqual(record["target_room_id"], room)
+            self.assertEqual(record["target_project_id"], project)
+            destinations.append((project, room, request.prompt, request.context_mode))
+            job = {
+                "id": kwargs["job_id"],
+                "mode": "group",
+                "status": "running",
+                "project_id": project,
+                "group_room_id": room,
+                "conversation_id": room,
+                "group_context_mode": request.context_mode,
+                "external_source": kwargs["external_source"],
+                "events": [],
+                "created_at": workbench.now(),
+                "autonomy": {"state": "running"},
+            }
+            self.jobs.jobs[job["id"]] = job
+            self.jobs.wakeups[job["id"]] = asyncio.Event()
+            return job
+
+        with patch.object(groups.store, "get", side_effect=fake_room_get), \
+             patch.object(groups.store, "_rooms", return_value=rooms_data), \
+             patch.object(projects.store, "read_registry", return_value=registry), \
+             patch.object(groups, "submit_message", AsyncMock(side_effect=submit_multi)) as submit_mock:
+            # First verify allow_all_groups=False (on oc_locked) stays strictly scoped and never leaks Room 2.
+            self.store.save_config(ConfigInput(
+                enabled=True,
+                app_id="cli_test",
+                bindings=[
+                    {**self.binding, "allow_all_groups": True, "natural_language_tasks": True},
+                    {**self.binding, "chat_id": "oc_locked", "allow_all_groups": False},
+                ],
+            ))
+            revision = self.store.config()["revision"]
+
+            self.received(chat_id="oc_locked", text="/modeldesk groups")
+            self.received(chat_id="oc_locked", text="/modeldesk use AI 架构设计")
+            self.received(chat_id="oc_locked", text="/modeldesk to 2 紧急调研")
+            await self.controller.tick()
+            submit_mock.assert_not_awaited()
+            self.assertEqual(len(self.sdk.calls), 3)
+            self.assertIn("产品规划群", self.sdk.calls[0][3]["text"])
+            self.assertNotIn("AI 架构设计", self.sdk.calls[0][3]["text"])
+            self.assertIn("未开启", self.sdk.calls[1][3]["text"])
+            self.assertIn("未开启", self.sdk.calls[2][3]["text"])
+
+            self.sdk.calls.clear()
+
+            # /modeldesk groups on oc_one lists both rooms and marks active Room 1 with ★.
+            self.received(text="/modeldesk groups")
+            await self.controller.tick()
+            groups_reply = self.sdk.calls[-1][3]["text"]
+            self.assertIn("1. ★ 核心产品 · 产品规划群", groups_reply)
+            self.assertIn("2. 研发平台 · AI 架构设计", groups_reply)
+            self.assertIn("/modeldesk use", groups_reply)
+            self.assertIn("/modeldesk to", groups_reply)
+
+            # Start Task 1 in Room 1, then switch default room to Room 2 without rotating revision.
+            task1 = self.received(text="/modeldesk task 写产品路线图")
+            await self.controller.tick()
+            self.assertEqual(destinations[-1], (self.project_id, self.room_id, "写产品路线图", "fresh"))
+
+            self.received(text="/modeldesk use AI 架构设计")
+            await self.controller.tick()
+            self.assertEqual(self.store.config()["revision"], revision)
+            self.assertIn("研发平台 · AI 架构设计", self.sdk.calls[-1][3]["text"])
+            self.assertEqual(
+                self.store.active_routes("cli_test", revision),
+                {"oc_one": {"project_id": project2_id, "room_id": room2_id}},
+            )
+
+            # Start Task 2 (goes to Room 2 via active route).
+            task2 = self.received(text="设计微服务边界")
+            await self.controller.tick()
+            self.assertEqual(destinations[-1], (project2_id, room2_id, "设计微服务边界", "fresh"))
+
+            # Both Room 1 and Room 2 tasks complete and deliver cleanly under the same revision!
+            self.jobs.jobs[task1["job_id"]].update(
+                status="complete",
+                autonomy={"state": "complete", "notification_id": "n-r1", "reason": "done1"},
+                result={"delivery": {"content": "路线图定稿", "documents": []}},
+            )
+            self.jobs.jobs[task2["job_id"]].update(
+                status="complete",
+                autonomy={"state": "complete", "notification_id": "n-r2", "reason": "done2"},
+                result={"delivery": {"content": "架构方案定稿", "documents": []}},
+            )
+            with patch("backend.autonomy.completion_problem", return_value=None):
+                await self.controller.tick()
+            by_id = {row["id"]: row for row in self.store.events()}
+            self.assertEqual(by_id[task1["id"]]["state"], "delivered")
+            self.assertEqual(by_id[task2["id"]]["state"], "delivered")
+
+            # /modeldesk to 1 紧急调研 routes to Room 1; natural-language @<Room 2 title> routes to Room 2!
+            # Also verify unknown @mention falls back untouched to the active room, and cross-room continue stays in Room 1.
+            to_rec = self.received(text="/modeldesk to 1 紧急调研")
+            at_rec = self.received(text="@AI 架构设计 输出大纲")
+            at_unknown = self.received(text="@Alice 请同步进展")
+            cont_rec = self.received(text=f"/modeldesk continue {task1['job_id']} 补充里程碑")
+            self.received(text="/modeldesk status")
+            await self.controller.tick()
+            self.assertEqual(destinations[-4], (self.project_id, self.room_id, "紧急调研", "fresh"))
+            self.assertEqual(destinations[-3], (project2_id, room2_id, "输出大纲", "fresh"))
+            self.assertEqual(destinations[-2], (project2_id, room2_id, "@Alice 请同步进展", "fresh"))
+            self.assertEqual(destinations[-1], (self.project_id, self.room_id, "补充里程碑", "continue"))
+            by_id = {row["id"]: row for row in self.store.events()}
+            self.assertEqual(by_id[to_rec["id"]]["target_room_id"], self.room_id)
+            self.assertEqual(by_id[at_rec["id"]]["target_room_id"], room2_id)
+            self.assertEqual(by_id[cont_rec["id"]]["target_room_id"], self.room_id)
+            status_text = self.sdk.calls[-1][3]["text"]
+            self.assertIn(task2["job_id"], status_text)
+            self.assertIn("研发平台 · AI 架构设计", status_text)
+
+    async def test_all_groups_natural_language_switch_and_to_disambiguation(self):
+        from backend import projects
+        project2_id, room2_id = str(uuid.uuid4()), str(uuid.uuid4())
+        rooms_data = [
+            {
+                "id": self.room_id,
+                "project_id": self.project_id,
+                "title": "核心群",
+                "team_snapshot": {"members": [{"id": "a"}]},
+                "updated_at": "2026-11-21T10:00:00+00:00",
+            },
+            {
+                "id": room2_id,
+                "project_id": project2_id,
+                "title": "核心群",
+                "team_snapshot": {"members": [{"id": "a"}]},
+                "updated_at": "2026-11-21T09:00:00+00:00",
+            },
+        ]
+        registry = {
+            self.project_id: {"id": self.project_id, "name": "项目甲"},
+            project2_id: {"id": project2_id, "name": "项目乙"},
+        }
+
+        def fake_room_get(rid, pid=None):
+            for item in rooms_data:
+                if item["id"] == rid and item["project_id"] == pid:
+                    return item
+            raise HTTPException(404, "项目群不存在")
+
+        destinations = []
+
+        async def submit_multi(room, request, project, **kwargs):
+            destinations.append((project, room, request.prompt))
+            job = {
+                "id": kwargs["job_id"],
+                "mode": "group",
+                "status": "running",
+                "project_id": project,
+                "group_room_id": room,
+                "conversation_id": room,
+                "group_context_mode": request.context_mode,
+                "external_source": kwargs["external_source"],
+                "events": [],
+                "created_at": workbench.now(),
+                "autonomy": {"state": "running"},
+            }
+            self.jobs.jobs[job["id"]] = job
+            return job
+
+        self.store.save_config(ConfigInput(
+            enabled=True,
+            app_id="cli_test",
+            bindings=[{**self.binding, "allow_all_groups": True, "natural_language_tasks": True}],
+        ))
+        revision = self.store.config()["revision"]
+        with patch.object(groups.store, "get", side_effect=fake_room_get), \
+             patch.object(groups.store, "_rooms", return_value=rooms_data), \
+             patch.object(projects.store, "read_registry", return_value=registry), \
+             patch.object(groups, "submit_message", AsyncMock(side_effect=submit_multi)):
+            self.received(text="群列表")
+            self.received(text="切换群 核心群")  # ambiguous -> disambiguation reply
+            self.received(text="切换群 项目乙/核心群")  # exact project/title -> switches
+            bad_to = self.received(text="/modeldesk to 不存在群 任务")
+            ambig_to = self.received(text="/modeldesk to 核心群 任务")
+            empty_to = self.received(text="/modeldesk to 2")
+            quoted_to = self.received(text='/modeldesk to "项目甲/核心群" 写周报')
+            await self.controller.tick()
+
+        self.assertEqual(len(destinations), 1)
+        self.assertEqual(destinations[0], (self.project_id, self.room_id, "写周报"))
+        self.assertEqual(self.store.get_chat_route("cli_test", "oc_one", revision)["room_id"], room2_id)
+        by_id = {row["id"]: row for row in self.store.events()}
+        self.assertEqual(by_id[bad_to["id"]]["state"], "delivered")
+        self.assertEqual(by_id[ambig_to["id"]]["state"], "delivered")
+        self.assertEqual(by_id[empty_to["id"]]["state"], "delivered")
+        self.assertEqual(by_id[quoted_to["id"]]["state"], "monitoring")
+        self.assertNotIn(bad_to["job_id"], self.jobs.jobs)
+        self.assertNotIn(ambig_to["job_id"], self.jobs.jobs)
+        self.assertNotIn(empty_to["job_id"], self.jobs.jobs)
+        replies = [call[3]["text"] for call in self.sdk.calls if call[0] == "reply"]
+        self.assertTrue(any("找到多个匹配" in text for text in replies))
+        self.assertTrue(any("未找到匹配" in text for text in replies))
+
+    async def test_push_group_results_sends_once_skips_historical_and_skips_same_chat_origin(self):
+        from backend import document_delivery
+        from backend.document_exports import render_document
+        document_store = document_delivery.DocumentStore(self.root / "documents")
+
+        # Historical job created BEFORE binding update must never be pushed.
+        historical_id = str(uuid.uuid4())
+        self.jobs.jobs[historical_id] = {
+            "id": historical_id,
+            "mode": "group",
+            "status": "complete",
+            "project_id": self.project_id,
+            "group_room_id": self.room_id,
+            "conversation_id": self.room_id,
+            "created_at": "2020-01-01T00:00:00+00:00",
+            "autonomy": {"state": "complete", "notification_id": "hist-1", "reason": "old"},
+            "result": {"delivery": {"status": "complete", "title": "旧报告", "content": "旧内容", "documents": [], "media": []}},
+        }
+
+        self.store.save_config(ConfigInput(
+            enabled=True,
+            app_id="cli_test",
+            bindings=[{**self.binding, "push_group_results": True}],
+        ))
+        cutoff = self.store.config()["updated_at"]
+        after_cutoff = "2099-01-01T00:00:00+00:00"
+        self.assertGreater(after_cutoff, cutoff)
+
+        # Same-chat Feishu-originated job must NOT be double-pushed via sdk.send.
+        same_chat_id = str(uuid.uuid4())
+        self.jobs.jobs[same_chat_id] = {
+            "id": same_chat_id,
+            "mode": "group",
+            "status": "complete",
+            "project_id": self.project_id,
+            "group_room_id": self.room_id,
+            "conversation_id": self.room_id,
+            "created_at": after_cutoff,
+            "external_source": {"platform": "feishu", "app_id": "cli_test", "chat_id": "oc_one"},
+            "autonomy": {"state": "complete", "notification_id": "feishu-1", "reason": "done"},
+            "result": {"delivery": {"status": "complete", "title": "飞书任务", "content": "飞书正文", "documents": [], "media": []}},
+        }
+
+        # Job in another room must NOT be pushed.
+        other_room_id = str(uuid.uuid4())
+        self.jobs.jobs[other_room_id] = {
+            "id": other_room_id,
+            "mode": "group",
+            "status": "complete",
+            "project_id": self.project_id,
+            "group_room_id": str(uuid.uuid4()),
+            "conversation_id": str(uuid.uuid4()),
+            "created_at": after_cutoff,
+            "autonomy": {"state": "complete", "notification_id": "other-1", "reason": "done"},
+            "result": {"delivery": {"status": "complete", "title": "其他群", "content": "其他内容", "documents": [], "media": []}},
+        }
+
+        # Web-originated group job created AFTER binding update WITH a verified document MUST push once!
+        web_job_id = str(uuid.uuid4())
+        web_delivery = {"status": "complete", "title": "竞品分析", "content": "网页端生成的完整报告正文", "media": []}
+        web_job = {
+            "id": web_job_id,
+            "mode": "group",
+            "status": "complete",
+            "project_id": self.project_id,
+            "group_room_id": self.room_id,
+            "conversation_id": self.room_id,
+            "created_at": after_cutoff,
+            "result": {"delivery": web_delivery},
+        }
+        rendered = await render_document(web_job, "group:delivery", "html", "report")
+        entry = document_store.save(web_job, "group:delivery", rendered)
+        web_delivery["documents"] = [entry]
+        self.jobs.jobs[web_job_id] = web_job
+
+        with patch("backend.autonomy.completion_problem", return_value=None), \
+             patch.object(document_delivery, "store", document_store):
+            await self.controller.tick()
+            first_calls = list(self.sdk.calls)
+            # Repeated ticks and a restarted controller MUST be 100% idempotent (zero duplicate sends).
+            await self.controller.tick()
+            restarted = feishu.FeishuController(FeishuStore(self.store.directory), self.jobs, sdk_factory=lambda _: self.sdk)
+            await restarted.tick()
+
+        self.assertEqual(self.sdk.calls, first_calls)
+        send_calls = [call for call in first_calls if call[0] == "send"]
+        upload_calls = [call for call in first_calls if call[0] == "upload"]
+        self.assertEqual(len(send_calls), 2)
+        self.assertEqual(send_calls[0][1], "oc_one")
+        self.assertEqual(send_calls[0][2], "text")
+        self.assertIn(web_job_id, send_calls[0][3]["text"])
+        self.assertIn("竞品分析", send_calls[0][3]["text"])
+        self.assertNotIn(historical_id, str(first_calls))
+        self.assertNotIn(same_chat_id, str(first_calls))
+        self.assertNotIn(other_room_id, str(first_calls))
+        self.assertEqual(len(upload_calls), 1)
+        self.assertEqual(send_calls[1][1], "oc_one")
+        self.assertEqual(send_calls[1][2], "file")
+        self.assertEqual(send_calls[1][3], {"file_key": "file_confirmed"})
+
+        # Integrity check failure must NEVER upload or push unverified documents.
+        bad_job_id = str(uuid.uuid4())
+        self.jobs.jobs[bad_job_id] = {
+            "id": bad_job_id,
+            "mode": "group",
+            "status": "complete",
+            "project_id": self.project_id,
+            "group_room_id": self.room_id,
+            "conversation_id": self.room_id,
+            "created_at": after_cutoff,
+            "autonomy": {"state": "complete", "notification_id": "bad-1", "reason": "done"},
+            "result": {"delivery": {"status": "complete", "title": "坏成果", "content": "未校验正文", "documents": [entry], "media": []}},
+        }
+        self.sdk.calls.clear()
+        with patch("backend.autonomy.completion_problem", return_value="交付校验未通过"), \
+             patch.object(document_delivery, "store", document_store):
+            await self.controller.tick()
+            await self.controller.tick()
+        self.assertEqual(len(self.sdk.calls), 1)
+        self.assertEqual(self.sdk.calls[0][0], "send")
+        self.assertEqual(self.sdk.calls[0][2], "text")
+        self.assertIn("校验未通过", self.sdk.calls[0][3]["text"])
+        self.assertFalse(any(call[0] == "upload" for call in self.sdk.calls))
+
+    async def test_room_binding_api_upsert_conflict_replace_delete_and_local_only(self):
+        from backend import projects
+        project2_id, room2_id = str(uuid.uuid4()), str(uuid.uuid4())
+        rooms_data = [
+            {
+                "id": self.room_id,
+                "project_id": self.project_id,
+                "title": "群一",
+                "team_snapshot": {"members": [{"id": "a"}]},
+                "updated_at": "2026-11-21T10:00:00+00:00",
+            },
+            {
+                "id": room2_id,
+                "project_id": project2_id,
+                "title": "群二",
+                "team_snapshot": {"members": [{"id": "a"}, {"id": "b"}]},
+                "updated_at": "2026-11-21T09:00:00+00:00",
+            },
+        ]
+        registry = {
+            self.project_id: {"id": self.project_id, "name": "项目一"},
+            project2_id: {"id": project2_id, "name": "项目二"},
+        }
+
+        def fake_room_get(rid, pid=None):
+            for item in rooms_data:
+                if item["id"] == rid and item["project_id"] == pid:
+                    return item
+            raise HTTPException(404, "项目群不存在")
+
+        # Seed owner_sender_ids + secret and an active chat route to verify preservation & cleanup.
+        self.store.save_config(ConfigInput(
+            enabled=False,
+            app_id="cli_test",
+            app_secret="test-secret",
+            owner_sender_ids=["ou_owner"],
+            bindings=[],
+        ))
+        api = FastAPI()
+        api.include_router(feishu.router)
+        local_headers = {"Origin": "http://localhost:5173"}
+
+        with patch.object(feishu, "store", self.store), \
+             patch.object(feishu, "controller", self.controller), \
+             patch.object(groups.store, "get", side_effect=fake_room_get), \
+             patch.object(groups.store, "_rooms", return_value=rooms_data), \
+             patch.object(projects.store, "read_registry", return_value=registry), \
+             patch.object(self.controller, "restart_worker", AsyncMock()) as restart_mock:
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=api), base_url="http://127.0.0.1:8001") as client:
+                # Remote / cross-origin access is strictly rejected with 403.
+                self.assertEqual((await client.get("/api/feishu/rooms", headers={"X-ModelDesk-Remote": "phone"})).status_code, 403)
+                self.assertEqual((await client.put(f"/api/feishu/rooms/{self.room_id}/binding", json={"chat_id": "oc_one"})).status_code, 403)
+                self.assertEqual((await client.put(
+                    f"/api/feishu/rooms/{self.room_id}/binding",
+                    headers={"Origin": "http://localhost:5173", "X-ModelDesk-Remote": "phone"},
+                    json={"chat_id": "oc_one"},
+                )).status_code, 403)
+                self.assertEqual((await client.delete(
+                    f"/api/feishu/rooms/{self.room_id}/binding/oc_one",
+                    headers={"Origin": "https://evil.invalid"},
+                )).status_code, 403)
+
+                # GET /api/feishu/rooms lists all rooms without ever leaking app_secret.
+                resp = await client.get("/api/feishu/rooms")
+                self.assertEqual(resp.status_code, 200)
+                self.assertNotIn("test-secret", resp.text)
+                body = resp.json()
+                self.assertEqual(len(body["rooms"]), 2)
+                self.assertEqual(body["active_routes"], {})
+                self.assertTrue(body["config"]["has_app_secret"])
+
+                # PUT binds oc_one to Room 1 with enable_connection=True, restarts worker, preserves secret & owners.
+                resp = await client.put(
+                    f"/api/feishu/rooms/{self.room_id}/binding",
+                    headers=local_headers,
+                    json={
+                        "chat_id": "oc_one",
+                        "name": "测试飞书群",
+                        "project_id": self.project_id,
+                        "allowed_sender_ids": ["ou_person"],
+                        "allow_all_groups": True,
+                        "push_group_results": True,
+                        "enable_connection": True,
+                    },
+                )
+                self.assertEqual(resp.status_code, 200, resp.text)
+                self.assertNotIn("test-secret", resp.text)
+                self.assertTrue(resp.json()["config"]["enabled"])
+                self.assertEqual(len(resp.json()["config"]["bindings"]), 1)
+                self.assertTrue(resp.json()["config"]["bindings"][0]["allow_all_groups"])
+                self.assertTrue(resp.json()["config"]["bindings"][0]["push_group_results"])
+                self.assertEqual(self.store.config()["app_secret"], "test-secret")
+                self.assertEqual(self.store.config()["owner_sender_ids"], ["ou_owner"])
+                restart_mock.assert_awaited_once()
+
+                # Record a chat route for oc_one to ensure rebinding clears stale routes.
+                rev = self.store.config()["revision"]
+                self.store.set_chat_route("cli_test", "oc_one", rev, project2_id, room2_id)
+                self.assertIn("oc_one", (await client.get("/api/feishu/rooms")).json()["active_routes"])
+
+                # Conflict: binding oc_one to Room 2 without replace_existing returns 409.
+                conflict = await client.put(
+                    f"/api/feishu/rooms/{room2_id}/binding",
+                    headers=local_headers,
+                    json={"chat_id": "oc_one", "project_id": project2_id, "name": "尝试抢绑"},
+                )
+                self.assertEqual(conflict.status_code, 409)
+                self.assertEqual(self.store.config()["bindings"][0]["room_id"], self.room_id)
+
+                # Succeeds with replace_existing=True, clears stale chat_routes, preserves secret & owners.
+                replaced = await client.put(
+                    f"/api/feishu/rooms/{room2_id}/binding",
+                    headers=local_headers,
+                    json={"chat_id": "oc_one", "project_id": project2_id, "name": "改绑群二", "replace_existing": True},
+                )
+                self.assertEqual(replaced.status_code, 200, replaced.text)
+                self.assertEqual(replaced.json()["config"]["bindings"][0]["room_id"], room2_id)
+                self.assertEqual(replaced.json()["active_routes"], {})
+                self.assertEqual(self.store.config()["app_secret"], "test-secret")
+                self.assertEqual(self.store.config()["owner_sender_ids"], ["ou_owner"])
+
+                # DELETE for mismatched room returns 404; DELETE for bound room removes it cleanly.
+                not_found = await client.delete(f"/api/feishu/rooms/{self.room_id}/binding/oc_one", headers=local_headers)
+                self.assertEqual(not_found.status_code, 404)
+                deleted = await client.delete(
+                    f"/api/feishu/rooms/{room2_id}/binding/oc_one",
+                    params={"project_id": project2_id},
+                    headers=local_headers,
+                )
+                self.assertEqual(deleted.status_code, 200, deleted.text)
+                self.assertNotIn("test-secret", deleted.text)
+                self.assertEqual(deleted.json()["config"]["bindings"], [])
+                self.assertEqual(self.store.config()["app_secret"], "test-secret")
+                self.assertEqual(self.store.config()["owner_sender_ids"], ["ou_owner"])
+
+                # Missing credentials returns 422 on room binding upsert.
+                self.store.save_config(ConfigInput(enabled=False, app_id="cli_test", clear_secret=True, bindings=[]))
+                unconfigured = await client.put(
+                    f"/api/feishu/rooms/{self.room_id}/binding",
+                    headers=local_headers,
+                    json={"chat_id": "oc_one", "project_id": self.project_id},
+                )
+                self.assertEqual(unconfigured.status_code, 422)
+
+        self.assertEqual((self.store.directory / "config.json").stat().st_mode & 0o777, 0o600)
+        self.assertEqual((self.store.directory / "receipts.sqlite3").stat().st_mode & 0o777, 0o600)
+
 
 class FeishuSDKTests(unittest.TestCase):
     def test_official_typed_sdk_requests_and_no_retry(self):
@@ -536,6 +1046,30 @@ class FeishuSDKTests(unittest.TestCase):
             adapter.reply("om_input", "text", {"text": "x"}, "same")
         self.assertEqual(client.im.v1.message.reply.call_count, 2)
         self.assertNotIn("secret", feishu_sdk.safe_error(TimeoutError("secret")))
+
+    def test_send_uses_create_message_request_with_uuid_and_no_retry(self):
+        from lark_oapi.api.im.v1 import CreateMessageResponse
+        adapter = feishu_sdk.FeishuSDK({"app_id": "cli_fixture", "app_secret": "not-real"})
+        client = Mock()
+        adapter.client = client
+        client.im.v1.message.create.return_value = CreateMessageResponse({"code": 0, "data": {"message_id": "om_sent_1"}})
+        self.assertEqual(adapter.send("oc_chat", "text", {"text": "推送正文"}, "push-uuid-1"), "om_sent_1")
+        request = client.im.v1.message.create.call_args.args[0]
+        self.assertIn(("receive_id_type", "chat_id"), request.queries)
+        self.assertEqual(request.body.receive_id, "oc_chat")
+        self.assertEqual(request.body.msg_type, "text")
+        self.assertEqual(json.loads(request.body.content), {"text": "推送正文"})
+        self.assertEqual(request.body.uuid, "push-uuid-1")
+        self.assertEqual(client.im.v1.message.create.call_count, 1)
+
+        client.im.v1.message.create.return_value = CreateMessageResponse({"code": 0, "data": {}})
+        with self.assertRaises(feishu_sdk.FeishuAPIError):
+            adapter.send("oc_chat", "text", {"text": "x"}, "push-uuid-2")
+
+        client.im.v1.message.create.side_effect = TimeoutError("secret-token")
+        with self.assertRaises(TimeoutError):
+            adapter.send("oc_chat", "text", {"text": "x"}, "push-uuid-3")
+        self.assertEqual(client.im.v1.message.create.call_count, 3)
 
 
 if __name__ == "__main__":

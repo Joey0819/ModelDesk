@@ -3,6 +3,8 @@ import { workbenchApi } from '../api';
 import { API_BASE, REMOTE_CLIENT } from '../api-base';
 import { artifactCategory, deriveArtifacts, deriveRoomArtifacts } from '../artifacts';
 import { groupApi } from '../group-api';
+import { feishuApi } from '../feishu-api';
+import { roomFeishuSummary } from '../feishu-state';
 import { groupTaskApi } from '../group-task-api';
 import { harnessApi } from '../harness-api';
 import { temporaryMembers, teamRequest } from '../mission-teams';
@@ -70,6 +72,7 @@ import './TaskContextControl.css';
 import JobAttachments from './JobAttachments';
 import GroupAgentTasks from './GroupAgentTasks';
 import GroupRoutines from './GroupRoutines';
+import GroupFeishuDialog from './GroupFeishuDialog';
 import DeliveryOutputOptions from './DeliveryOutputOptions';
 import { machineInfo, hostIsMacos } from '../machine';
 import DocumentOutputOptions from './DocumentOutputOptions';
@@ -251,7 +254,7 @@ function GroupTeamSettings({ room, models, catalog, addRequested, onOpenAgentSet
   </dialog>;
 }
 
-function GroupHeader({ rooms, roomId, roomTitle, selectRoom, onOpenNavigation, workMode, onWorkModeChange, memberCount, onOpenRoster, onOpenMuse, onOpenTodo, onOpenRoutines, focusHistory, onToggleFocusHistory, artifactsVisible, onToggleResults, resultAvailable }) {
+function GroupHeader({ rooms, roomId, roomTitle, selectRoom, onOpenNavigation, workMode, onWorkModeChange, memberCount, onOpenRoster, onOpenMuse, onOpenTodo, onOpenRoutines, feishuSummary, onOpenFeishu, onOpenFeishuSettings, feishuOnline, focusHistory, onToggleFocusHistory, artifactsVisible, onToggleResults, resultAvailable }) {
   const moreDialog = useRef(null);
   const hasRoom = Boolean(roomId);
   return <header className="workspace-header group-compact-header">
@@ -265,6 +268,9 @@ function GroupHeader({ rooms, roomId, roomTitle, selectRoom, onOpenNavigation, w
         {rooms.map((room) => <option key={room.id} value={room.id}>{room.title}</option>)}
       </select>
     </div>
+    {!hasRoom && onOpenFeishuSettings && <div className="group-header-actions">
+      <button type="button" className={`subtle-button group-feishu-setup-shortcut${feishuOnline ? ' connected' : ''}`} onClick={onOpenFeishuSettings}><span className="feishu-header-dot" aria-hidden="true" /><span>飞书机器人</span></button>
+    </div>}
     {hasRoom && <>
       <nav className="group-work-mode" aria-label="群聊协作方式">
         {workModes.map(([id, label, icon]) => <button key={id} type="button" className={workMode === id ? 'selected' : ''} aria-current={workMode === id ? 'page' : undefined} onClick={() => onWorkModeChange(id)}>
@@ -275,6 +281,7 @@ function GroupHeader({ rooms, roomId, roomTitle, selectRoom, onOpenNavigation, w
         {onOpenRoster && <button type="button" className="subtle-button group-roster-trigger" aria-haspopup="dialog" aria-label={`成员与分工，${memberCount} 位成员`} onClick={onOpenRoster}><Icon name="group" size={16} /><span>成员 {memberCount}</span></button>}
         {onOpenTodo && <button type="button" className="subtle-button group-todo-trigger" onClick={onOpenTodo}><Icon name="dashboard" size={15} />任务看板</button>}
         {onOpenRoutines && <button type="button" className="subtle-button group-routines-trigger" aria-haspopup="dialog" onClick={onOpenRoutines}><Icon name="clock" size={15} />群聊自动化</button>}
+        {onOpenFeishu && <button type="button" className={`subtle-button group-feishu-trigger${feishuSummary?.connected ? ' connected' : ''}`} aria-haspopup="dialog" aria-label={feishuSummary?.connected ? '飞书连接，已接入' : '连接飞书机器人'} onClick={onOpenFeishu}><span className="feishu-header-dot" aria-hidden="true" /><span>飞书</span></button>}
         <button type="button" className="subtle-button group-result-trigger" disabled={!resultAvailable && !artifactsVisible} aria-expanded={artifactsVisible} onClick={onToggleResults}><Icon name="panel" size={15} />成果</button>
         <button type="button" className={`subtle-button group-more-trigger${focusHistory ? ' selected' : ''}`} aria-haspopup="dialog" aria-label="更多群聊操作" onClick={() => moreDialog.current?.showModal()}><Icon name="settings" size={15} /><span className="group-more-label">更多</span><span className="group-current-mode">{compactModeLabels[workMode]}<Icon name="chevron" size={11} /></span></button>
       </div>
@@ -287,6 +294,7 @@ function GroupHeader({ rooms, roomId, roomTitle, selectRoom, onOpenNavigation, w
           <div className="group-more-actions">
             {onOpenTodo && <button type="button" className="subtle-button" onClick={() => { moreDialog.current?.close(); onOpenTodo(); }}><Icon name="dashboard" size={15} />任务看板</button>}
             {onOpenRoutines && <button type="button" className="subtle-button" aria-haspopup="dialog" onClick={() => { moreDialog.current?.close(); onOpenRoutines(); }}><Icon name="clock" size={15} />群聊自动化</button>}
+            {onOpenFeishu && <button type="button" className="subtle-button" aria-haspopup="dialog" onClick={() => { moreDialog.current?.close(); onOpenFeishu(); }}><span className={`feishu-header-dot${feishuSummary?.connected ? ' connected' : ''}`} aria-hidden="true" />飞书连接</button>}
             {onOpenMuse && <button type="button" className="subtle-button" onClick={() => { moreDialog.current?.close(); onOpenMuse(); }}><span className="group-muse-mark">M</span>Muse 面板</button>}
             <button type="button" className="subtle-button" onClick={() => { moreDialog.current?.close(); onToggleFocusHistory(); }}><Icon name="expand" size={15} />{focusHistory ? '退出专注' : '专注阅读'}</button>
             <button type="button" className="subtle-button" onClick={() => { moreDialog.current?.close(); selectRoom(null); }}><Icon name="plus" size={15} />新建群聊</button>
@@ -337,6 +345,8 @@ function GroupRoom({ roomId, projectId, initialJob, header, onOpenTodo, status, 
   const [harnessNotice, setHarnessNotice] = useState('');
   const [timelineFilter, setTimelineFilter] = useState('all');
   const [routinesOpen, setRoutinesOpen] = useState(false);
+  const [feishuData, setFeishuData] = useState(null);
+  const [feishuOpen, setFeishuOpen] = useState(false);
   const [routineLocation, setRoutineLocation] = useState(null);
   const [cursorPosition, setCursorPosition] = useState(null);
   const [suggestionIndex, setSuggestionIndex] = useState(0);
@@ -354,6 +364,21 @@ function GroupRoom({ roomId, projectId, initialJob, header, onOpenTodo, status, 
     if (!REMOTE_CLIENT) museApi.status().then((result) => { if (!disposed) setMuseProbe(result); }).catch(() => {});
     return () => { disposed = true; };
   }, []);
+
+  useEffect(() => {
+    if (REMOTE_CLIENT) return undefined;
+    let disposed = false;
+    const loadFeishu = () => {
+      feishuApi.rooms().then((result) => { if (!disposed) setFeishuData(result); }).catch(() => {});
+    };
+    loadFeishu();
+    window.addEventListener('modeldesk-feishu-changed', loadFeishu);
+    return () => {
+      disposed = true;
+      window.removeEventListener('modeldesk-feishu-changed', loadFeishu);
+    };
+  }, []);
+  const feishuSummary = useMemo(() => roomFeishuSummary(feishuData, projectId, roomId), [feishuData, projectId, roomId]);
 
   const refreshMuseAndAgents = useCallback(async () => {
     try {
@@ -785,8 +810,9 @@ function GroupRoom({ roomId, projectId, initialJob, header, onOpenTodo, status, 
   const contextLabel = contextMode === 'fresh' ? '新任务' : '继续任务';
 
   return <>
-    <GroupHeader {...header} onOpenTodo={room && onOpenTodo ? () => onOpenTodo(room) : undefined} roomId={roomId} roomTitle={room?.title || header.roomTitle} workMode={workMode} onWorkModeChange={setWorkMode} memberCount={members.length} onOpenRoster={room ? () => rosterDialog.current?.showModal() : undefined} onOpenMuse={renderIntegration ? openMuse : undefined} onOpenRoutines={room ? () => setRoutinesOpen(true) : undefined} focusHistory={focusHistory} onToggleFocusHistory={toggleReading} artifactsVisible={artifactsVisible} onToggleResults={toggleResults} resultAvailable={resultAvailable} />
+    <GroupHeader {...header} onOpenTodo={room && onOpenTodo ? () => onOpenTodo(room) : undefined} roomId={roomId} roomTitle={room?.title || header.roomTitle} workMode={workMode} onWorkModeChange={setWorkMode} memberCount={members.length} onOpenRoster={room ? () => rosterDialog.current?.showModal() : undefined} onOpenMuse={renderIntegration ? openMuse : undefined} onOpenRoutines={room ? () => setRoutinesOpen(true) : undefined} feishuSummary={feishuSummary} onOpenFeishu={room ? () => setFeishuOpen(true) : undefined} focusHistory={focusHistory} onToggleFocusHistory={toggleReading} artifactsVisible={artifactsVisible} onToggleResults={toggleResults} resultAvailable={resultAvailable} />
     {room && routinesOpen && <GroupRoutines room={room} composerDraft={{ prompt, documentFormats: documentOptions.documentFormats }} onDismiss={() => setRoutinesOpen(false)} onOpenJob={openRoutineJob} onRefreshRoom={roomState.refresh} />}
+    {room && feishuOpen && <GroupFeishuDialog room={room} projectId={projectId} status={status} feishuData={feishuData} onUpdated={setFeishuData} onOpenFeishuSettings={() => onOpenAgentSettings?.('feishu')} onClose={() => setFeishuOpen(false)} />}
     {header.error && <div className="error-banner" role="alert">{header.error}<button type="button" className="subtle-button" onClick={header.refresh}>重试</button></div>}
     {artifactsVisible && patchError && <div className="error-banner" role="alert">读取补丁失败：{patchError}<button type="button" className="subtle-button" onClick={() => showResult(explicitPreview.current)}>重新读取补丁</button></div>}
     {room && <dialog className="group-options-dialog group-roster-dialog" ref={rosterDialog} aria-labelledby="group-roster-heading">
@@ -1019,7 +1045,23 @@ export default function GroupWorkspace({ initialRoomId, initialTeam, initialJob,
   const [teamPending, setTeamPending] = useState(false);
   const [title, setTitle] = useState(initialProjectTeam ? `${initialProjectTeam.name}项目群` : '项目协作群');
   const [focusHistory, setFocusHistory] = useState(() => localStorage.getItem('modeldesk.group.focusHistory') === 'on');
+  const [feishuOnline, setFeishuOnline] = useState(false);
   const alive = useRef(true);
+  useEffect(() => {
+    if (REMOTE_CLIENT || roomId) return undefined;
+    let disposed = false;
+    const loadFeishu = () => {
+      feishuApi.rooms().then((result) => {
+        if (!disposed) setFeishuOnline(roomFeishuSummary(result, activeProjectId, null).online);
+      }).catch(() => {});
+    };
+    loadFeishu();
+    window.addEventListener('modeldesk-feishu-changed', loadFeishu);
+    return () => {
+      disposed = true;
+      window.removeEventListener('modeldesk-feishu-changed', loadFeishu);
+    };
+  }, [roomId, activeProjectId]);
   const chooseTeam = useCallback((next) => setTeam(next), []);
   const toggleFocusHistory = useCallback(() => {
     setFocusHistory((current) => {
@@ -1072,7 +1114,7 @@ export default function GroupWorkspace({ initialRoomId, initialTeam, initialJob,
   const header = { rooms, roomTitle: selectedRoom?.title, selectRoom, onOpenNavigation, error, refresh };
   return <main className={`workspace group-workspace ${focusHistory ? 'group-focus-mode' : ''}`}>
     {roomId ? <GroupRoom onOpenTodo={onOpenTodo} key={`${activeProjectId || 'unassigned'}:${roomId}:${initialJob?.group_room_id === roomId ? initialJob.id : ''}`} header={header} initialJob={initialJob?.group_room_id === roomId && (initialJob.project_id || null) === (activeProjectId || null) ? initialJob : null} roomId={roomId} projectId={activeProjectId} status={status} models={models} onOpenAgentSettings={onOpenAgentSettings} context={context} onContextChange={onContextChange} onOpenArtifacts={onOpenArtifacts} onClearArtifacts={onClearArtifacts} onCloseArtifacts={onCloseArtifacts} onResultShortcutChange={onResultShortcutChange} artifactsVisible={artifactsVisible} onOpenProjects={onOpenProjects} renderIntegration={renderIntegration} focusHistory={focusHistory} onToggleFocusHistory={toggleFocusHistory} /> : <>
-      <GroupHeader {...header} />
+      <GroupHeader {...header} onOpenFeishuSettings={onOpenAgentSettings ? () => onOpenAgentSettings('feishu') : undefined} feishuOnline={feishuOnline} />
       {error && <div className="error-banner" role="alert">{error}<button type="button" className="subtle-button" onClick={refresh}>重试</button></div>}
       <div className="group-create-scroll">
         {rooms.length > 0 && (

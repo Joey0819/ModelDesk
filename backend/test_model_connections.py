@@ -48,6 +48,11 @@ class ConnectionTests(unittest.IsolatedAsyncioTestCase):
     def body(self, **changes):
         return {"name": "Grok 测试连接", "provider": "xai", "base_url": "https://api.x.ai/v1", "api_key": KEY, "models": [{"id": "grok-test", "label": "Grok 测试"}], **changes}
 
+    def gemini_body(self, **changes):
+        return self.body(**{"name": "Gemini 测试连接", "provider": "gemini",
+                            "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
+                            "models": [], **changes})
+
     def add(self, **changes):
         return self.store.save(connections.ConnectionInput(**self.body(**changes)))
 
@@ -171,6 +176,142 @@ class ConnectionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.store.list()[0]["models"], [])
         self.assertIsNone(self.store.list()[0]["last_test"])
 
+    async def test_gemini_preset_requires_the_official_endpoint_and_a_key(self):
+        listing = await self.client.get("/api/model-connections")
+        self.assertIn({"id": "gemini", "name": "Google Gemini API",
+                       "base_url": "https://generativelanguage.googleapis.com/v1beta/openai"}, listing.json()["presets"])
+        for changes in ({"base_url": "https://api.example/v1"}, {"allow_local": True},
+                        {"api_key": ""}, {"api_key": KEY + "\n"}):
+            response = await self.client.post("/api/model-connections", json=self.gemini_body(**changes))
+            self.assertEqual(response.status_code, 422)
+            self.assertNotIn(KEY, response.text)
+        self.assertEqual(self.store.list(), [])
+
+    async def test_gemini_refresh_page_two_selects_a_versioned_model_and_calls_chat(self):
+        created = await self.client.post("/api/model-connections", json=self.gemini_body())
+        self.assertEqual(created.status_code, 201)
+        item = created.json()
+        directory_calls, chat_calls = [], []
+        model_id = "gemini-fixture-pro-002"
+        page_token = "fixture+/=&token"
+
+        def handler(request):
+            if request.method == "POST":
+                chat_calls.append(request)
+                return httpx.Response(200, json={"choices": [{"message": {"content": "Gemini fixture reply"}, "finish_reason": "stop"}]})
+            directory_calls.append(request)
+            if not request.url.params.get("pageToken"):
+                return httpx.Response(200, json={"models": [
+                    {"name": "models/gemini-fixture-flash", "displayName": "Gemini Fixture Flash", "supportedGenerationMethods": ["generateContent", "countTokens"]},
+                    {"name": "models/gemini-embedding-fixture", "supportedGenerationMethods": ["embedContent"]},
+                    {"name": "models/gemini-live-fixture", "supportedGenerationMethods": ["bidiGenerateContent"]},
+                    {"name": "models/gemini-fixture-tts", "supportedGenerationMethods": ["generateContent"]},
+                    {"name": "invalid/gemini-fixture", "supportedGenerationMethods": ["generateContent"]},
+                ], "nextPageToken": page_token})
+            return httpx.Response(200, json={"models": [
+                {"name": "models/gemini-fixture-flash", "supportedGenerationMethods": ["generateContent"]},
+                {"name": "models/gemini-fixture-image", "supportedGenerationMethods": ["generateContent"]},
+                {"name": f"models/{model_id}", "baseModelId": "gemini-fixture-pro", "displayName": "Gemini Fixture Pro 002", "supportedGenerationMethods": ["generateContent"]},
+            ]})
+
+        with self.upstream(handler):
+            refreshed = await self.client.post("/api/model-connections/refresh-catalog")
+            self.assertEqual(refreshed.status_code, 200)
+            self.assertNotIn(KEY, refreshed.text)
+            source = refreshed.json()["sources"][0]
+            self.assertEqual([(row["id"], row["capability"]) for row in source["models"]], [
+                ("gemini-fixture-flash", "text"), ("gemini-fixture-image", "image"), (model_id, "text"),
+            ])
+            self.assertEqual(self.store.list()[0]["models"], [])
+            model = {key: source["models"][-1][key] for key in ("id", "label")}
+            saved = await self.client.post(f"/api/model-connections/{item['id']}/models", json={
+                "model": model, "expected_updated_at": source["connection"]["updated_at"],
+            })
+            self.assertEqual(saved.status_code, 200)
+            alias = saved.json()["models"][0]["alias"]
+            self.assertEqual(alias, f"connection:{item['id']}:{model_id}")
+            self.assertEqual(connections.model_catalog()[0]["capability"], "text")
+            self.assertFalse(connections.model_catalog()[0]["verified"])
+            messages = [{"role": "user", "content": "Test selected model"}]
+            reply = await openrouter.query_model(alias, messages)
+            self.assertEqual(reply["content"], "Gemini fixture reply")
+
+        self.assertEqual(len(directory_calls), 2)
+        first, second = directory_calls
+        self.assertEqual(dict(first.url.params), {"pageSize": "1000"})
+        self.assertEqual(dict(second.url.params), {"pageSize": "1000", "pageToken": page_token})
+        for call in directory_calls:
+            self.assertEqual(str(call.url.copy_with(query=None)), "https://generativelanguage.googleapis.com/v1beta/models")
+            self.assertEqual(call.headers["x-goog-api-key"], KEY)
+            self.assertNotIn("authorization", call.headers)
+            self.assertNotIn(KEY, str(call.url))
+        self.assertEqual(len(chat_calls), 1)
+        self.assertEqual(str(chat_calls[0].url), "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions")
+        self.assertEqual(chat_calls[0].headers["authorization"], "Bearer " + KEY)
+        self.assertNotIn("x-goog-api-key", chat_calls[0].headers)
+        self.assertEqual(json.loads(chat_calls[0].content), {"model": model_id, "messages": messages})
+
+    async def test_existing_official_gemini_connections_keep_aliases_and_discover_natively(self):
+        native_base = "https://generativelanguage.googleapis.com/v1beta"
+        resource = "models/gemini-fixture"
+        calls = []
+
+        def handler(request):
+            calls.append(request)
+            return httpx.Response(200, json={"models": [
+                {"name": resource, "supportedGenerationMethods": ["generateContent"]},
+            ]})
+
+        for base in (native_base + "/openai", native_base, native_base.removesuffix("beta")):
+            body = self.gemini_body(provider="openai_compatible", base_url=base, models=[{"id": resource}])
+            item = self.store.save(connections.ConnectionInput(**body))
+            alias = item["models"][0]["alias"]
+            self.assertEqual(alias, f"connection:{item['id']}:{resource}")
+            options = connections.request_options({"model": alias})
+            self.assertEqual(options["url"], native_base + "/openai/chat/completions")
+            self.assertEqual(options["json"]["model"], "gemini-fixture")
+            with self.upstream(handler):
+                result = await self.client.post(f"/api/model-connections/{item['id']}/discover")
+            self.assertEqual(result.json(), {"models": [{"id": resource, "label": "", "capability": "text"}]})
+            discovered_alias = f"connection:{item['id']}:{result.json()['models'][0]['id']}"
+            self.assertEqual(discovered_alias, alias)
+            self.assertEqual(self.store.get_private(item["id"])["api_key"], KEY)
+        self.assertEqual([call.url.path for call in calls], ["/v1beta/models"] * 3)
+
+    async def test_gemini_discovery_sanitizes_upstream_errors_and_bounds_the_catalog(self):
+        item = self.store.save(connections.ConnectionInput(**self.gemini_body()))
+        path = f"/api/model-connections/{item['id']}/discover"
+        with self.upstream(lambda request: httpx.Response(200, json={})):
+            response = await self.client.post(path)
+        self.assertEqual(response.json(), {"models": []})
+        responses = [
+            (403, {"error": {"message": KEY}}),
+            (200, {"models": {"error": KEY}}),
+            (200, {"models": [], "nextPageToken": {"error": KEY}}),
+            (200, {"models": [], "nextPageToken": "repeated"}),
+        ]
+        for status, data in responses:
+            with self.upstream(lambda request: httpx.Response(status, json=data)):
+                response = await self.client.post(path)
+            self.assertEqual(response.status_code, 502)
+            self.assertNotIn(KEY, response.text)
+
+        rows = [{"name": f"models/gemini-fixture-{index}", "supportedGenerationMethods": ["generateContent"]}
+                for index in range(1001)]
+        with self.upstream(lambda request: httpx.Response(200, json={"models": rows})):
+            response = await self.client.post(path)
+        self.assertEqual(len(response.json()["models"]), 1000)
+        self.assertTrue(response.json()["truncated"])
+
+        tokens = []
+        def forever(request):
+            tokens.append(request.url.params.get("pageToken"))
+            return httpx.Response(200, json={"nextPageToken": str(len(tokens))})
+        with self.upstream(forever):
+            response = await self.client.post(path)
+        self.assertEqual(response.json(), {"models": [], "truncated": True})
+        self.assertEqual(tokens, [None, "1", "2", "3", "4", "5", "6", "7", "8", "9"])
+
     async def test_refresh_catalog_is_read_only_and_isolates_failed_sources(self):
         good = self.add(name="Good")
         self.add(name="Offline", provider="openai_compatible", base_url="https://offline.example/v1")
@@ -195,6 +336,20 @@ class ConnectionTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(all(method == "GET" for method, _ in calls))
         self.assertEqual(before, (self.store.directory / "connections.json").read_bytes())
         self.assertNotIn(KEY, response.text)
+
+    async def test_scoped_google_refresh_reads_only_the_subscription(self):
+        self.add(name="Unrelated API")
+        receipt = {"checked_at": "2026-11-21T09:00:00Z", "providers": {"antigravity": {"listed": ["gemini-account"], "catalog_only": ["gemini-next"]}}}
+        with patch.object(connections, "refresh_gateway_catalog", new=AsyncMock(return_value=receipt)) as refresh, \
+             patch.object(connections.store, "list", side_effect=AssertionError("should not access saved API connections")), \
+             patch.object(connections, "discover_models", new_callable=AsyncMock) as discover:
+            response = await self.client.post("/api/model-connections/refresh-catalog?source=antigravity")
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.json(), {"scope": "antigravity", "checked_at": receipt["checked_at"], "gateway": receipt, "sources": []})
+            invalid = await self.client.post("/api/model-connections/refresh-catalog?source=not-a-subscription")
+            self.assertEqual(invalid.status_code, 422)
+            refresh.assert_awaited_once_with("antigravity")
+            discover.assert_not_awaited()
 
     async def test_add_discovered_model_preserves_keys_labels_and_other_models_with_cas(self):
         item = self.add()

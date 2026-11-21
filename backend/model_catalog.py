@@ -18,9 +18,9 @@ def subscription_entry(item):
     owner = item.get("owned_by", "") if isinstance(item, dict) else ""
     # The gateway may serve Claude and GPT-OSS through Google. Names are not
     # reliable evidence of the connection that actually serves a model.
-    provider = {"openai": "codex", "antigravity": "antigravity"}.get(owner, "other")
+    provider = {"openai": "codex", "antigravity": "antigravity", "google": "google"}.get(owner, "other")
     if not owner:
         provider = "codex" if identifier.startswith(("gpt-", "o3", "o4")) else "antigravity" if identifier.startswith("gemini-") else "other"
     return {"id": identifier, "provider": provider, "source": "gateway",
-            "provider_label": {"codex": "ChatGPT 网关", "antigravity": "Google / Antigravity 网关"}.get(provider, "订阅网关"),
+            "provider_label": {"codex": "ChatGPT 网关", "antigravity": "Google / Antigravity 网关", "google": "Google Gemini 网关"}.get(provider, "订阅网关"),
             "capability": model_capability(identifier)}

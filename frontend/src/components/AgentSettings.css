@@ -63,11 +63,6 @@
 .connection-discovery-list label { display: flex; gap: 10px; align-items: flex-start; padding: 8px; font-size: 13px; }
 .connection-discovery-list input { margin-top: 4px; }
 .connection-discovery-list small { display: block; color: var(--muted); margin-top: 4px; font-size: 11px; overflow-wrap: anywhere; }
-.existing-connections { margin-top: 38px; border-top: 1px solid var(--line); padding-top: 22px; }
-.existing-connections > h3 { margin: 0 0 8px; font-size: 15px; }
-.existing-connections > p { color: var(--muted); font-size: 12px; }
-.existing-connections > div { display: grid; grid-template-columns: 100px 140px minmax(0,1fr); gap: 12px; padding: 13px 0; border-bottom: 1px solid var(--line); align-items: baseline; font-size: 12px; }
-.existing-connections small { color: var(--muted); line-height: 1.6; }
 .agent-muse-connection { max-width: 760px; }
 .agent-muse-connection > p { font-size: 14px; line-height: 1.9; margin: 24px 0; }
 .agent-remote-note { padding: 28px 0; max-width: 65ch; }
@@ -101,8 +96,6 @@
   .connection-identity .connection-state { padding-left: 55px; }
   .connection-editor :is(input:not([type=checkbox]),select), .connection-action-box > select { font-size: 16px; }
   .connection-discovery-list { grid-template-columns: minmax(0,1fr); }
-  .existing-connections > div { grid-template-columns: 90px minmax(0,1fr); }
-  .existing-connections small { grid-column: 1 / -1; }
   .agent-inline-actions :is(button) { min-height: 42px; }
 }
 @media(prefers-reduced-motion: reduce) { .agent-settings-workspace * { scroll-behavior: auto !important; } }

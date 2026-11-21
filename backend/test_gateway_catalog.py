@@ -75,20 +75,123 @@ class GatewayCatalogTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(calls, list(catalog.SOURCES))
 
     async def test_refresh_waits_for_actual_gateway_keeps_cache_when_offline(self):
-        read = AsyncMock(side_effect=[["old"], ["old"], ["entitled"], ["entitled"], ["entitled"]])
-        fetch = AsyncMock(side_effect=[directory("entitled"), directory("entitled"), ValueError("offline")])
+        old, available = ["gemini-old"], ["gemini-current"]
+        read = AsyncMock(side_effect=[old, old, available, available, available, available])
+        data = directory("gemini-current")
+        fetch = AsyncMock(side_effect=[data, data, ValueError("offline")])
         with patch.object(workbench, "subscription_catalog", read), patch.object(catalog, "fetch_catalog", fetch), \
              patch.object(catalog.asyncio, "sleep", new_callable=AsyncMock):
-            self.assertTrue((await catalog.refresh_gateway_catalog())["updated"])
+            result = await catalog.refresh_gateway_catalog("antigravity")
+            self.assertTrue(result["updated"])
+            self.assertEqual(result["providers"], {"antigravity": {"listed": available, "catalog_only": []}})
             raw = self.config.read_bytes()
-            self.assertFalse((await catalog.refresh_gateway_catalog())["updated"])
-            self.assertTrue((await catalog.refresh_gateway_catalog())["stale"])
-        self.assertEqual(read.await_count, 5)
+            self.assertFalse((await catalog.refresh_gateway_catalog("antigravity"))["updated"])
+            offline = await catalog.refresh_gateway_catalog("antigravity")
+            self.assertEqual(offline["providers"], {"antigravity": {"listed": available, "catalog_only": []}})
+            self.assertNotIn("stale", offline)
+        self.assertEqual(read.await_count, 6)
         self.assertEqual(self.config.read_bytes(), raw)
-        self.assertEqual(Path(yaml.safe_load(raw)["models"]["catalog"]).read_bytes(), directory("entitled"))
+        self.assertEqual(Path(yaml.safe_load(raw)["models"]["catalog"]).read_bytes(), data)
+
+    async def test_first_refresh_without_cache_retains_the_live_registry(self):
+        entries = [{"id": "gemini-account", "owned_by": "antigravity"}, {"id": "gpt-account", "owned_by": "openai"}]
+        with patch.object(workbench, "subscription_catalog", new=AsyncMock(return_value=entries)), \
+             patch.object(catalog, "fetch_catalog", new=AsyncMock(side_effect=httpx.ConnectError("offline"))), \
+             patch.object(catalog, "install_catalog") as install:
+            result = await catalog.refresh_gateway_catalog()
+        self.assertEqual(result["providers"], {
+            "antigravity": {"listed": ["gemini-account"], "catalog_only": []},
+            "codex": {"listed": ["gpt-account"], "catalog_only": []},
+        })
+        self.assertIn("暂无可用", result["publisher_warning"])
+        self.assertNotIn("stale", result)
+        self.assertNotIn("error", result)
+        self.assertEqual(self.config.read_bytes(), self.original)
+        install.assert_not_called()
+
+    async def test_cold_scoped_refresh_uses_the_active_managed_cache_only_for_metadata(self):
+        doc = json.loads(directory("gpt-publisher"))
+        doc["antigravity"] = [{"id": "gemini-publisher"}, {"id": "gemini-account"}]
+        doc["gemini"] = [{"id": "gemini-api-only"}]
+        active_data = json.dumps(doc).encode()
+        self.assertTrue(catalog.install_catalog(self.config, directory("old-publisher")))
+        self.assertTrue(catalog.install_catalog(self.config, active_data))
+        raw = self.config.read_bytes()
+        source = Path(yaml.safe_load(raw)["models"]["catalog"])
+        with patch.object(workbench, "subscription_catalog", new=AsyncMock(return_value=["gemini-account", "gemini-actual-only"])), \
+             patch.object(catalog, "fetch_catalog", new=AsyncMock(side_effect=ValueError("offline"))), \
+             patch.object(catalog, "install_catalog") as install:
+            result = await catalog.refresh_gateway_catalog("antigravity")
+        self.assertEqual(result["providers"], {
+            "antigravity": {"listed": ["gemini-account", "gemini-actual-only"], "catalog_only": ["gemini-publisher"]},
+        })
+        self.assertIn("已缓存", result["publisher_warning"])
+        self.assertNotIn("stale", result)
+        self.assertNotIn("error", result)
+        self.assertEqual(self.config.read_bytes(), raw)
+        self.assertEqual(source.read_bytes(), active_data)
+        install.assert_not_called()
+
+    async def test_publisher_failure_ignores_invalid_missing_and_linked_cache(self):
+        good = directory("gemini-publisher")
+        self.assertTrue(catalog.install_catalog(self.config, good))
+        source = Path(yaml.safe_load(self.config.read_bytes())["models"]["catalog"])
+        external = self.workspace / "external.json"
+        external.write_bytes(good)
+        for content in (None, b"{broken}", b'{"antigravity":[{"id":"invalid"}]}', good + b" ", external):
+            with self.subTest(content=content):
+                source.unlink(missing_ok=True)
+                if isinstance(content, Path):
+                    source.symlink_to(content)
+                elif content is not None:
+                    source.write_bytes(content)
+                with patch.object(workbench, "subscription_catalog", new=AsyncMock(return_value=["gemini-account"])), \
+                     patch.object(catalog, "fetch_catalog", new=AsyncMock(side_effect=ValueError("offline"))), \
+                     patch.object(catalog, "MAX_BYTES", len(good)):
+                    result = await catalog.refresh_gateway_catalog("antigravity")
+                self.assertEqual(result["providers"]["antigravity"], {"listed": ["gemini-account"], "catalog_only": []})
+                self.assertIn("暂无可用", result["publisher_warning"])
+                self.assertNotIn("stale", result)
+
+    async def test_local_registry_failure_remains_stale(self):
+        with patch.object(workbench, "subscription_catalog", new=AsyncMock(side_effect=httpx.ConnectError("offline"))), \
+             patch.object(catalog, "fetch_catalog", new_callable=AsyncMock) as fetch:
+            result = await catalog.refresh_gateway_catalog("antigravity")
+        self.assertTrue(result["stale"])
+        self.assertIn("读取订阅网关失败", result["error"])
+        self.assertNotIn("providers", result)
+        self.assertNotIn("publisher_warning", result)
+        fetch.assert_not_awaited()
 
     async def test_unchanged_entitlement_never_reports_new_models(self):
-        with patch.object(workbench, "subscription_catalog", new=AsyncMock(return_value=["old"])), \
-             patch.object(catalog, "fetch_catalog", new=AsyncMock(return_value=directory("new"))), \
+        with patch.object(workbench, "subscription_catalog", new=AsyncMock(return_value=["gemini-old"])), \
+             patch.object(catalog, "fetch_catalog", new=AsyncMock(return_value=directory("gemini-new"))), \
              patch.object(catalog.asyncio, "sleep", new_callable=AsyncMock):
-            self.assertFalse((await catalog.refresh_gateway_catalog())["updated"])
+            result = await catalog.refresh_gateway_catalog("antigravity")
+            self.assertFalse(result["updated"])
+            self.assertEqual(result["providers"]["antigravity"], {"listed": ["gemini-old"], "catalog_only": ["gemini-new"]})
+
+    async def test_codex_registration_does_not_end_the_wait_for_google(self):
+        doc = json.loads(directory("gpt-new"))
+        doc["antigravity"] = [{"id": "gemini-account"}, {"id": "gemini-publisher-only"}]
+        doc["gemini"] = [{"id": "gemini-api-only"}]
+        google = {"id": "gemini-account", "owned_by": "antigravity"}
+        api = {"id": "gemini-api-only", "owned_by": "google"}
+        codex = {"id": "gpt-new", "owned_by": "openai"}
+        read = AsyncMock(side_effect=[[api], [codex, api], [codex, api, google]])
+        with patch.object(workbench, "subscription_catalog", read), \
+             patch.object(catalog, "fetch_catalog", new=AsyncMock(return_value=json.dumps(doc).encode())), \
+             patch.object(catalog.asyncio, "sleep", new_callable=AsyncMock):
+            result = await catalog.refresh_gateway_catalog()
+        self.assertEqual(read.await_count, 3)
+        self.assertEqual(result["providers"]["antigravity"], {"listed": ["gemini-account"], "catalog_only": ["gemini-publisher-only"]})
+        self.assertEqual(result["providers"]["codex"], {"listed": ["gpt-new"], "catalog_only": []})
+
+    async def test_refresh_sees_account_change_even_when_public_directory_is_unchanged(self):
+        data = directory("gemini-new")
+        self.assertTrue(catalog.install_catalog(self.config, data))
+        with patch.object(workbench, "subscription_catalog", new=AsyncMock(side_effect=[["gemini-old"], ["gemini-new"]])), \
+             patch.object(catalog, "fetch_catalog", new=AsyncMock(return_value=data)):
+            result = await catalog.refresh_gateway_catalog("antigravity")
+        self.assertTrue(result["updated"])
+        self.assertEqual(result["providers"]["antigravity"]["listed"], ["gemini-new"])

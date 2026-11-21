@@ -162,6 +162,28 @@ class ImageProviderTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("Authorization", options["headers"])
         self.assertEqual(options["json"]["generationConfig"]["responseModalities"], ["TEXT", "IMAGE"])
 
+    async def test_existing_gemini_image_alias_uses_one_resource_prefix(self):
+        connection = self.connection("models/gemini-fixture-image", "https://generativelanguage.googleapis.com/v1beta/openai")
+        alias = connection["models"][0]["alias"]
+        candidates = await media.capabilities(catalog=[])
+        self.assertEqual([entry["id"] for entry in candidates], [alias])
+        requests = []
+
+        def handler(request):
+            requests.append(request)
+            return httpx.Response(200, json={"candidates": [{"content": {"parts": [
+                {"inlineData": {"data": B64, "mimeType": "image/png"}},
+            ]}}]})
+
+        with patch.object(media, "capabilities", AsyncMock(return_value=candidates)), self.wire(handler):
+            result = await media.generate_image({"id": "job"}, "Draw", model=alias)
+        self.assertEqual(result, self.manifest)
+        self.assertEqual(len(requests), 1)
+        self.assertEqual(str(requests[0].url), "https://generativelanguage.googleapis.com/v1beta/models/gemini-fixture-image:generateContent")
+        self.assertEqual(requests[0].headers["x-goog-api-key"], KEY)
+        self.assertNotIn("authorization", requests[0].headers)
+        self.assertEqual(self.storage.store.save_bytes.call_args.kwargs["model"], alias)
+
     async def test_gateway_gemini_uses_image_modalities_and_openai_uses_images(self):
         gemini = media._resolve(candidate(), "Draw")
         self.assertTrue(gemini["url"].endswith("/chat/completions"))

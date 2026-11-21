@@ -17,20 +17,29 @@ import threading
 import time
 import uuid
 from datetime import datetime, timezone
+from typing import Literal
 from urllib.parse import urlsplit
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 from .gateway_catalog import refresh_gateway_catalog
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
+from .model_catalog import model_capability
 
 ROOT = Path(__file__).resolve().parents[1]
 PREFIX = "connection:"
 LOCAL_ORIGINS = {"http://localhost:5173", "http://127.0.0.1:5173", "http://localhost:3000"}
 SUBSCRIPTION_URL = "http://127.0.0.1:8317/v1/chat/completions"
 RUNTIME_BASE = "http://127.0.0.1:8001/api/model-runtime/v1"
+GEMINI_NATIVE_BASE = "https://generativelanguage.googleapis.com/v1beta"
+GEMINI_CHAT_BASE = GEMINI_NATIVE_BASE + "/openai"
+GEMINI_BASE_URLS = {GEMINI_NATIVE_BASE, GEMINI_CHAT_BASE, "https://generativelanguage.googleapis.com/v1"}
+MAX_DISCOVERED_MODELS = 1000
+MAX_CATALOG_ROWS = 10000
+GEMINI_PAGE_SIZE = 1000
+GEMINI_MAX_CATALOG_PAGES = 10
 
 
 def local_machine_label():
@@ -65,7 +74,7 @@ class ModelSpec(BaseModel):
 class ConnectionInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
     name: str = Field(min_length=1, max_length=80)
-    provider: str = Field(pattern=r"^(xai|openai_compatible)$")
+    provider: str = Field(pattern=r"^(xai|gemini|openai_compatible)$")
     base_url: str = Field(min_length=8, max_length=300)
     models: list[ModelSpec] = Field(default_factory=list, max_length=40)
     api_key: str | None = Field(default=None, max_length=4096, repr=False)
@@ -92,6 +101,8 @@ class ConnectionInput(BaseModel):
         self.base_url = checked_endpoint(self.base_url, self.allow_local)
         if self.provider == "xai" and self.base_url != "https://api.x.ai/v1":
             raise ValueError("xAI 预设必须使用官方 API 地址")
+        if self.provider == "gemini" and (self.base_url != GEMINI_CHAT_BASE or self.allow_local):
+            raise ValueError("Gemini 预设必须使用 Google 官方 API 地址")
         if len({item.id for item in self.models}) != len(self.models):
             raise ValueError("模型 ID 不得重复")
         return self
@@ -254,7 +265,6 @@ store = ConnectionStore()
 
 def model_catalog():
     from .readiness import recent_test
-    from .model_catalog import model_capability
     return [{"id": model["alias"], "label": model.get("label") or model["id"],
              "provider": "connection:" + connection["id"], "connection_id": connection["id"],
              "connection_name": connection["name"], "verified": recent_test(connection.get("last_test")) and connection.get("last_test_model") == model["id"],
@@ -264,17 +274,26 @@ def model_catalog():
             for connection in store.list() if connection["enabled"] for model in connection["models"]]
 
 
+def _uses_gemini_api(record):
+    # Existing custom connections to Google keep their saved IDs and keys.
+    return record["provider"] == "gemini" or record["base_url"] in GEMINI_BASE_URLS
+
+
 def request_options(payload, default_url=SUBSCRIPTION_URL, default_headers=None):
     """Resolve once per request. Never mutate saved alias or caller's messages."""
     resolved = store.resolve(payload.get("model", ""))
     if resolved is None:
         return {"url": default_url, "headers": default_headers or {}, "json": payload}
     record, model = resolved
+    base_url = record["base_url"]
+    if _uses_gemini_api(record):
+        base_url = GEMINI_CHAT_BASE
+        model = model.removeprefix("models/")
     body = {**payload, "model": model}
     headers = {"Content-Type": "application/json"}
     if record.get("api_key"):
         headers["Authorization"] = "Bearer " + record["api_key"]
-    return {"url": record["base_url"] + "/chat/completions", "headers": headers, "json": body}
+    return {"url": base_url + "/chat/completions", "headers": headers, "json": body}
 
 
 def safe_failure(error):
@@ -309,7 +328,11 @@ async def list_connections():
         records = store.list()
     except (OSError, RuntimeError):
         raise HTTPException(503, "本机模型连接配置无法读取；已有订阅登录未被修改") from None
-    return {"connections": records, "presets": [{"id": "xai", "name": "Grok / xAI", "base_url": "https://api.x.ai/v1"}, {"id": "openai_compatible", "name": "其他兼容 API", "base_url": ""}]}
+    return {"connections": records, "presets": [
+        {"id": "xai", "name": "Grok / xAI", "base_url": "https://api.x.ai/v1"},
+        {"id": "gemini", "name": "Google Gemini API", "base_url": GEMINI_CHAT_BASE},
+        {"id": "openai_compatible", "name": "其他兼容 API", "base_url": ""},
+    ]}
 
 
 @router.post("", status_code=201)
@@ -318,8 +341,11 @@ async def create_connection(request: Request):
 
 
 @router.post("/refresh-catalog")
-async def refresh_catalog():
+async def refresh_catalog(source: Literal["antigravity", "codex"] | None = None):
     """Refresh the host routing directory and discover models on enabled API connections."""
+    if source:
+        gateway = await refresh_gateway_catalog(source)
+        return {"scope": source, "checked_at": gateway["checked_at"], "gateway": gateway, "sources": []}
     connections = store.list()
     semaphore = asyncio.Semaphore(4)
 
@@ -405,11 +431,79 @@ async def test_connection(identifier: uuid.UUID, request: Request):
     return result
 
 
+async def _discover_gemini(client, record):
+    """Read Gemini's native directory and retain the chat or image model ID."""
+    registered_ids = {model["id"] for model in record["models"]}
+    headers = {"x-goog-api-key": record["api_key"]}
+    models = {}
+    seen_tokens = set()
+    params = {"pageSize": GEMINI_PAGE_SIZE}
+    rows_read = 0
+    for _ in range(GEMINI_MAX_CATALOG_PAGES):
+        response = await client.get(GEMINI_NATIVE_BASE + "/models", headers=headers, params=params)
+        response.raise_for_status()
+        data = response.json()
+        if (not isinstance(data, dict) or "error" in data
+                or (data and not {"models", "nextPageToken"}.intersection(data))):
+            raise ValueError("Invalid Gemini model directory")
+        rows = data.get("models", [])
+        next_token = data.get("nextPageToken", "")
+        if not isinstance(rows, list) or not isinstance(next_token, str) or len(next_token) > 4096 or next_token in seen_tokens:
+            raise ValueError("Invalid Gemini model directory")
+
+        remaining_rows = MAX_CATALOG_ROWS - rows_read
+        for item in rows[:remaining_rows]:
+            if not isinstance(item, dict):
+                continue
+            methods = item.get("supportedGenerationMethods")
+            if not isinstance(methods, list) or "generateContent" not in methods:
+                continue
+            name = item.get("name")
+            match = re.fullmatch(r"models/([A-Za-z0-9][A-Za-z0-9._-]*)", name) if isinstance(name, str) else None
+            if not match:
+                continue
+            model_id = match[1]
+            # Keep a legacy resource-form ID when it already has a saved alias.
+            if model_id not in registered_ids and name in registered_ids:
+                model_id = name
+            if model_id in models:
+                continue
+            capability = model_capability(model_id)
+            if capability not in {"text", "image"}:
+                continue
+            display_name = item.get("displayName")
+            try:
+                spec = ModelSpec(id=model_id, label=display_name.strip()[:100] if isinstance(display_name, str) else "")
+            except ValidationError:
+                continue
+            if len(models) == MAX_DISCOVERED_MODELS:
+                return {"models": list(models.values()), "truncated": True}
+            models[model_id] = {**spec.model_dump(), "capability": capability}
+        if len(rows) > remaining_rows or (len(rows) == remaining_rows and next_token):
+            break
+        if not next_token:
+            return {"models": list(models.values())}
+        rows_read += len(rows)
+        seen_tokens.add(next_token)
+        params["pageToken"] = next_token
+    return {"models": list(models.values()), "truncated": True}
+
+
 @router.post("/{identifier}/discover")
 async def discover_models(identifier: uuid.UUID):
     record = store.get_private(str(identifier))
     if not record["enabled"]:
         raise HTTPException(422, "此连接已停用")
+    if _uses_gemini_api(record):
+        if not record.get("api_key"):
+            raise HTTPException(422, "请输入 Gemini API Key")
+        try:
+            async with asyncio.timeout(20), httpx.AsyncClient(timeout=httpx.Timeout(20, connect=5), trust_env=False, follow_redirects=False) as client:
+                return await _discover_gemini(client, record)
+        except ValueError:
+            raise HTTPException(502, "Google 未返回有效的 Gemini 模型列表。") from None
+        except (httpx.HTTPError, TimeoutError) as error:
+            raise HTTPException(502, safe_failure(error)) from None
     headers = {"Authorization": "Bearer " + record["api_key"]} if record.get("api_key") else {}
     endpoint = "/language-models" if record["provider"] == "xai" else "/models"
     try:
@@ -421,7 +515,7 @@ async def discover_models(identifier: uuid.UUID):
         rows = data.get("models", data.get("data")) if isinstance(data, dict) else None
         if not isinstance(rows, list):
             raise ValueError("Invalid model directory")
-        for item in rows[:10000]:
+        for item in rows[:MAX_CATALOG_ROWS]:
             if not isinstance(item, dict):
                 continue
             try:
@@ -430,7 +524,7 @@ async def discover_models(identifier: uuid.UUID):
                 continue
             found.append(specification.model_dump())
         models = list({item["id"]: item for item in found}.values())
-        return {"models": models[:1000], **({"truncated": True} if len(models) > 1000 or len(rows) > 10000 else {})}
+        return {"models": models[:MAX_DISCOVERED_MODELS], **({"truncated": True} if len(models) > MAX_DISCOVERED_MODELS or len(rows) > MAX_CATALOG_ROWS else {})}
     except Exception as error:
         raise HTTPException(502, safe_failure(error)) from None
 

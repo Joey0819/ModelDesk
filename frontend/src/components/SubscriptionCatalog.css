@@ -1,0 +1,20 @@
+.existing-connections { margin-top: 38px; border-top: 1px solid var(--line); padding-top: 22px; }
+.existing-connections > h3 { margin: 0 0 8px; font-size: 15px; }
+.subscription-connection { display: grid; gap: 8px; padding: 14px 0; border-bottom: 1px solid var(--line); font-size: 13px; }
+.subscription-connection-heading { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; }
+.subscription-connection-heading > div { flex: 1 1 150px; }
+.subscription-connection-heading strong, .subscription-connection-heading small { display: block; }
+.subscription-connection-heading small { margin-top: 3px; }
+.subscription-connection small { color: var(--muted); line-height: 1.6; }
+.subscription-catalog-summary > small { display: block; }
+.subscription-catalog-summary > small:empty { display: none; }
+.subscription-model-details { min-width: 0; }
+.subscription-model-details summary { width: fit-content; min-height: 28px; box-sizing: border-box; padding: 4px 0; cursor: pointer; }
+.subscription-model-details summary:focus-visible { outline: 2px solid var(--accent, #5965ce); outline-offset: 3px; border-radius: 3px; }
+.subscription-model-group { margin: 6px 0; font-size: 12px; font-weight: 550; }
+.subscription-model-ids { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 225px), 1fr)); gap: 4px 16px; margin: 3px 0 8px; padding: 8px 12px; max-height: 160px; overflow: auto; list-style: none; background: var(--shell-wash, #f5f7fa); border: 1px solid var(--line, #dfe5f0); border-radius: 6px; }
+.subscription-model-ids code { font-size: 12px; overflow-wrap: anywhere; }
+.publisher-catalog { color: var(--muted, #65758c); font-size: 12px; }
+.publisher-catalog-hint { margin: 0; color: var(--muted, #65758c); font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
+.subscription-catalog-error { margin: 0; color: var(--muted); line-height: 1.6; overflow-wrap: anywhere; }
+@media (max-width: 600px) { .subscription-connection-heading > button, .subscription-model-details summary { min-height: 40px; } }

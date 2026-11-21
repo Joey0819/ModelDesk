@@ -15,6 +15,19 @@ test('changing endpoints cannot reuse the hidden key and insecure external endpo
   assert.match(connectionIssue({ ...draft, base_url: 'https://other.example/v1' }), /重新填写密钥/);
   for (const base_url of ['http://remote.example/v1','https://a:b@example.com/v1','https://example.com/v1?api_key=private']) assert.ok(connectionIssue({ ...draft, base_url, api_key: 'replacement' }));
 });
+test('Gemini requires a key and saves discovered models by their exact versioned ID', () => {
+  const draft = connectionDraft(null, 'gemini');
+  assert.equal(draft.name, 'Google Gemini API');
+  assert.equal(draft.base_url, 'https://generativelanguage.googleapis.com/v1beta/openai');
+  assert.match(connectionIssue(draft), /API Key/);
+  const ready = { ...draft, api_key: 'test-fixture-key', models: [
+    { id: 'gemini-fixture-pro-002', label: 'Gemini Fixture Pro 002', capability: 'text' },
+  ] };
+  assert.equal(connectionIssue(ready), '');
+  assert.match(connectionIssue({ ...ready, base_url: 'https://other.example/v1' }), /Google 官方/);
+  assert.match(connectionIssue({ ...ready, allow_local: true }), /Google 官方/);
+  assert.deepEqual(connectionBody(ready).models, [{ id: 'gemini-fixture-pro-002', label: 'Gemini Fixture Pro 002' }]);
+});
 test('empty model list enables discovery, local endpoints need explicit choice, duplicate IDs fail', () => {
   const draft = { ...connectionDraft(null, 'openai_compatible'), name: 'Local', base_url: 'http://127.0.0.1:11434/v1', allow_local: true };
   assert.equal(connectionIssue(draft), '');

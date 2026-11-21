@@ -10,6 +10,8 @@ from datetime import datetime, timezone
 import httpx
 import yaml
 
+from .model_catalog import subscription_entry
+
 WORKSPACE = Path(os.environ.get("MODEL_DESK_WORKSPACE") or Path(__file__).resolve().parents[2] / "llm-tools").resolve()
 SOURCES = (
     "https://raw.githubusercontent.com/router-for-me/models/refs/heads/main/models.json",
@@ -21,6 +23,10 @@ REQUIRED_PROVIDERS = (
     "codex-free", "codex-plus", "codex-pro", "codex-team", "antigravity",
     "claude", "gemini", "vertex", "aistudio", "kimi", "xai", "meta",
 )
+SUBSCRIPTION_SECTIONS = {
+    "antigravity": ("antigravity",),
+    "codex": ("codex-free", "codex-plus", "codex-pro", "codex-team"),
+}
 
 
 def checked(**fields):
@@ -44,6 +50,7 @@ def parse_catalog(data):
             raise ValueError("invalid model entry")
     if not any(document[key] for key in REQUIRED_PROVIDERS):
         raise ValueError("empty routing catalog")
+    return document
 
 
 async def fetch_catalog():
@@ -138,9 +145,51 @@ def install_catalog(path, data):
     return True
 
 
-async def refresh_gateway_catalog():
+def read_managed_cache(config_path):
+    """Read only the active catalog from a managed gateway for display metadata."""
+    try:
+        if config_path.is_symlink() or config_path.parent.is_symlink():
+            return None
+        target = config_target(config_path, config_path.read_bytes())
+        current = target[0] if target else None
+        if current is None or current.parent.is_symlink() or current.is_symlink() or not current.is_file():
+            return None
+        with current.open("rb") as source:
+            data = source.read(MAX_BYTES + 1)
+        if len(data) <= MAX_BYTES:
+            return parse_catalog(data)
+    except (OSError, ValueError, RecursionError, yaml.YAMLError):
+        return None
+    return None
+
+
+async def listed_models(providers):
     from .workbench import subscription_catalog
 
+    listed = {provider: set() for provider in providers}
+    for entry in await subscription_catalog(with_metadata=True):
+        model = subscription_entry(entry)
+        if model["provider"] in listed:
+            listed[model["provider"]].add(model["id"])
+    return listed
+
+
+def published_models(directory, providers):
+    return {
+        provider: {row["id"] for key in SUBSCRIPTION_SECTIONS[provider] for row in directory.get(key, [])}
+        for provider in providers
+    }
+
+
+def provider_reports(listed, published):
+    return {
+        provider: {"listed": sorted(models), "catalog_only": sorted(published[provider] - models)}
+        for provider, models in listed.items()
+    }
+
+
+async def refresh_gateway_catalog(source=None):
+    providers = (source,) if source else tuple(SUBSCRIPTION_SECTIONS)
     path = WORKSPACE / ".private/config.yaml"
     if not (WORKSPACE / "runtime/cli-proxy-api").is_file() or not path.is_file() or path.is_symlink():
         return checked(skipped=True)
@@ -149,21 +198,31 @@ async def refresh_gateway_catalog():
         async with REFRESH_LOCK:
             if config_target(path, path.read_bytes()) is None:
                 return checked(skipped=True)
-            before = set(await subscription_catalog())
-            stage = "获取网关发布的模型目录"
-            data = await fetch_catalog()
+            before = await listed_models(providers)
+            try:
+                data = await fetch_catalog()
+            except (OSError, ValueError, RecursionError, httpx.HTTPError):
+                cached = await asyncio.to_thread(read_managed_cache, path)
+                warning = ("暂时无法更新发布方模型目录。已读取本机网关，并沿用已缓存的发布方目录。" if cached is not None
+                           else "暂时无法更新发布方模型目录。已读取本机网关，暂无可用的发布方目录缓存。")
+                return checked(updated=False, providers=provider_reports(before, published_models(cached or {}, providers)),
+                               publisher_warning=warning)
+            published = published_models(json.loads(data), providers)
             stage = "保存模型目录"
             changed = await asyncio.to_thread(install_catalog, path, data)
             if changed is None:
                 return checked(skipped=True)
+            stage = "读取更新后的订阅网关"
+            current = await listed_models(providers)
             if changed:
-                stage = "读取更新后的订阅网关"
-                # The watcher applies the source asynchronously. The UI must
-                # only advertise model IDs actually published by the gateway.
+                # Provider registrations arrive independently. A Codex update
+                # must not finish a wait for the Google account's directory.
+                wait_for = [p for p in providers if before[p] != published[p]]
                 for delay in (0.15, 0.25, 0.4, 0.6, 1, 1):
+                    if all(current[p] != before[p] for p in wait_for):
+                        break
                     await asyncio.sleep(delay)
-                    if set(await subscription_catalog()) != before:
-                        return checked(updated=True)
-            return checked(updated=False)
+                    current = await listed_models(providers)
+            return checked(updated=current != before, providers=provider_reports(current, published))
     except (OSError, ValueError, yaml.YAMLError, httpx.HTTPError):
         return checked(stale=True, error=f"{stage}失败。仍显示上次可读取的模型，可点“刷新列表”重试。")

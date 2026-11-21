@@ -179,7 +179,8 @@ def _resolve(entry: dict, prompt: str) -> dict:
         headers.pop("Authorization", None)
         if record.get("api_key"):
             headers["x-goog-api-key"] = record["api_key"]
-        endpoint = base + "/models/" + quote(model, safe="-._") + ":generateContent"
+        model_id = model.removeprefix("models/")
+        endpoint = base + "/models/" + quote(model_id, safe="-._") + ":generateContent"
         payload = {"contents": [{"parts": [{"text": prompt}]}],
                    "generationConfig": {"responseModalities": ["TEXT", "IMAGE"]}}
     else:

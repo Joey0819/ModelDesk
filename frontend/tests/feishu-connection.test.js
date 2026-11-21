@@ -120,6 +120,9 @@ test('Feishu receipt renderer exposes bounded actual delivery failures separatel
   assert.match(html, /文件过大，飞书尚未收到完整成果/); assert.match(html, /收发需要处理/); assert.match(html, /回传已确认/);
   assert.match(html, /正在等待任务/); assert.match(html, /正在派发/); assert.match(html, /已接收指令/);
   assert.match(html, /关联任务：job-4/); assert.match(html, /飞书会话：oc_allowed/);
+  const renderShortcut = (recent) => renderToStaticMarkup(React.createElement(FeishuRecentReceipts, { recent, onOpenTodo() {} }));
+  assert.match(renderShortcut(records), /查看飞书任务/);
+  assert.doesNotMatch(renderShortcut([{ id: 'status', state: 'delivered' }]), /查看飞书任务/);
   assert.ok(html.indexOf('文件过大') < html.indexOf('Actual delivered receipt'));
   assert.deepEqual(records.map((record) => record.id), ['oldest', 'r-0', 'r-1', 'r-2', 'r-3', 'r-4']);
   const empty = renderToStaticMarkup(React.createElement(FeishuRecentReceipts));

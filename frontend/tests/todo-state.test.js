@@ -109,6 +109,22 @@ test('filterTasks combines multiple filters', () => {
   assert.equal(result[0].id, '1');
 });
 
+test('Feishu source uses the saved run identity and is searchable without a tag', () => {
+  const tasks = [
+    { id: 'bot', project_id: 'p1', room_id: 'r1', source_label: '飞书', external_source: { platform: 'workbench' }, status: 'done' },
+    { id: 'legacy', project_id: 'p2', external_source: { platform: 'feishu' }, status: 'doing' },
+    { id: 'manual', project_id: 'p1', room_id: 'r1', tags: ['飞书'], status: 'done' },
+    { id: 'local', project_id: 'p1', room_id: 'r1', source_label: '群聊任务', external_source: { platform: 'workbench' }, tags: ['飞书'], status: 'done' },
+  ];
+  const filter = (filters) => filterTasks(tasks, filters).map((task) => task.id);
+  assert.deepEqual(filter({ source: 'feishu' }), ['bot', 'legacy']);
+  assert.deepEqual(filter({ source: 'feishu', showDone: false }), ['legacy']);
+  assert.deepEqual(filter({ source: 'feishu', scope: { type: 'room', projectId: 'p1', roomId: 'r1' } }), ['bot']);
+  assert.deepEqual(filter({ source: 'group_chat' }), ['local']);
+  assert.deepEqual(filter({ source: 'manual' }), ['manual']);
+  assert.deepEqual(filter({ search: '飞书' }), ['bot', 'legacy', 'manual', 'local']);
+});
+
 test('project, room and personal filters use both parts of the room scope', () => {
   const cards = [
     { id: 'a', project_id: 'p1', room_id: 'r1' },

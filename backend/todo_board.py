@@ -325,19 +325,16 @@ def upsert_external_task(
     result_ref: dict | None = None,
     *,
     room_id: str | None = None,
-    preserve_board_state: bool = False,
+    restore_archived: bool = True,
 ) -> dict:
-    """Mirror source state while preserving any manual board placement.
-
-    Startup recovery can also refresh an archived card without resurfacing it.
-    """
+    """Mirror source state while preserving any manual board placement."""
     with _lock:
         data = _load_board()
         tasks = copy.deepcopy(data["tasks"])
         identity = _external_identity(external_source)
         matches = [task for task in tasks if _external_identity(task.get("external_source")) == identity]
         task = next((task for task in matches if not task.get("archived")), matches[0] if matches else None)
-        if (task is None or (task.get("archived") and not preserve_board_state)) and _active_count(tasks) >= MAX_ACTIVE_TASKS:
+        if (task is None or (task.get("archived") and restore_archived)) and _active_count(tasks) >= MAX_ACTIVE_TASKS:
             logger.warning(
                 "todo_board: active task limit reached (%d), skipping sync for %s/%s",
                 MAX_ACTIVE_TASKS, *identity,
@@ -345,7 +342,7 @@ def upsert_external_task(
             return {}
         task, changed = _mirror_external_task(
             tasks, task, external_source, title, status, description, source_label,
-            project_id, result_ref, room_id=room_id, preserve_board_state=preserve_board_state,
+            project_id, result_ref, room_id=room_id, restore_archived=restore_archived,
         )
         if changed:
             _save_board({**data, "tasks": tasks})
@@ -360,7 +357,7 @@ def _mirror_external_task(
     tasks: list[dict], task: dict | None, external_source: dict, title: str, status: str,
     description: str = "", source_label: str = "", project_id: str | None = None,
     result_ref: dict | None = None, *, room_id: str | None = None,
-    preserve_board_state: bool = False,
+    preserve_board_state: bool = False, restore_archived: bool = True,
 ) -> tuple[dict, bool]:
     from .result_refs import card_result_ref
 
@@ -390,10 +387,10 @@ def _mirror_external_task(
             "external_source": {"platform": platform, "task_id": task_id},
         }
         tasks.append(task)
-    if not (preserve_board_state and task.get("archived")):
+    if restore_archived:
         task["archived"] = False
-        if task["status_mode"] == "source":
-            _apply_board_status(tasks, task, status)
+    if not task.get("archived") and task["status_mode"] == "source":
+        _apply_board_status(tasks, task, status)
     task["source_status"] = status
     if previous is None or not preserve_board_state:
         # The board can be seen outside the source app, so screen titles before mirroring.
@@ -441,7 +438,7 @@ def backfill_external_tasks(cards: Iterable[dict]) -> int:
         for snapshot, task in candidates:
             if task is None and active_count >= MAX_ACTIVE_TASKS:
                 continue
-            _, changed = _mirror_external_task(tasks, task, **snapshot, preserve_board_state=True)
+            _, changed = _mirror_external_task(tasks, task, **snapshot, preserve_board_state=True, restore_archived=False)
             if changed:
                 changed_count += 1
             if task is None:
@@ -544,6 +541,8 @@ def list_tasks(archived: bool = False, project_id: str | None = None, room_id: s
         room = _uuid_value(room_id)
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
+    from .workbench import manager
+    manager.retry_todo_sync()
     with _lock:
         data = _load_board()
         return [task for task in data["tasks"]

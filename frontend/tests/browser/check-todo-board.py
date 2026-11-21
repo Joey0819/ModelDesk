@@ -22,6 +22,17 @@ from backend.harness.models import TeamRequest
 from backend.harness.teams import TeamStore
 
 
+def checkpoint(room, prompt, status, *, feishu=False):
+    stamp = workbench.now()
+    job = {"id": str(uuid4()), "project_id": room["project_id"], "group_room_id": room["id"], "conversation_id": room["id"],
+           "mode": "group", "status": status, "prompt": prompt, "created_at": stamp, "updated_at": stamp, "events": [], "models": []}
+    if feishu:
+        job["external_source"] = {"platform": "feishu", "app_id": "fixture-app", "chat_id": "fixture-chat", "message_id": "fixture-message"}
+    workbench.manager.jobs[job["id"]] = job
+    workbench.manager.save(job)
+    return job
+
+
 def fixture(directory):
     projects.store = projects.ProjectStore(directory / "projects")
     groups.store = groups.RoomStore(directory / "rooms")
@@ -39,14 +50,10 @@ def fixture(directory):
         ]))
         for title in ("编辑组", "排版组"):
             rooms.append(groups.store.create(groups.RoomRequest(project_id=project["id"], team_id=team["id"], title=title), teams))
-    runs = []
-    for room, prompt, status in [(rooms[0], "复核产品手册的引用来源", "running"), (rooms[2], "整理官网更新说明", "complete")]:
-        stamp = workbench.now()
-        job = {"id": str(uuid4()), "project_id": room["project_id"], "group_room_id": room["id"], "conversation_id": room["id"],
-               "mode": "group", "status": status, "prompt": prompt, "created_at": stamp, "updated_at": stamp, "events": [], "models": []}
-        workbench.manager.jobs[job["id"]] = job
-        workbench.manager.save(job)
-        runs.append(job)
+    runs = [
+        checkpoint(rooms[0], "复核产品手册的引用来源", "running"),
+        checkpoint(rooms[2], "整理官网更新说明", "complete"),
+    ]
 
     app = FastAPI()
     # Allow the production board API to write only the isolated board and expose read-only group views.
@@ -147,6 +154,8 @@ def exercise(origin, rooms, runs, screenshots):
         project.select_option(first["project_id"])
         room.select_option(selector(empty))
         expect(page.locator("article.todo-card")).to_have_count(0)
+        expect(page.get_by_text("没有符合当前筛选条件的任务。")).to_be_visible()
+        shot(page, "01-filtered-empty")
         page.get_by_role("button", name="+ 新建任务").click()
         form = page.get_by_role("dialog", name="新建任务")
         expect(form.get_by_label("群聊", exact=True)).to_have_value(empty["id"])
@@ -159,8 +168,89 @@ def exercise(origin, rooms, runs, screenshots):
         expect(column("blocked")).to_contain_text("检查印刷版式")
         page.reload()
         expect(page.get_by_label("看板状态：检查印刷版式")).to_have_value("blocked")
+        expect(project.locator("option:checked")).to_have_text("产品手册")
         assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
         shot(page, "04-phone-board")
+
+        page.set_viewport_size({"width": 1440, "height": 900})
+        for number in range(22):
+            todo_board.create_task(todo_board.TaskCreate(
+                title=f"历史交付 {number + 1:02d}", status="done",
+                project_id=second["project_id"], room_id=second["id"], tags=["飞书"],
+            ))
+        page.locator("nav").get_by_role("button", name="项目群聊 多智能体协同").click()
+        page.locator("nav").get_by_role("button", name="任务看板 待办 / 进行中 / 已完成").click()
+        expect(project).to_have_value("")
+        expect(room).to_have_value("")
+        expect(column("done").get_by_role("button", name="展开其余 4 项已完成")).to_be_visible()
+
+        # A bot job can start and finish between any two board reads.
+        feishu_title = "飞书派发：汇总上线验收结果"
+        bot_card = page.locator("article.todo-card").filter(has=page.get_by_role("button", name=feishu_title, exact=True))
+        bot = checkpoint(second, feishu_title, "running", feishu=True)
+        bot["status"] = "complete"
+        workbench.manager.save(bot)
+        expect(bot_card).to_have_count(1, timeout=12000)
+        expect(bot_card).to_contain_text("执行 · 已完成")
+        expect(bot_card.locator(".todo-source-badge")).to_have_text("飞书")
+        expect(bot_card.get_by_role("button", name="查看成果")).to_have_count(1)
+        expect(column("done").locator("article.todo-card")).to_have_count(20)
+        expect(column("done").get_by_role("button", name="历史交付 01", exact=True)).to_have_count(0)
+        page.get_by_role("button", name="展开其余 5 项已完成").click()
+        expect(column("done").get_by_role("button", name="历史交付 01", exact=True)).to_have_count(1)
+        page.get_by_role("button", name="收起多余已完成项").click()
+
+        # Dropping above the shortened lane inserts beside the actual visible card.
+        first_visible = column("done").locator("article.todo-card").first
+        anchor_id = first_visible.get_attribute("data-task-id")
+        manual_card = page.locator("article.todo-card").filter(has=page.get_by_role("button", name="检查印刷版式", exact=True))
+        manual_id = manual_card.get_attribute("data-task-id")
+        manual_card.drag_to(first_visible, target_position={"x": 30, "y": 5})
+        expect(column("done")).to_contain_text("检查印刷版式")
+        expect(page.get_by_role("button", name="收起多余已完成项")).to_be_visible()
+        positions = {task["id"]: task["position"] for task in todo_board.list_tasks()}
+        assert positions[manual_id] + 1 == positions[anchor_id]
+
+        source = page.get_by_label("筛选来源")
+        source.select_option("feishu")
+        expect(page.locator("article.todo-card")).to_have_count(1)
+        expect(bot_card).to_be_visible()
+        shot(page, "05-feishu-desktop")
+        page.reload()
+        expect(source).to_have_value("feishu")
+        expect(bot_card).to_be_visible()
+        project.select_option(first["project_id"])
+        expect(bot_card).to_have_count(0)
+        expect(page.get_by_text("没有符合当前筛选条件的任务。")).to_be_visible()
+        page.get_by_role("button", name="清除筛选").click()
+        expect(project).to_have_value("")
+        expect(source).to_have_value("")
+        expect(bot_card).to_be_visible()
+        source.select_option("feishu")
+        project.select_option(first["project_id"])
+        page.locator("nav").get_by_role("button", name="任务看板 待办 / 进行中 / 已完成").click()
+        expect(project).to_have_value("")
+        expect(source).to_have_value("")
+
+        page.set_viewport_size({"width": 390, "height": 844})
+        source.select_option("feishu")
+        expect(column("done")).to_be_visible()
+        expect(bot_card).to_be_visible()
+        assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+        shot(page, "06-feishu-phone")
+        page.route(origin + "/api/todo", lambda route: route.fulfill(status=503, json={"detail": "测试：任务读取暂时失败"}), times=1)
+        expect(page.get_by_text("测试：任务读取暂时失败")).to_be_visible(timeout=12000)
+        expect(bot_card).to_be_visible()
+        retry = page.get_by_role("button", name="重试读取任务")
+        retry.click()
+        expect(retry).to_have_count(0)
+
+        page.get_by_label("显示已完成").uncheck()
+        expect(bot_card).to_have_count(0)
+        page.get_by_role("button", name="清除筛选").click()
+        expect(page.get_by_label("显示已完成")).to_be_checked()
+        with page.expect_response(lambda response: response.url == origin + "/api/todo" and response.ok):
+            page.get_by_role("button", name="刷新任务").click()
         assert not errors, errors
         context.close()
         browser.close()
@@ -189,7 +279,7 @@ def main():
         finally:
             server.should_exit = True
             thread.join(timeout=10)
-    print("Task board passed: scoped group navigation, role agreements, native drag, source sync, reload, phone status and creation.")
+    print("Task board passed: scoped navigation, role agreements, native drag, source sync, Feishu polling and filters, reload, and phone controls.")
 
 
 if __name__ == "__main__":

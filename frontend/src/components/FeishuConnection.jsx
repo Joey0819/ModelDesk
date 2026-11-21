@@ -126,7 +126,7 @@ export function FeishuConnectionOverview({ connection, loading, error, notice, b
   </>;
 }
 
-export function FeishuRecentReceipts({ recent = [] }) {
+export function FeishuRecentReceipts({ recent = [], onOpenTodo }) {
   const records = (Array.isArray(recent) ? recent : [])
     .filter((item) => item && typeof item.id === 'string')
     .sort((a, b) => String(b.updated_at || b.created_at || '').localeCompare(String(a.updated_at || a.created_at || ''))).slice(0, 5);
@@ -138,6 +138,7 @@ export function FeishuRecentReceipts({ recent = [] }) {
   return <details className="feishu-recent-receipts">
     <summary>最近指令与回传（{records.length}）</summary>
     <p>展示最近 5 条实际收发记录。任务执行结果与飞书回传分别记录；文件权限、大小或送达未确认等问题会保留在这里。</p>
+    {onOpenTodo && Array.isArray(recent) && recent.some((item) => typeof item?.job_id === 'string' && item.job_id) && <button type="button" className="subtle-button" onClick={onOpenTodo}><Icon name="dashboard" size={15} />查看飞书任务</button>}
     {!records.length ? <p>暂无指令回执。绑定并保存允许的会话后，可从飞书发送 /modeldesk 指令。</p> : <ol>{records.map((record) => <li key={record.id}>
       <header><strong className={['attention', 'needs_attention', 'rejected'].includes(record.state) ? 'feishu-receipt-issue' : ''}>{states[record.state] || '状态待核对'}</strong><time dateTime={record.updated_at || record.created_at}>{timeLabel(record.updated_at || record.created_at)}</time></header>
       {typeof record.reason === 'string' && record.reason && <p>{record.reason}</p>}
@@ -146,7 +147,7 @@ export function FeishuRecentReceipts({ recent = [] }) {
   </details>;
 }
 
-export default function FeishuConnection({ onOpenGroups, status }) {
+export default function FeishuConnection({ onOpenGroups, onOpenTodo, status }) {
   const machine = machineInfo(status);
   const { projects, activeProjectId } = useProjects();
   const [connection, setConnection] = useState(null), [draft, setDraft] = useState(null), [loading, setLoading] = useState(!REMOTE_CLIENT), [busy, setBusy] = useState(false), [error, setError] = useState(''), [notice, setNotice] = useState('');
@@ -206,7 +207,7 @@ export default function FeishuConnection({ onOpenGroups, status }) {
     .sort((a, b) => String(b.last_seen_at).localeCompare(String(a.last_seen_at)))[0];
   return <section className="feishu-connection">
     <FeishuConnectionOverview connection={connection} loading={loading} error={error || loadError} notice={notice} busy={busy} remote={REMOTE_CLIENT} chatsAvailable={Boolean(pageToken)} machine={machine} onRefresh={() => { setError(''); reload(!draft); }} onTest={test} onDiscover={discover} onOpenGroups={onOpenGroups} />
-    {!REMOTE_CLIENT && connection && <FeishuRecentReceipts recent={connection.recent} />}
+    {!REMOTE_CLIENT && connection && <FeishuRecentReceipts recent={connection.recent} onOpenTodo={onOpenTodo} />}
     {!REMOTE_CLIENT && latestObserved && <p className="connection-help" role="status">最近一条手机消息：{latestObserved.last_reason}</p>}
     {!REMOTE_CLIENT && draft && <FeishuConfigurationForm draft={draft} projects={projects} chats={chats} busy={busy} machine={machine} onChange={setDraft} onSave={save} renderRoomSelect={(binding, onChange, index) => <BindingRoomSelect key={`${index}:${binding.project_id || 'unassigned'}`} projectId={binding.project_id} roomId={binding.room_id} disabled={busy} onChange={onChange} />} />}
     {!REMOTE_CLIENT && draft && <details className="feishu-observed-chats"><summary>最近收到的未绑定会话（{unboundChats.length}）</summary><p>{unboundChats.length ? '这些会话只保留识别信息，尚未授权执行。你需要添加绑定并保存，才能接受对应会话的指令。' : '暂无未绑定会话。长连接在线并保存事件配置后，向机器人发送消息，再刷新连接状态。'}</p><ul>{unboundChats.map((chat) => <li key={chat.chat_id}><div><code>{chat.chat_id}</code><small>{chat.chat_type === 'p2p' ? '单聊' : '群聊'}{chat.last_sender_id ? ` · 最近发起人：${chat.last_sender_id}` : ''}</small></div><button type="button" className="subtle-button" disabled={busy} onClick={() => setDraft((previous) => ({ ...previous, bindings: [...previous.bindings, feishuBinding({ chat_id: chat.chat_id, project_id: activeProjectId })] }))}>添加为允许会话</button></li>)}</ul></details>}

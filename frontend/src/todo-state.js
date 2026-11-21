@@ -12,6 +12,28 @@ const VALID_STATUSES = new Set(COLUMNS.map((c) => c.id));
 const VALID_PRIORITIES = new Set(['low', 'medium', 'high', 'urgent']);
 const RESULT_STATUSES = new Set(['review', 'blocked', 'done']);
 
+export const TODO_SOURCES = {
+  feishu: '飞书',
+  workbench: '工作台',
+  group_chat: '群聊任务',
+  group: '协作任务',
+  fleet: 'Fleet 节点',
+  muse: 'Muse',
+  manual: '手动创建',
+};
+
+function taskSource(task) {
+  const platform = task.external_source?.platform;
+  if (platform === 'workbench' && task.source_label === TODO_SOURCES.feishu) return 'feishu';
+  if (platform === 'workbench' && task.source_label === TODO_SOURCES.group_chat) return 'group_chat';
+  return platform || 'manual';
+}
+
+export function sourceLabel(task) {
+  const platform = task.external_source?.platform;
+  return platform ? task.source_label || TODO_SOURCES[platform] || platform : '';
+}
+
 // C0 control characters (except tab/newline) plus DEL. Built from char codes so
 // the source file itself carries no literal control bytes.
 const CONTROL_CHARS = new RegExp(
@@ -140,10 +162,10 @@ export function buildTaskPayload(fields, task) {
 }
 
 /**
- * Filter tasks by search, priority, showDone, showArchived.
+ * Filter tasks by scope, source, search, priority and visibility.
  */
 export function filterTasks(tasks, filters = {}) {
-  const { search = '', priority = '', showDone = true, showArchived = false, scope } = filters;
+  const { search = '', priority = '', source = '', showDone = true, showArchived = false, scope } = filters;
   let result = tasks;
 
   if (scope && scope.type !== 'all') {
@@ -163,13 +185,18 @@ export function filterTasks(tasks, filters = {}) {
     result = result.filter((t) => t.priority === priority);
   }
 
-  if (search) {
-    const q = search.toLowerCase();
+  if (source) {
+    result = result.filter((task) => taskSource(task) === source);
+  }
+
+  const q = search.trim().toLowerCase();
+  if (q) {
     result = result.filter(
       (t) =>
         (t.title && t.title.toLowerCase().includes(q)) ||
         (t.description && t.description.toLowerCase().includes(q)) ||
         (t.assignee && t.assignee.toLowerCase().includes(q)) ||
+        sourceLabel(t).toLowerCase().includes(q) ||
         (t.tags && t.tags.some((tag) => tag.toLowerCase().includes(q))),
     );
   }

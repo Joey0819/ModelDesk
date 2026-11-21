@@ -8,11 +8,14 @@ import asyncio
 import codecs
 import copy
 import json
+import logging
 import os
 import re
 import signal
+import threading
 import uuid
 from datetime import datetime, timezone
+from itertools import islice
 from pathlib import Path
 from typing import Literal
 
@@ -191,9 +194,11 @@ class JobManager:
         self.wakeups = {}
         self.processes = {}
         self.conversation_locks = {}
-        # Last status and delivery summary mirrored per job. save() runs on
-        # every emitted event, so only rewrite the board when those change.
+        # Keep Board refreshes and new checkpoints from applying updates for
+        # the same card out of order. Keep each last acknowledged snapshot.
         self._todo_synced = {}
+        self._todo_pending = {}
+        self._todo_lock = threading.Lock()
         # Only the production manager may write to the real kanban board.
         # Tests (and any other manager built on a scratch directory) must stay
         # isolated; otherwise suite runs leak fixture jobs onto the live board.
@@ -202,33 +207,41 @@ class JobManager:
     def save(self, job, *, sync_board=True):
         from .execution_store import save_checkpoint
         save_checkpoint(self.directory, job["id"], job)
-        # Sync to todo kanban (fire-and-forget, never raises)
-        if not sync_board or not getattr(self, "_todo_sync_enabled", True):
+        if not sync_board or not self._todo_sync_enabled:
             return
-        synced = getattr(self, "_todo_synced", None)
-        if synced is None:
-            synced = self._todo_synced = {}
         try:
-            from .todo_sync import workbench_card_state
-            card_state = workbench_card_state(job)
-            if synced.get(job["id"]) != card_state:
-                self._sync_to_todo(job, *card_state)
-                synced[job["id"]] = card_state
+            from .todo_sync import workbench_card, workbench_card_state
+            card = workbench_card(job, *workbench_card_state(job))
+            with self._todo_lock:
+                self._sync_to_todo(job["id"], card)
         except Exception:
-            pass  # A board sync failure must not affect the source checkpoint.
+            logging.getLogger(__name__).exception("workbench: todo sync failed for job %s", job["id"])
 
-    def _sync_to_todo(self, job, status, detail):
-        """Mirror job state to the todo kanban board."""
-        import logging as _logging
-        _logger = _logging.getLogger(__name__)
-        try:
-            from .todo_sync import sync_task, workbench_card
-            sync_task("workbench", job["id"], **workbench_card(job, status, detail))
-        except Exception:
-            _logger.exception("workbench: todo sync failed for job %s", job.get("id"))
+    def _sync_to_todo(self, job_id, card):
+        from .todo_sync import sync_task
+
+        if self._todo_synced.get(job_id) == card or sync_task("workbench", job_id, **card):
+            self._todo_synced[job_id] = card
+            self._todo_pending.pop(job_id, None)
+        else:
+            self._todo_pending[job_id] = card
+
+    def retry_todo_sync(self):
+        """Let a board refresh retry failed mirrors without calling the runner."""
+        if not self._todo_sync_enabled:
+            return
+        with self._todo_lock:
+            pending_ids = tuple(islice(self._todo_pending, 8))
+        for job_id in pending_ids:
+            with self._todo_lock:
+                if card := self._todo_pending.pop(job_id, None):
+                    self._sync_to_todo(job_id, card)
 
     def recover(self):
         """A restarted service cannot claim abandoned jobs are still running."""
+        with self._todo_lock:
+            self._todo_synced.clear()
+            self._todo_pending.clear()
         self.directory.mkdir(parents=True, exist_ok=True, mode=0o700)
         for path in self.directory.glob("*.json"):
             try:
@@ -272,7 +285,6 @@ class JobManager:
                 repair_workbench_delivery_cards(self.jobs)
                 backfill_room_tasks("workbench", self.jobs)
             except Exception:
-                import logging
                 logging.getLogger(__name__).exception("workbench: failed to repair todo delivery status")
 
     def emit(self, job, event_type, *, sync_board=True, **data):

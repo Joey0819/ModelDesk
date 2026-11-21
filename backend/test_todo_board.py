@@ -509,6 +509,38 @@ class TodoBoardTests(unittest.IsolatedAsyncioTestCase):
                 self.assertTrue(cards[key]["archived"])
                 self.assertEqual(cards[key]["status"], "doing")
 
+    async def test_workbench_retry_respects_capacity_manual_lane_and_archive(self):
+        from backend import workbench
+
+        jobs = workbench.JobManager(Path(self._tmpdir.name) / "jobs")
+        job = {"id": str(uuid.uuid4()), "status": "queued", "prompt": "飞书任务",
+               "mode": "group", "external_source": {"platform": "feishu"}}
+        with (patch.object(workbench, "manager", jobs), patch.object(jobs, "_todo_sync_enabled", True),
+              patch.object(todo_board, "MAX_ACTIVE_TASKS", 1)):
+            async with await self._client() as client:
+                manual = (await client.post("/api/todo", json={"title": "已有待办"})).json()
+                with self.assertLogs("backend.todo_board", "WARNING"):
+                    jobs.save(job)
+                    self.assertEqual([card["id"] for card in (await client.get("/api/todo")).json()], [manual["id"]])
+                await client.delete(f"/api/todo/{manual['id']}")
+                card, = (await client.get("/api/todo")).json()
+                self.assertEqual(card["external_source"]["task_id"], job["id"])
+                path = f"/api/todo/{card['id']}"
+                moved = await client.put(path, json={"board_status": "review", "priority": "urgent"})
+                self.assertEqual(moved.status_code, 200, moved.text)
+
+                job["status"] = "complete"
+                with (patch.object(todo_board, "_save_board", side_effect=OSError("temporary board write failure")),
+                      self.assertLogs("backend.todo_sync", "ERROR")):
+                    jobs.save(job)
+                with patch("backend.todo_sync.reverse_sync_task"):
+                    await client.delete(path)
+                self.assertEqual((await client.get("/api/todo")).json(), [])
+                archived = (await client.get("/api/todo", params={"archived": True})).json()
+                saved = next(item for item in archived if item["id"] == card["id"])
+                self.assertEqual((saved["status"], saved["status_mode"], saved["source_status"], saved["archived"], saved["priority"]),
+                                 ("review", "manual", "done", True, "urgent"))
+
     # --- Corrupted file tolerance ---
 
     async def test_corrupted_file_returns_500(self):

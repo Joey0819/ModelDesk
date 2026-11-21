@@ -120,6 +120,62 @@ class GroupRoomTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(card["result_ref"]["room_id"], item["id"])
                 self.assertEqual(card["status"], "done")
 
+    async def test_feishu_bot_mirrors_the_accepted_job_and_retries_a_failed_board_write(self):
+        import time
+
+        from backend import feishu, todo_board
+        from backend.feishu_store import ConfigInput, FeishuStore
+
+        room = await self.room()
+        other_room = await self.room(title="独立项目群")
+        self.api.include_router(todo_board.router)
+        intake = FeishuStore(self.root / "feishu")
+        intake.save_config(ConfigInput(enabled=True, app_id="cli_fixture", app_secret="fixture-only", bindings=[{
+            "chat_id": "oc_fixture", "name": "飞书测试群", "project_id": room["project_id"], "room_id": room["id"],
+            "allowed_sender_ids": ["ou_fixture"],
+        }]))
+        reply = AsyncMock()
+        controller = feishu.FeishuController(intake, self.jobs)
+        event = {
+            "app_id": "cli_fixture", "sender_type": "user", "sender_id": "ou_fixture", "chat_id": "oc_fixture",
+            "chat_type": "group", "message_id": "om_fixture", "message_type": "text", "text": "/modeldesk task 编制验收记录",
+            "create_time": str(int(time.time() * 1000)),
+        }
+        worker = AsyncMock()  # Hold execution at the accepted checkpoint without a model call.
+        with (patch.object(todo_board, "BOARD_FILE", self.root / "board.json"), patch.object(todo_board, "_cache", None),
+              patch.object(self.jobs, "_todo_sync_enabled", True), patch.object(self.jobs, "run", worker),
+              patch.object(controller, "reply_once", reply)):
+            identifier = intake.ingest(event)
+            with (patch.object(todo_board, "_save_board", side_effect=OSError("temporary board write failure")),
+                  self.assertLogs("backend.todo_sync", "ERROR")):
+                await controller.tick()
+            receipt = intake.events()[0]
+            self.assertEqual(receipt["state"], "monitoring")
+            job = self.jobs.get(receipt["job_id"])
+            self.assertEqual(job["external_source"]["message_id"], event["message_id"])
+            self.assertTrue((self.jobs.directory / f"{job['id']}.json").is_file())
+
+            listed = await self.client.get("/api/todo", params=self.params(room, room_id=room["id"]))
+            self.assertEqual(listed.status_code, 200, listed.text)
+            card, = listed.json()
+            self.assertEqual(card["title"], "编制验收记录")
+            self.assertEqual(card["source_label"], "飞书")
+            self.assertEqual(card["external_source"], {"platform": "workbench", "task_id": job["id"]})
+            self.assertEqual(card["result_ref"], {"kind": "workbench", "id": job["id"], "project_id": room["project_id"],
+                                                 "room_id": room["id"], "source_run_id": None})
+            unrelated = await self.client.get("/api/todo", params=self.params(other_room, room_id=other_room["id"]))
+            self.assertEqual(unrelated.json(), [])
+
+            self.assertEqual(intake.ingest(event), identifier)
+            await controller.tick()
+            job["status"] = "running"
+            self.jobs.save(job)
+            running, = (await self.client.get("/api/todo")).json()
+            self.assertEqual((running["id"], running["status"]), (card["id"], "doing"))
+            self.assertEqual(len(self.jobs.jobs), 1)
+            worker.assert_awaited_once()
+            reply.assert_awaited_once()
+
     async def test_room_with_only_a_manual_board_card_cannot_be_deleted(self):
         from backend import todo_board
 
@@ -143,6 +199,8 @@ class GroupRoomTests(unittest.IsolatedAsyncioTestCase):
 
         room = await self.room()
         missing, archived, manual, cancelled = [await self.send(room, recipient_member_ids=["writer"]) for _ in range(4)]
+        missing["external_source"] = {"platform": "feishu", "message_id": "om_saved_fixture"}
+        self.jobs.save(missing)
         board_file = self.root / "board.json"
         self.api.include_router(todo_board.router)
         with (patch.object(todo_board, "BOARD_FILE", board_file), patch.object(todo_board, "_cache", None)):
@@ -175,6 +233,8 @@ class GroupRoomTests(unittest.IsolatedAsyncioTestCase):
             standalone_card = all_cards[standalone["id"]]
             self.assertEqual((standalone_card["room_id"], standalone_card["source_status"], standalone_card["status"]), (None, "blocked", "blocked"))
             self.assertEqual(cards[missing["id"]]["status"], "done")
+            self.assertEqual(cards[missing["id"]]["source_label"], "飞书")
+            self.assertEqual(cards[missing["id"]]["result_ref"]["id"], missing["id"])
             self.assertTrue(cards[archived["id"]]["archived"])
             self.assertEqual(cards[manual["id"]]["id"], card_id)
             self.assertEqual(cards[manual["id"]]["status"], "review")

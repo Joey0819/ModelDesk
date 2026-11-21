@@ -188,6 +188,10 @@
   font-size: 12.5px;
 }
 
+.todo-board .todo-refresh {
+  margin-inline-start: auto;
+}
+
 .todo-board .todo-toolbar input[type="checkbox"] {
   width: 15px;
   height: 15px;
@@ -198,6 +202,12 @@
   color: var(--astryx-muted);
   font-size: 12.5px;
   letter-spacing: 0.01em;
+}
+
+.todo-board .todo-filter-empty {
+  color: var(--astryx-muted);
+  background: var(--astryx-soft);
+  border-bottom: 1px solid var(--astryx-line);
 }
 
 /* 工具栏主按钮 */
@@ -296,6 +306,8 @@
 }
 
 .todo-board .todo-show-more {
+  margin-top: 0;
+  margin-bottom: 8px;
   border-color: var(--astryx-line);
   border-radius: var(--astryx-r-element);
   color: var(--astryx-muted);

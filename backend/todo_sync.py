@@ -99,8 +99,8 @@ def sync_task(
     project_id: Optional[str] = None,
     room_id: str | None = None,
     result_ref: dict | None = None,
-) -> None:
-    """Idempotently mirror a saved source task. Errors never interrupt the source."""
+) -> bool:
+    """Mirror a saved task and report whether it reached the board."""
     try:
         from .todo_board import upsert_external_task, archive_external_task
 
@@ -110,10 +110,11 @@ def sync_task(
             logger.warning("todo_sync: unknown status %r for %s/%s, defaulting to 'todo'", status, platform, task_id)
         if card["status"] == "archived":
             archive_external_task(card["external_source"])
-        else:
-            upsert_external_task(**card)
+            return True
+        return bool(upsert_external_task(**card, restore_archived=platform != "workbench"))
     except Exception:
         logger.exception("todo_sync: failed to sync task %s/%s", platform, task_id)
+        return False
 
 
 def workbench_card(job, status, detail):

@@ -5,14 +5,13 @@ import TodoGroupStandards from './TodoGroupStandards';
 import { Icon } from './WorkbenchResults';
 import WorkspaceDialog from './WorkspaceDialog';
 import {
-  COLUMNS, groupByStatus, computeMove, filterTasks, validateTask, buildTaskPayload,
-  canReassignFleet, cardPreview, sourceStatus, taskLocation, todoResultRef,
+  COLUMNS, TODO_SOURCES, groupByStatus, computeMove, filterTasks, validateTask, buildTaskPayload,
+  canReassignFleet, cardPreview, sourceLabel, sourceStatus, taskLocation, todoResultRef,
 } from '../todo-state';
 import './TodoBoard.css';
 import './TodoBoardTheme.css';
 
 const PRIORITY_LABELS = { urgent: '紧急', high: '高', medium: '中', low: '低' };
-const SOURCE_LABELS = { feishu: '飞书', workbench: '工作台', group: '协作任务', fleet: 'Fleet 节点', muse: 'Muse' };
 const STATUS_LABELS = Object.fromEntries(COLUMNS.map(({ id, label }) => [id, label]));
 const REFRESH_INTERVAL_MS = 8000;
 const DONE_COLLAPSE_LIMIT = 20;
@@ -86,8 +85,7 @@ function ScopeFilters({ scope, projects, rooms, roomsLoading, onScopeChange }) {
 function TodoCard({ task, project, room, busy, onEdit, onDragStart, onDragEnd, onMove, onFollow, onReassign, onOpenResult, onOpenRoom }) {
   const platform = task.external_source?.platform;
   const executionStatus = platform ? sourceStatus(task) : null;
-  // A Workbench run dispatched through Feishu retains its original source label.
-  const label = platform && (task.source_label || SOURCE_LABELS[platform] || platform);
+  const label = sourceLabel(task);
   const manualPlacement = platform && task.status_mode === 'manual';
   const groupTitle = room?.title || (task.room_id ? '未知群聊' : null);
   const displayedTags = task.tags?.filter((tag) => tag !== label) || [];
@@ -265,7 +263,7 @@ function TaskModal({ task, projects, rooms, onClose, onSave, onDelete, saving, e
 
 export default function TodoBoard({
   onOpenResult, onOpenNavigation, onOpenRoom, onOpenProject, projects = [], rooms = [], scope = ALL_SCOPE,
-  onScopeChange, roomsLoading = false, roomsError, onRefreshRooms, headerActions,
+  onScopeChange, roomsLoading = false, roomsError, onRefreshRooms, headerActions, sourceFilter = '', onSourceChange,
 }) {
   const [tasks, setTasks] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -299,7 +297,7 @@ export default function TodoBoard({
         setLoadError('');
       }
     } catch (failure) {
-      if (!request.signal.aborted && !background) setLoadError(failure.message);
+      if (!request.signal.aborted) setLoadError(failure.message);
     } finally {
       if (listRequest.current === request) listRequest.current = null;
       if (!request.signal.aborted && !background) setLoading(false);
@@ -323,12 +321,34 @@ export default function TodoBoard({
     };
   }, [loadTasks, editTask]);
 
-  const filtered = filterTasks(tasks, { search, priority: priorityFilter, showDone, showArchived, scope });
+  const filtered = filterTasks(tasks, { search, priority: priorityFilter, source: sourceFilter, showDone, showArchived, scope });
   const grouped = groupByStatus(filtered);
+  const canCollapseDone = !search.trim() && !sourceFilter && grouped.done.length > DONE_COLLAPSE_LIMIT;
+  const doneCollapsed = canCollapseDone && !showAllDone;
+  const visibleDone = doneCollapsed ? grouped.done.slice(-DONE_COLLAPSE_LIMIT) : grouped.done;
+  const hasFilters = scope.type !== 'all' || search.trim() || priorityFilter || sourceFilter || !showDone;
   const shownColumns = COLUMNS.filter((column) => showDone || column.id !== 'done');
   const activeMobileColumn = shownColumns.find((column) => column.id === mobileColumn)?.id ||
     shownColumns.find((column) => grouped[column.id].length)?.id || 'todo';
   const roomsByScope = new Map(rooms.map((room) => [roomKey(room.project_id, room.id), room]));
+
+  const refreshTasks = () => {
+    if (!dragIdRef.current && !mutationPending.current) loadTasks();
+  };
+
+  const changeScope = (next) => {
+    setMobileColumn(null);
+    onScopeChange(next);
+  };
+
+  const clearFilters = () => {
+    changeScope(ALL_SCOPE);
+    setSearch('');
+    setPriorityFilter('');
+    onSourceChange('');
+    setShowDone(true);
+    setShowArchived(false);
+  };
 
   const runMutation = async (request, { message, report = setError, refreshOnFailure = false } = {}) => {
     if (mutationPending.current) return false;
@@ -392,6 +412,10 @@ export default function TodoBoard({
     const move = computeMove(task, status, grouped[status], index);
     if (!move) return;
     const moved = await runMutation(() => todoApi.move(move), { message: `${task.title} 已移至${STATUS_LABELS[status]}`, refreshOnFailure: true });
+    if (moved && status === 'done' && task.status !== 'done' && doneCollapsed &&
+        move.placement === 'before' && move.anchor_id === visibleDone[0].id) {
+      setShowAllDone(true);
+    }
     if (moved && keepFocus) {
       if (showDone || status !== 'done') setMobileColumn(status);
       requestAnimationFrame(() => {
@@ -422,11 +446,13 @@ export default function TodoBoard({
   const readDropTarget = (event, status) => {
     const cards = [...event.currentTarget.querySelectorAll('.todo-card[draggable="true"]')]
       .filter((card) => card.dataset.taskId !== dragIdRef.current);
-    const index = cards.findIndex((card) => {
+    const beforeId = cards.find((card) => {
       const rect = card.getBoundingClientRect();
       return event.clientY < rect.top + rect.height / 2;
-    });
-    return { status, index: index < 0 ? cards.length : index, beforeId: cards[index]?.dataset.taskId };
+    })?.dataset.taskId;
+    const neighbors = grouped[status].filter((card) => card.id !== dragIdRef.current && !card.archived);
+    const index = beforeId ? neighbors.findIndex((card) => card.id === beforeId) : neighbors.length;
+    return { status, index, beforeId };
   };
 
   const handleDragOver = (event, status) => {
@@ -466,14 +492,19 @@ export default function TodoBoard({
       </header>
       <div className="todo-toolbar">
         <div className="todo-toolbar-main">
-          <ScopeFilters scope={scope} projects={projects} rooms={rooms} roomsLoading={roomsLoading} onScopeChange={(next) => { setMobileColumn(null); onScopeChange(next); }} />
+          <ScopeFilters scope={scope} projects={projects} rooms={rooms} roomsLoading={roomsLoading} onScopeChange={changeScope} />
           {selectedProject && onOpenProject && <button type="button" className="todo-card-action" onClick={() => openContext(onOpenProject, selectedProject.id)}>打开项目</button>}
           {selectedRoom && onOpenRoom && <button type="button" className="todo-card-action" onClick={() => openContext(onOpenRoom, selectedRoom)}>打开群聊</button>}
           {selectedRoom && <TodoGroupStandards key={roomKey(scope.projectId, scope.roomId)} roomId={scope.roomId} projectId={scope.projectId} />}
           <button type="button" className="todo-new-task" onClick={openNewTask} disabled={busy}>+ 新建任务</button>
+          <button type="button" className="todo-card-action todo-refresh" onClick={refreshTasks} disabled={busy}>刷新任务</button>
         </div>
         <div className="todo-toolbar-filters">
           <input type="text" aria-label="搜索任务" placeholder="搜索任务…" value={search} onChange={(event) => { setMobileColumn(null); setSearch(event.target.value); }} />
+          <select aria-label="筛选来源" value={sourceFilter} onChange={(event) => { setMobileColumn(null); onSourceChange(event.target.value); }}>
+            <option value="">全部来源</option>
+            {Object.entries(TODO_SOURCES).map(([key, label]) => <option key={key} value={key}>{label}</option>)}
+          </select>
           <select aria-label="筛选优先级" value={priorityFilter} onChange={(event) => { setMobileColumn(null); setPriorityFilter(event.target.value); }}>
             <option value="">全部优先级</option>
             {Object.entries(PRIORITY_LABELS).map(([key, label]) => <option key={key} value={key}>{label}</option>)}
@@ -485,8 +516,14 @@ export default function TodoBoard({
       </div>
       {roomsLoading && <div className="todo-board-feedback" role="status">正在读取群聊…</div>}
       {roomsError && <div className="todo-board-feedback todo-error" role="alert"><span>{roomsError}</span>{onRefreshRooms && <button type="button" onClick={onRefreshRooms}>重试读取群聊</button>}</div>}
-      {loadError && <div className="todo-board-feedback todo-error" role="alert"><span>{loadError}</span><button type="button" onClick={() => loadTasks()}>重试读取任务</button></div>}
+      {loadError && <div className="todo-board-feedback todo-error" role="alert"><span>{loadError}</span><button type="button" onClick={refreshTasks}>重试读取任务</button></div>}
       {error && <div className="todo-board-feedback todo-error" role="alert"><span>{error}</span><button type="button" onClick={() => setError('')}>关闭</button></div>}
+      {!loading && !loadError && hasFilters && !filtered.length && (
+        <div className="todo-board-feedback todo-filter-empty">
+          <span role="status">没有符合当前筛选条件的任务。</span>
+          <button type="button" className="todo-card-action" onClick={clearFilters}>清除筛选</button>
+        </div>
+      )}
       <div className="todo-status-announcement" role="status">{notice}</div>
       {!loading && <nav className="todo-mobile-columns" aria-label="切换看板列">
         {shownColumns.map((column) => <button type="button" key={column.id} className="todo-card-action"
@@ -499,9 +536,7 @@ export default function TodoBoard({
           {shownColumns.map((column) => {
             const target = dropTarget?.status === column.id ? dropTarget : null;
             const columnTasks = grouped[column.id];
-            const collapseEligible = column.id === 'done' && !search.trim() && columnTasks.length > DONE_COLLAPSE_LIMIT;
-            const shouldCollapseDone = collapseEligible && !showAllDone;
-            const visibleTasks = shouldCollapseDone ? columnTasks.slice(0, DONE_COLLAPSE_LIMIT) : columnTasks;
+            const visibleTasks = column.id === 'done' ? visibleDone : columnTasks;
             return (
               <section
                 key={column.id}
@@ -519,6 +554,11 @@ export default function TodoBoard({
                   <span className={`todo-lane-title lane-${column.id}`}>{column.label}</span><span className="todo-column-count">{columnTasks.length}</span>
                 </h2>
                 <div className="todo-column-body">
+                  {column.id === 'done' && canCollapseDone && (
+                    <button type="button" className="todo-show-more" onClick={() => setShowAllDone(!showAllDone)} aria-expanded={!doneCollapsed}>
+                      {doneCollapsed ? `展开其余 ${columnTasks.length - DONE_COLLAPSE_LIMIT} 项已完成` : '收起多余已完成项'}
+                    </button>
+                  )}
                   {!columnTasks.length && <div className="todo-empty">暂无任务</div>}
                   {visibleTasks.map((task) => (
                     <div className={target?.beforeId === task.id ? 'todo-card-slot drop-before' : 'todo-card-slot'} key={task.id}>
@@ -532,16 +572,6 @@ export default function TodoBoard({
                     </div>
                   ))}
                   {target && !target.beforeId && <div className="todo-drop-end" aria-hidden="true" />}
-                  {shouldCollapseDone && (
-                    <button type="button" className="todo-show-more" onClick={() => setShowAllDone(true)}>
-                      展开其余 {columnTasks.length - DONE_COLLAPSE_LIMIT} 项已完成
-                    </button>
-                  )}
-                  {collapseEligible && showAllDone && (
-                    <button type="button" className="todo-show-more" onClick={() => setShowAllDone(false)}>
-                      收起多余已完成项
-                    </button>
-                  )}
                 </div>
                 <InlineAddForm status={column.id} onCreate={handleInlineCreate} busy={busy} />
               </section>

@@ -102,6 +102,32 @@
   border-color: var(--astryx-line);
 }
 
+.todo-board .todo-header-actions .autonomy-center-trigger {
+  min-block-size: 32px;
+  border-radius: var(--astryx-r-element);
+  background: var(--astryx-paper);
+  border-color: var(--astryx-line);
+  color: var(--astryx-source-ink);
+}
+
+.todo-board .todo-header-actions .autonomy-center-trigger:hover:not(:disabled) {
+  background: var(--astryx-accent-wash);
+  border-color: color-mix(in oklab, var(--astryx-accent) 40%, var(--astryx-line));
+  color: var(--astryx-source-ink);
+}
+
+.modeldesk[data-theme=dark] .todo-board .todo-header-actions .autonomy-center-trigger {
+  background: var(--astryx-soft);
+  border-color: var(--astryx-line);
+  color: var(--astryx-source-ink);
+}
+
+.modeldesk[data-theme=dark] .todo-board .todo-header-actions .autonomy-center-trigger:hover:not(:disabled) {
+  background: color-mix(in oklab, var(--astryx-accent) 22%, var(--astryx-soft));
+  border-color: color-mix(in oklab, var(--astryx-accent) 52%, var(--astryx-line));
+  color: #dce6ff;
+}
+
 /* ---------- 工具栏 ---------- */
 
 .todo-board .todo-toolbar {

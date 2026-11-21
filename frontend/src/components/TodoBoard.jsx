@@ -265,7 +265,7 @@ function TaskModal({ task, projects, rooms, onClose, onSave, onDelete, saving, e
 
 export default function TodoBoard({
   onOpenResult, onOpenNavigation, onOpenRoom, onOpenProject, projects = [], rooms = [], scope = ALL_SCOPE,
-  onScopeChange, roomsLoading = false, roomsError, onRefreshRooms,
+  onScopeChange, roomsLoading = false, roomsError, onRefreshRooms, headerActions,
 }) {
   const [tasks, setTasks] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -462,6 +462,7 @@ export default function TodoBoard({
           <span className="mode-header-icon"><Icon name="dashboard" size={22} /></span>
           <h1>任务看板</h1>
         </div>
+        {headerActions && <div className="todo-header-actions">{headerActions}</div>}
       </header>
       <div className="todo-toolbar">
         <div className="todo-toolbar-main">

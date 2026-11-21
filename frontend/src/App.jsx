@@ -13,6 +13,7 @@ import AgentSettings from './components/AgentSettings';
 import MuseDesktopPanel from './components/MuseDesktopPanel';
 import RemoteAccessGate from './components/RemoteAccessGate';
 import RemoteAccessPanel from './components/RemoteAccessPanel';
+import AutonomyTaskCenter from './components/AutonomyTaskCenter';
 import { REMOTE_CLIENT } from './api-base';
 import { machineShort, hostIsMacos } from './machine';
 import { groupScopeKey } from './group-state';
@@ -418,7 +419,7 @@ function ModelDeskWorkspace() {
     openWorkspace('todo');
     setMobileArtifactsOpen(false);
   };
-  const openProjectTodo = (projectId) => { changeTodoScope({ type: 'project', projectId }); openTodo(); };
+  const openProjectTodo = (projectId) => { changeTodoScope(projectId ? { type: 'project', projectId } : { type: 'personal' }); openTodo(); };
   const openRoomTodo = (room) => {
     changeTodoScope({ type: 'room', projectId: room.project_id || null, roomId: room.id });
     openTodo();
@@ -638,6 +639,7 @@ function ModelDeskWorkspace() {
         onOpenProject={openTodoProject}
         onOpenResult={openTodoResult}
         onOpenNavigation={openNavigation}
+        headerActions={<AutonomyTaskCenter key={activeProjectId || 'unassigned'} projectId={activeProjectId} projectName={projectHub.activeProject?.name} onOpenTask={openAutonomyTask} onOpenFeishu={() => openAgentSettings('feishu')} status={status} />}
       /> : platformView ? <PlatformWorkspace key={platformSection} section={platformSection} onSection={openPlatform} status={status} jobs={scopedJobs} models={models} context={context} onContextChange={setContext} onUsePrompt={usePrompt} onUseAgent={useAgent} onRunJob={onPlatformRun} onOpenArtifacts={(next) => { artifactRequest.current += 1; setArtifactJob(hydrateJob(next)); setArtifactsOpen(true); setMobileArtifactsOpen(true); }} onOpenProjects={projectHub.openCreate} onStartCollaboration={openMissions} onOpenJob={selectJob} onOpenNavigation={openNavigation} /> : projectView ? <ProjectWorkspace onOpenTodo={openProjectTodo} key={`${activeProjectId || 'default'}:${projectTarget?.review_id || 'latest'}`} addRequested={0} activeProjectId={activeProjectId} onSelectSharedProject={projectHub.selectProject} attachmentContext={context} onAttachmentContextChange={setContext} initialProjectId={activeProjectId} initialReviewId={projectTarget?.project_id === activeProjectId ? projectTarget.review_id : undefined} onOpenArtifacts={(next) => { artifactRequest.current += 1; setArtifactJob(hydrateJob(next)); setArtifactsOpen(true); setMobileArtifactsOpen(true); }} status={status} jobs={jobs} models={reviewModels.length ? reviewModels : models} onModelsChange={(next) => { setReviewModels(next); localStorage.setItem('modeldesk.reviewModels', JSON.stringify(next)); }} onRefresh={refresh} onOpenNavigation={openNavigation} /> : <main className="workspace">
       <header className="workspace-header conversation-header">
         <div className="header-title">

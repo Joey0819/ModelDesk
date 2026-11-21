@@ -4,6 +4,8 @@ import { API_BASE, REMOTE_CLIENT } from '../api-base';
 import { artifactCategory, deriveArtifacts, deriveRoomArtifacts } from '../artifacts';
 import { groupApi } from '../group-api';
 import { groupTaskApi } from '../group-task-api';
+import { harnessApi } from '../harness-api';
+import { temporaryMembers, teamRequest } from '../mission-teams';
 import { TASK_LABELS, taskActive, taskDraftKey, taskEngineLabel, readTaskDraft, withFetchedPatch } from '../group-task-state';
 import {
   MUSE_STATUS,
@@ -1032,8 +1034,31 @@ export default function GroupWorkspace({ initialRoomId, initialTeam, initialJob,
   useEffect(() => { alive.current = true; refresh(); const timer = setInterval(refresh, 15000); return () => { alive.current = false; clearInterval(timer); }; }, [refresh]);
   useEffect(() => { localStorage.setItem(groupScopeKey(activeProjectId), JSON.stringify({ roomId })); }, [activeProjectId, roomId]);
   const selectRoom = (id) => { onClearArtifacts(); setRoomId(id); };
+  const defaultMembers = useMemo(() => temporaryMembers((models || []).slice(0, 4)), [models]);
+  const canQuickCreate = !team?.id && !creating && !loading && !teamPending && Boolean(title.trim()) && defaultMembers.length >= 2;
+  const quickCreateRoom = async () => {
+    if (!canQuickCreate) return;
+    setCreating(true); setError('');
+    try {
+      const createdTeam = await harnessApi.createTeam(teamRequest({
+        name: `${title.trim().slice(0, 97)}协作组`,
+        description: '快速创建的默认协作组，可在群顶部「成员」随时调整',
+        members: defaultMembers,
+      }, activeProjectId));
+      const savedTeam = createdTeam.team || createdTeam;
+      if (alive.current) setTeam(savedTeam);
+      const room = await groupApi.create({ title: title.trim(), project_id: activeProjectId || null, team_id: savedTeam.id });
+      if (alive.current) { setRooms((previous) => scopedRooms([room, ...previous], activeProjectId)); selectRoom(room.id); }
+    } catch (failure) { if (alive.current) setError(failure.message); }
+    finally { if (alive.current) setCreating(false); }
+  };
   const createRoom = async (event) => {
-    event.preventDefault(); if (!team?.id || !title.trim() || teamPending || creating) return;
+    event.preventDefault();
+    if (!team?.id) {
+      if (canQuickCreate) await quickCreateRoom();
+      return;
+    }
+    if (!title.trim() || teamPending || creating) return;
     setCreating(true); setError('');
     try {
       const room = await groupApi.create({ title: title.trim(), project_id: activeProjectId || null, team_id: team.id });
@@ -1072,8 +1097,10 @@ export default function GroupWorkspace({ initialRoomId, initialTeam, initialJob,
           <label className="group-title-input"><span>群聊名称</span><input aria-label="群聊名称" value={title} maxLength={100} placeholder="例如：产品方案讨论、发布前审查" onChange={(event) => setTitle(event.target.value)} /></label>
           <MissionTeamPicker projectId={activeProjectId} team={team} models={models} catalog={status?.models || []} onChange={chooseTeam} onPending={setTeamPending} onOpenAgentSettings={onOpenAgentSettings} requireSaved />
           <div className={`group-create-actions${!team?.id ? ' needs-team' : ''}`}>
-            <p>{team?.id ? '建群后会保存当前成员与分工，已有讨论不受后续编辑影响。' : '请先在上方选择已有协作组，或点击「成员与分工」/「新建组」保存后再创建群聊。'}</p>
-            <button type="submit" className="primary-button" disabled={creating || loading || !title.trim() || !team?.id || teamPending}><Icon name="plus" size={15} />{creating ? '正在创建' : '创建群聊'}</button>
+            <p>{team?.id ? '建群后会保存当前成员与分工，已有讨论不受后续编辑影响。' : '还未选定已保存协作组：可直接一键按上方默认成员建群，或点击上方「成员与分工」自定义成员。'}</p>
+            {team?.id
+              ? <button type="submit" className="primary-button" disabled={creating || loading || !title.trim() || !team?.id || teamPending}><Icon name="plus" size={15} />{creating ? '正在创建' : '创建群聊'}</button>
+              : <button type="button" className="primary-button" disabled={!canQuickCreate} onClick={quickCreateRoom}><Icon name="plus" size={15} />{creating ? '正在创建' : '一键建群（保存默认协作组）'}</button>}
           </div>
         </form>
       </div>

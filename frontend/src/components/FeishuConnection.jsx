@@ -76,29 +76,53 @@ export function FeishuConnectionOverview({ connection, loading, error, notice, b
   const config = connection?.config;
   const status = connection?.status;
   const label = loading ? '正在读取状态' : error ? '状态未确认' : feishuConnectionStatus(status, config);
+  const bindingCount = Array.isArray(config?.bindings) ? config.bindings.length : 0;
+  const isReady = !remote && !error && status?.state === 'connected' && Boolean(config?.enabled) && bindingCount > 0;
+  const botLink = config?.app_id ? `https://applink.feishu.cn/client/bot/open?appId=${encodeURIComponent(config.app_id)}` : '';
+  const actionBar = remote
+    ? <p className="agent-remote-note">App Secret 和允许会话在{padLatin(machine.short, { before: true, after: true })}的“Agent 与连接 → 飞书远程”配置。完成后，可直接从手机飞书派发任务和接收结果。</p>
+    : <div className="agent-inline-actions feishu-connection-actions"><button type="button" className="subtle-button" disabled={busy || loading} onClick={onRefresh}>刷新连接状态</button><button type="button" className="subtle-button" disabled={busy || !config?.app_id || !config?.has_app_secret} onClick={onTest}>验证已保存的应用凭据</button><button type="button" className="subtle-button" disabled={busy || !config?.app_id || !config?.has_app_secret} onClick={onDiscover}>{chatsAvailable ? '继续读取可用群聊' : '读取可用群聊'}</button><button type="button" className="subtle-button" onClick={onOpenGroups}>打开项目群</button></div>;
   return <>
     <div className="agent-section-heading"><div><h2>飞书远程指令与成果</h2><p>在手机飞书发出任务，ModelDesk 在{machine.label}执行，再把状态、成果和可用文件回传原会话。</p></div><span className={`connection-state ${!error && status?.state === 'connected' && config?.enabled ? 'verified' : ''}`}>{remote ? `请在${machine.short}设置` : label}</span></div>
     {error && <div className="error-banner" role="alert">{error}<button type="button" className="subtle-button" onClick={onRefresh}>重新读取</button></div>}
     {notice && <p className="agent-notice" role="status">{notice}</p>}
     {!remote && status?.reason && <p className="connection-help">连接说明：{status.reason}</p>}
-    <ol className="feishu-setup-steps">
-      <li>在<a href="https://open.feishu.cn/app" target="_blank" rel="noreferrer">飞书开发者后台</a>创建企业自建应用，开启机器人能力并配置收发消息权限。</li>
-      <li>填写下方凭据并启用连接，再在“事件与回调”选择“使用长连接接收事件”，订阅 <code>im.message.receive_v1</code> 并发布应用。<a href={FEISHU_SETUP_URL} target="_blank" rel="noreferrer">官方长连接配置指南</a></li>
-      <li>把机器人加入目标会话，发送一条消息（群聊中需 @机器人）。从下方“最近收到的未绑定会话”添加对应 Chat ID，选择项目群并保存；也可读取机器人可见的群聊或粘贴已核对的 ID。未绑定时不会执行任务。</li>
-    </ol>
-    {config?.app_id && <p className="connection-help"><a href={`https://applink.feishu.cn/client/bot/open?appId=${encodeURIComponent(config.app_id)}`} target="_blank" rel="noreferrer">直接打开已配置的飞书机器人</a>。手机搜索不到时，可在手机打开此链接，并确认当前飞书账号和组织在应用的可用范围内。</p>}
-    <details className="feishu-required-permissions"><summary>需要开通哪些飞书权限？</summary><ul>
-      <li><code>im:message.p2p_msg:readonly</code>：读取发给机器人的单聊消息</li>
-      <li><code>im:message.group_at_msg:readonly</code>：接收群聊中 @机器人的消息</li>
-      <li><code>im:message:send_as_bot</code>：以机器人身份回复</li>
-      <li><code>im:resource</code>：回传文件成果</li>
-      <li><code>im:chat:read</code> 或 <code>im:chat:readonly</code>：读取可用群聊列表（用于选择 Chat ID）</li>
-    </ul><p>权限与事件配置完成后，发布应用版本，让目标用户可使用该机器人。</p></details>
+    {isReady && (
+      <div className="feishu-ready-banner">
+        <div className="feishu-ready-summary">
+          <span className="feishu-ready-dot" aria-hidden="true" />
+          <div className="feishu-ready-text">
+            <strong>飞书长连接运行正常</strong>
+            <span>已授权 {bindingCount} 个会话，可在手机飞书直接派发任务并接收成果回传。</span>
+          </div>
+        </div>
+        {botLink && <a className="feishu-ready-bot-link" href={botLink} target="_blank" rel="noreferrer">直接打开已配置的飞书机器人</a>}
+      </div>
+    )}
+    {isReady && actionBar}
     {!remote && config?.enabled && !config.bindings?.length && <p className="feishu-unbound-note">{status?.state === 'connected' ? '已连接，但尚未允许任何聊天。' : '尚未允许任何聊天。'}可先完成事件订阅、识别 Chat ID，再添加绑定。未绑定会话不会执行指令或回传成果。</p>}
-    <div className="feishu-command-guide"><strong>绑定后，在飞书发送</strong><p>为会话开启“直接用自然语言派发任务”后，可直接发送“帮我完成一份竞品分析报告”；使用“继续：修改上次报告的结论”保留上下文。以下指令始终可用：</p><code>/modeldesk task 帮我完成一份竞品分析报告</code><code>/modeldesk continue 修改上次报告的结论</code><code>/modeldesk status</code><p><code>task</code> 从新任务开始，不带群聊旧对话；<code>continue</code> 会使用绑定群的共享历史与资料，同群其他成员的记录也可能被引用。群聊中请 @机器人。停止任务：<code>/modeldesk cancel 完整任务UUID</code>。收发是否成功，以飞书中的实际回执为准；“长连接在线”不代表任务已经完成。</p></div>
+    <details className="feishu-guide-disclosure" open={!isReady}>
+      <summary>{isReady ? '配置指南、所需权限与飞书指令说明（已就绪，按需展开）' : '配置步骤、所需权限与飞书指令说明'}</summary>
+      <div className="feishu-guide-body">
+        <ol className="feishu-setup-steps">
+          <li>在<a href="https://open.feishu.cn/app" target="_blank" rel="noreferrer">飞书开发者后台</a>创建企业自建应用，开启机器人能力并配置收发消息权限。</li>
+          <li>填写下方凭据并启用连接，再在“事件与回调”选择“使用长连接接收事件”，订阅 <code>im.message.receive_v1</code> 并发布应用。<a href={FEISHU_SETUP_URL} target="_blank" rel="noreferrer">官方长连接配置指南</a></li>
+          <li>把机器人加入目标会话，发送一条消息（群聊中需 @机器人）。从下方“最近收到的未绑定会话”添加对应 Chat ID，选择项目群并保存；也可读取机器人可见的群聊或粘贴已核对的 ID。未绑定时不会执行任务。</li>
+        </ol>
+        {!isReady && botLink && <p className="connection-help"><a href={botLink} target="_blank" rel="noreferrer">直接打开已配置的飞书机器人</a>。手机搜索不到时，可在手机打开此链接，并确认当前飞书账号和组织在应用的可用范围内。</p>}
+        <details className="feishu-required-permissions"><summary>需要开通哪些飞书权限？</summary><ul>
+          <li><code>im:message.p2p_msg:readonly</code>：读取发给机器人的单聊消息</li>
+          <li><code>im:message.group_at_msg:readonly</code>：接收群聊中 @机器人的消息</li>
+          <li><code>im:message:send_as_bot</code>：以机器人身份回复</li>
+          <li><code>im:resource</code>：回传文件成果</li>
+          <li><code>im:chat:read</code> 或 <code>im:chat:readonly</code>：读取可用群聊列表（用于选择 Chat ID）</li>
+        </ul><p>权限与事件配置完成后，发布应用版本，让目标用户可使用该机器人。</p></details>
+        <div className="feishu-command-guide"><strong>绑定后，在飞书发送</strong><p>为会话开启“直接用自然语言派发任务”后，可直接发送“帮我完成一份竞品分析报告”；使用“继续：修改上次报告的结论”保留上下文。以下指令始终可用：</p><code>/modeldesk task 帮我完成一份竞品分析报告</code><code>/modeldesk continue 修改上次报告的结论</code><code>/modeldesk status</code><p><code>task</code> 从新任务开始，不带群聊旧对话；<code>continue</code> 会使用绑定群的共享历史与资料，同群其他成员的记录也可能被引用。群聊中请 @机器人。停止任务：<code>/modeldesk cancel 完整任务UUID</code>。收发是否成功，以飞书中的实际回执为准；“长连接在线”不代表任务已经完成。</p></div>
+        <div className="feishu-command-guide"><strong>还没有任何绑定时</strong><p>配置了管理员 Open ID 后，管理员可直接在飞书<strong>私聊</strong>里发送 <code>/modeldesk setup 项目名</code>（可选 <code>with 模型1,模型2</code> 指定成员模型）自助创建项目、团队和项目群并绑定当前会话，再用 <code>/modeldesk confirm 4位确认码</code> 二次确认执行；<code>/modeldesk unlink</code> 可解除当前会话绑定。群聊不支持自助开通。</p><code>/modeldesk setup 竞品分析</code><code>/modeldesk setup 竞品分析 with qwen3.8-max,glm-5.3</code><code>/modeldesk confirm 1234</code><code>/modeldesk unlink</code></div>
+      </div>
+    </details>
     <p className="connection-help">{machine.short}与 ModelDesk 服务需要保持运行并联网；原生应用操作还需要{padLatin(machine.short, { before: true, after: true })}解锁。此连接采用官方出站长连接，无需配置 Webhook 或内网穿透。</p>
-    <div className="feishu-command-guide"><strong>还没有任何绑定时</strong><p>配置了管理员 Open ID 后，管理员可直接在飞书<strong>私聊</strong>里发送 <code>/modeldesk setup 项目名</code>（可选 <code>with 模型1,模型2</code> 指定成员模型）自助创建项目、团队和项目群并绑定当前会话，再用 <code>/modeldesk confirm 4位确认码</code> 二次确认执行；<code>/modeldesk unlink</code> 可解除当前会话绑定。群聊不支持自助开通。</p><code>/modeldesk setup 竞品分析</code><code>/modeldesk setup 竞品分析 with qwen3.8-max,glm-5.3</code><code>/modeldesk confirm 1234</code><code>/modeldesk unlink</code></div>
-    {remote ? <p className="agent-remote-note">App Secret 和允许会话在{padLatin(machine.short, { before: true, after: true })}的“Agent 与连接 → 飞书远程”配置。完成后，可直接从手机飞书派发任务和接收结果。</p> : <div className="agent-inline-actions feishu-connection-actions"><button type="button" className="subtle-button" disabled={busy || loading} onClick={onRefresh}>刷新连接状态</button><button type="button" className="subtle-button" disabled={busy || !config?.app_id || !config?.has_app_secret} onClick={onTest}>验证已保存的应用凭据</button><button type="button" className="subtle-button" disabled={busy || !config?.app_id || !config?.has_app_secret} onClick={onDiscover}>{chatsAvailable ? '继续读取可用群聊' : '读取可用群聊'}</button><button type="button" className="subtle-button" onClick={onOpenGroups}>打开项目群</button></div>}
+    {!isReady && actionBar}
   </>;
 }
 

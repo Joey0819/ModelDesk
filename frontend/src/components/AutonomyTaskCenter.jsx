@@ -34,7 +34,7 @@ export function AutonomyTaskList({ tasks = [], loading = false, error = '', acti
   </div>;
 }
 
-export default function AutonomyTaskCenter({ projectId, projectName, onOpenTask, onOpenFeishu, status }) {
+export default function AutonomyTaskCenter({ projectId, projectName, onOpenTask, onOpenFeishu, onOpenTodo, status }) {
   const hostShort = machineShort(status);
   const [tasks, setTasks] = useState([]);
   const [worker, setWorker] = useState(null);
@@ -81,7 +81,10 @@ export default function AutonomyTaskCenter({ projectId, projectName, onOpenTask,
       <header><div><strong>后台任务</strong><p>{projectName || '未关联项目'} · {counts.active} 运行中 · {counts.attention} 待处理</p></div><button type="button" className="icon-button" aria-label="关闭后台任务" onClick={() => dialog.current?.close()}><Icon name="close" size={18} /></button></header>
       <WorkerStatus worker={error ? null : worker} machineShort={hostShort} />
       <p className="autonomy-center-explanation">状态与通知保存在本机，刷新后可以继续查看。{hostShort}休眠、关机或服务停止时无法继续执行。系统通知需要桌面应用运行；配置飞书后可接收远程交付。</p>
-      {onOpenFeishu && <button type="button" className="subtle-button autonomy-feishu-link" onClick={() => { dialog.current?.close(); onOpenFeishu(); }}>配置飞书：从手机发指令并接收成果</button>}
+      {(onOpenTodo || onOpenFeishu) && <div className="autonomy-center-links">
+        {onOpenTodo && <button type="button" className="subtle-button" onClick={() => { dialog.current?.close(); onOpenTodo(projectId); }}><Icon name="dashboard" size={14} />在任务看板查看</button>}
+        {onOpenFeishu && <button type="button" className="subtle-button" onClick={() => { dialog.current?.close(); onOpenFeishu(); }}>配置飞书：从手机发指令并接收成果</button>}
+      </div>}
       <AutonomyTaskList tasks={tasks} loading={loading} error={error} actionError={actionError} busyId={busyId} onRefresh={refresh} onOpenTask={(task) => act(task, 'open')} onRead={(task) => act(task, 'read')} onPause={(task) => act(task, 'pause')} />
     </dialog>
   </>;

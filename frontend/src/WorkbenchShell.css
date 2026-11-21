@@ -86,7 +86,7 @@
 .modeldesk .composer-note { max-width: 960px; margin: 5px auto 0; display: flex; align-items: center; gap: 12px; font-size: 10px; }
 .composer-note > button { border: 0; background: none; font-size: 10px; color: var(--muted); padding: 0; }
 .composer-note > button:first-of-type { margin-left: auto; }
-.artifact-dock { flex: 0 0 var(--artifact-width); width: var(--artifact-width); min-width: 0; min-height: 0; position: relative; }
+.artifact-dock { flex: 0 0 var(--artifact-width); width: var(--artifact-width); min-width: 0; min-height: 0; position: relative; display: flex; }
 .artifact-resizer { position: absolute; left: -4px; top: 0; bottom: 0; width: 8px; z-index: 8; cursor: col-resize; touch-action: none; }
 .artifact-resizer:hover, .artifact-resizer:focus-visible { background: #496fce40; outline: none; }
 .modeldesk .empty-workspace h2 { font-size: 22px; text-align: center; }
@@ -389,6 +389,18 @@
   border: 1px solid var(--line);
   background: var(--shell-paper);
   margin-right: 3px;
+}
+
+.workspace-loading-fallback {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  color: var(--muted);
+  font-size: 13px;
+  background: var(--shell-wash);
+  min-height: 240px;
 }
 
 @media (max-height: 520px) {

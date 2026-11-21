@@ -37,13 +37,13 @@ export function MissionPlan({ steps, onChange, editable, models = [] }) {
 
 export default function MissionWorkspace(props) {
   const { activeProjectId } = useProjects();
-  const [mode, setMode] = useState('auto');
+  const [mode, setMode] = useState('pipeline');
   const switchMode = (next) => { if (next !== mode) { props.onClearArtifacts(); setMode(next); } };
   return <section className="automatic-workspace" aria-label="协作工作台">
     <nav className="collaboration-modes" aria-label="选择协作方式">
-      <button type="button" aria-pressed={mode === 'auto'} onClick={() => switchMode('auto')}>自动协作</button>
       <button type="button" aria-pressed={mode === 'pipeline'} onClick={() => switchMode('pipeline')}>自定义流水线</button>
-      <span>{mode === 'auto' ? '分工、执行、检查、交付' : '手动安排步骤与审阅节点'}</span>
+      <button type="button" aria-pressed={mode === 'auto'} onClick={() => switchMode('auto')}>自动协作</button>
+      <span>{mode === 'pipeline' ? '按步骤研究、交叉评审与审阅节点' : '群内自动分工、执行、检查与交付'}</span>
     </nav>
     {mode === 'auto' ? <GroupWorkspace key={`auto:${activeProjectId}`} {...props}
       renderIntegration={(integration) => hostIsMacos(props.status) ? (REMOTE_CLIENT ? <p className="group-remote-muse-note">Muse 原生窗口操作请在{machineShort(props.status)}完成。项目讨论与 Agent 任务可在此继续。</p> : <MuseDesktopPanel {...integration} />) : <p className="group-remote-muse-note">Muse 原生窗口操作仅在 Mac 上可用；当前主机不是 Mac。项目讨论与 Agent 任务可在此继续。</p>} />

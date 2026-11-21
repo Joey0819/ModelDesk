@@ -76,26 +76,29 @@
 .group-title-input input { width: 100%; border: 1px solid var(--line); border-radius: 7px; background: var(--shell-paper); color: var(--ink); padding: 10px 12px; font: inherit; font-size: 14px; box-sizing: border-box; }
 .group-create-actions { display: flex; align-items: center; justify-content: space-between; gap: 15px; margin-top: 14px; }
 .group-create-actions p { color: var(--muted); font-size: 12px; line-height: 1.75; margin: 0; }
-.group-create-actions button { white-space: nowrap; font-size: 12px; min-block-size: 34px; }
+.group-create-actions button { white-space: nowrap; flex-shrink: 0; font-size: 12px; min-block-size: 36px; height: auto; padding: 8px 14px; }
 .group-create-actions.needs-team {
   padding: 12px 14px;
-  border: 1px solid color-mix(in srgb, var(--accent) 26%, var(--line));
+  border: 1px solid color-mix(in oklab, var(--accent) 26%, var(--line));
   border-radius: 10px;
-  background: color-mix(in srgb, var(--accent) 6%, var(--shell-paper));
+  background: color-mix(in oklab, var(--accent) 6%, var(--shell-paper));
 }
 .group-create-actions.needs-team p { color: var(--ink); font-size: 12.5px; font-weight: 500; line-height: 1.6; }
 .modeldesk[data-theme=dark] .group-create-actions.needs-team {
-  border-color: color-mix(in srgb, var(--accent) 34%, var(--line));
-  background: color-mix(in srgb, var(--accent) 11%, var(--shell-paper));
+  border-color: color-mix(in oklab, var(--accent) 34%, var(--line));
+  background: color-mix(in oklab, var(--accent) 11%, var(--shell-paper));
 }
 .modeldesk[data-theme=dark] .group-workspace .primary-button:disabled {
   background: #2f3b54;
   color: #8f9eb8;
+  box-shadow: inset 0 0 0 1px #3d4d6b;
   cursor: not-allowed;
 }
 @media (prefers-reduced-motion: no-preference) {
-  .group-existing-room-pill { transition: border-color 0.15s ease, color 0.15s ease, background-color 0.15s ease, transform 0.12s ease; }
-  .group-existing-room-pill:active { transform: translateY(1px); }
+  .group-existing-room-pill,
+  .group-create-actions button { transition: border-color 0.15s ease, color 0.15s ease, background-color 0.15s ease, transform 0.12s ease; }
+  .group-existing-room-pill:active,
+  .group-create-actions button:active:not(:disabled) { transform: translateY(1px); }
 }
 .group-room-timeline { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 18px clamp(14px, 2.4vw, 30px); scroll-behavior: auto; scrollbar-width: thin; overscroll-behavior: contain; }
 .group-room-timeline > *, .group-room-compose > * { max-width: 920px; margin-left: auto; margin-right: auto; }
@@ -225,7 +228,8 @@
   .group-roster-grid { grid-template-columns: 1fr; }
   .group-room-timeline { padding: 12px 12px; }
   .group-create-scroll { padding: 20px 14px; }
-  .group-create-actions { align-items: flex-start; flex-direction: column; }
+  .group-create-actions { align-items: stretch; flex-direction: column; gap: 10px; }
+  .group-create-actions button { width: 100%; justify-content: center; min-block-size: 38px; white-space: normal; text-align: center; }
   .group-user-message { margin-left: auto; padding: 10px 12px; }
   .group-recipient-picker button { min-height: 32px; }
   .group-delivery-mode button { min-height: 32px; }

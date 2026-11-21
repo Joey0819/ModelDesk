@@ -353,6 +353,22 @@ async def get_room(identifier: str, project_id: str | None = None):
     return await asyncio.to_thread(store.get, identifier, project_id)
 
 
+@router.get("/{identifier}/feishu")
+def read_room_feishu(identifier: str, request: Request, response: Response, project_id: str | None = None):
+    from .feishu import room_summary
+    from .projects import store as projects
+    from .remote_access import is_local_api_request
+
+    # The phone gateway connects over loopback only after authenticating its session.
+    if not is_local_api_request(request):
+        raise HTTPException(403, "请从本机 ModelDesk 或已配对的手机入口查看飞书状态")
+    room = store.get(identifier, project_id)
+    if room["project_id"]:
+        projects.get(room["project_id"])
+    response.headers["Cache-Control"] = "no-store"
+    return room_summary(room["id"], room["project_id"])
+
+
 @router.put("/{identifier}/team")
 async def update_room_team(identifier: str, request: RoomTeamRequest, project_id: str | None = None):
     """Apply a saved team to future work only; completed work keeps its identity."""

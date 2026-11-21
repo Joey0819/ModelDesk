@@ -10,8 +10,8 @@
 .group-header-actions .group-result-trigger:not(:disabled) { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 28%, var(--line)); }
 .group-header-actions .group-result-trigger[aria-expanded="true"] { background: color-mix(in srgb, var(--accent) 12%, var(--shell-paper)); }
 .group-header-actions .group-result-trigger:disabled { opacity: .5; }
-.group-header-actions .group-feishu-trigger,
-.group-header-actions .group-feishu-setup-shortcut { gap: 6px; }
+.group-compact-header .group-feishu-trigger,
+.group-compact-header .group-feishu-setup-shortcut { flex: none; gap: 6px; min-height: 34px; padding: 0 9px; white-space: nowrap; font-size: 12px; }
 .feishu-header-dot {
   display: inline-block;
   inline-size: 7px;
@@ -21,21 +21,17 @@
   background: var(--muted);
   opacity: .65;
 }
-.group-header-actions .group-feishu-trigger.connected,
-.group-header-actions .group-feishu-setup-shortcut.connected {
+.group-compact-header .group-feishu-trigger.connected {
   color: var(--jade);
   border-color: color-mix(in oklab, var(--jade) 36%, var(--line));
   background: color-mix(in oklab, var(--jade) 8%, var(--shell-paper));
 }
-.group-feishu-trigger.connected .feishu-header-dot,
-.group-feishu-setup-shortcut.connected .feishu-header-dot,
-.feishu-header-dot.connected {
+.group-feishu-trigger.connected .feishu-header-dot {
   background: var(--jade);
   opacity: 1;
   box-shadow: 0 0 0 2.5px color-mix(in oklab, var(--jade) 20%, transparent);
 }
-.modeldesk[data-theme=dark] .group-header-actions .group-feishu-trigger.connected,
-.modeldesk[data-theme=dark] .group-header-actions .group-feishu-setup-shortcut.connected {
+.modeldesk[data-theme=dark] .group-compact-header .group-feishu-trigger.connected {
   color: #84d8c4;
   border-color: #3a685f;
   background: #1d322e;
@@ -461,17 +457,17 @@ button.group-live-badge { background: var(--shell-paper); border: 1px solid var(
 .group-execution-details ol { list-style: none; padding-left: 0; }
 .group-runtime-boundary { max-height: 64px; overflow: auto; }
 @container (max-width: 920px) {
-  .group-header-actions .group-feishu-trigger { display: none; }
+  .group-header-actions .group-routines-trigger { display: none; }
 }
 @container (max-width: 790px) {
   .group-compact-header .group-work-mode { display: none; }
-  .group-header-actions .group-routines-trigger { display: none; }
   .group-more-trigger .group-current-mode { display: inline-flex; align-items: center; gap: 3px; }
   .group-more-modes { display: flex; flex-wrap: wrap; gap: 8px; padding-bottom: 12px; margin-bottom: 12px; border-bottom: 1px solid var(--line); }
   .group-room-switcher { flex: 1; }
 }
 @container (max-width: 510px) {
   .group-header-actions .group-todo-trigger { display: none; }
+  .group-room-switcher > svg { display: none; }
   .group-header-actions .group-roster-trigger > span { display: none; }
   .group-header-actions .group-more-trigger > svg { display: none; }
   .group-header-actions .group-more-trigger .group-current-mode { display: none; }
@@ -496,6 +492,10 @@ button.group-live-badge { background: var(--shell-paper); border: 1px solid var(
   .group-room-compose { padding: 5px 10px max(7px, env(safe-area-inset-bottom)); }
   .group-options-body { padding: 12px 16px 20px; }
   .group-options-dialog > header { padding: 14px 16px; }
+}
+@container (max-width: 400px) {
+  .modeldesk .group-workspace .group-compact-header:has(.group-feishu-trigger) { flex-wrap: wrap; height: auto; flex-basis: auto; padding-block: 6px; }
+  .group-compact-header .group-header-actions { flex-basis: 100%; justify-content: flex-end; }
 }
 @media (max-height: 580px) {
   .group-compose-summary .attachment-tray { max-height: 36px; }

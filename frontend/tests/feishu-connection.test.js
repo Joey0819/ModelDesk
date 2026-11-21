@@ -9,10 +9,10 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { FEISHU_SETUP_URL, feishuBinding, feishuBody, feishuConnectionStatus, feishuDraft, feishuIssue, feishuSenderIds, roomFeishuSummary, safeFeishuError } from '../src/feishu-state.js';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const compiled = buildSync({ stdin: { contents: 'export {FeishuAllGroupsMatrix,FeishuConfigurationForm,FeishuConnectionOverview,FeishuRecentReceipts} from "./src/components/FeishuConnection.jsx"; export {default as GroupFeishuDialog} from "./src/components/GroupFeishuDialog.jsx"; export {feishuApi} from "./src/feishu-api.js"; export {machineInfo} from "./src/machine.js";', resolveDir: root }, bundle: true, platform: 'node', format: 'cjs', jsx: 'automatic', write: false, external: ['react', 'react/jsx-runtime'], define: { 'import.meta.env': '{}' }, loader: { '.css': 'empty' } });
+const compiled = buildSync({ stdin: { contents: 'export {FeishuAllGroupsMatrix,FeishuConfigurationForm,FeishuConnectionOverview,FeishuRecentReceipts} from "./src/components/FeishuConnection.jsx"; export {default as GroupFeishuDialog, GroupFeishuAccess, FeishuReuseChoices} from "./src/components/GroupFeishuDialog.jsx"; export {feishuApi} from "./src/feishu-api.js"; export {machineInfo} from "./src/machine.js";', resolveDir: root }, bundle: true, platform: 'node', format: 'cjs', jsx: 'automatic', write: false, external: ['react', 'react/jsx-runtime'], define: { 'import.meta.env': '{}' }, loader: { '.css': 'empty' } });
 const filename = path.join(root, 'tests/feishu-virtual.cjs');
 const module = new Module(filename); module.paths = Module._nodeModulePaths(path.dirname(filename)); module._compile(compiled.outputFiles[0].text, filename);
-const { FeishuAllGroupsMatrix, FeishuConfigurationForm, FeishuConnectionOverview, FeishuRecentReceipts, GroupFeishuDialog, feishuApi, machineInfo } = module.exports;
+const { FeishuAllGroupsMatrix, FeishuConfigurationForm, FeishuConnectionOverview, FeishuRecentReceipts, GroupFeishuDialog, GroupFeishuAccess, FeishuReuseChoices, feishuApi, machineInfo } = module.exports;
 const binding = { chat_id: 'oc_allowed', name: 'Work group', project_id: 'project-a', room_id: 'room-a', allowed_sender_ids: ['ou_owner'], allow_native: false, natural_language_tasks: false };
 const config = { app_id: 'cli_myapp', enabled: true, has_app_secret: true, bindings: [binding] };
 
@@ -312,15 +312,86 @@ test('FeishuConfigurationForm, FeishuConnectionOverview, FeishuAllGroupsMatrix a
   const dialogHtml = renderToStaticMarkup(React.createElement(GroupFeishuDialog, {
     room: { id: 'room-b', title: '增长群' },
     projectId: 'project-b',
-    status: null,
-    feishuData: { config, status: { state: 'connected' }, rooms, recent: [], observed_chats: [] },
-    onUpdated() {},
+    access: { room_id: 'room-b', project_id: 'project-b', mode: 'none', status: 'connected' },
     onOpenFeishuSettings() {},
     onClose() {},
   }));
   assert.match(dialogHtml, /<dialog[^>]*closedby="any"/);
   assert.doesNotMatch(dialogHtml, /role="dialog"|aria-modal/);
   assert.match(dialogHtml, /飞书机器人连接/);
-  assert.match(dialogHtml, /让已有飞书机器人接入全部项目群/);
-  assert.match(dialogHtml, /保存当前群飞书绑定/);
+  assert.match(dialogHtml, /绑定或复用飞书会话/);
+  assert.doesNotMatch(dialogHtml, /保存当前群飞书绑定|oc_allowed|ou_owner/);
+});
+
+
+test('paired room panel offers stable scoped commands and opens the verified private bot', () => {
+  const roomId = '631207af-0178-4dbd-a6b0-e68827f6ddae';
+  const access = {
+    room_id: roomId,
+    mode: 'all_groups',
+    status: 'connected',
+    destination: 'private',
+    switch_command: `/modeldesk use ${roomId}`,
+    bot_url: 'https://applink.feishu.cn/client/bot/open?appId=cli_myapp',
+  };
+  const panel = (data) => renderToStaticMarkup(React.createElement(GroupFeishuAccess, { access: data, remote: true }));
+  const shared = panel(access);
+  assert.ok(shared.includes(`/modeldesk use ${roomId}`));
+  assert.ok(shared.includes(`/modeldesk to ${roomId} 任务内容`));
+  assert.match(shared, /href="https:\/\/applink\.feishu\.cn\/client\/bot\/open\?appId=cli_myapp"/);
+  assert.match(shared, /复制切换指令/);
+  assert.doesNotMatch(shared, /配置飞书机器人|管理飞书会话绑定|Chat ID/);
+  const group = panel({ ...access, mode: 'direct', destination: 'group', switch_command: null, bot_url: null });
+  assert.match(group, /@ 机器人/);
+  assert.match(group, /\/modeldesk task 任务内容/);
+  assert.doesNotMatch(group, /打开飞书机器人|复制切换指令/);
+  const offline = panel({ ...access, status: 'disconnected', switch_command: null, bot_url: null });
+  assert.match(offline, /刷新连接状态/);
+  assert.doesNotMatch(offline, /\/modeldesk (?:use|to|task)|打开飞书机器人/);
+});
+
+test('scoped room lookup has retry feedback and remote setup stays on the host', () => {
+  const panel = (props) => renderToStaticMarkup(React.createElement(GroupFeishuAccess, props));
+  assert.match(panel({}), /role="status">正在读取/);
+  assert.match(panel({ error: '无法读取本群', remote: true }), /role="alert">无法读取本群.*重试/);
+  const access = { status: 'not_configured', mode: 'none' };
+  assert.match(panel({ access, remote: false }), /<button[^>]+>配置飞书机器人/);
+  assert.doesNotMatch(panel({ access, remote: true }), /<button[^>]+>配置飞书机器人/);
+});
+
+test('local reuse offers one existing session immediately and requires a choice for several', () => {
+  const reuse = (bindings) => renderToStaticMarkup(React.createElement(FeishuReuseChoices, { bindings, busy: false }));
+  const single = reuse([binding]);
+  assert.match(single, /Work group/);
+  assert.doesNotMatch(single, /<select|disabled/);
+  const several = reuse([binding, { ...binding, name: 'Another room', chat_id: 'oc_second' }]);
+  assert.match(several, /<option value="" selected="">请选择会话/);
+  assert.match(several, /<button[^>]+disabled="">开启全部项目群接入/);
+  assert.match(several, /Another room · oc_second/);
+  assert.doesNotMatch(several, /ou_owner/);
+});
+
+test('Feishu room access and existing-session reuse send only scoped requests', async () => {
+  const savedFetch = globalThis.fetch;
+  const requests = [];
+  globalThis.fetch = async (url, options) => {
+    requests.push({ url: new URL(url), options });
+    return new Response('{}');
+  };
+  try {
+    const controller = new AbortController();
+    await feishuApi.roomAccess('room/one', 'project A', controller.signal);
+    await feishuApi.roomAccess('room-two', null);
+    await feishuApi.enableAllGroups('room/one', 'oc_target', 'project A');
+    assert.deepEqual(requests.map(({ url, options }) => [url.pathname + url.search, options.method]), [
+      ['/api/groups/room%2Fone/feishu?project_id=project%20A', 'GET'],
+      ['/api/groups/room-two/feishu', 'GET'],
+      ['/api/feishu/rooms/room%2Fone/binding/oc_target/allow-all-groups', 'PUT'],
+    ]);
+    assert.equal(requests[0].options.signal, controller.signal);
+    assert.equal(requests[0].options.body, undefined);
+    assert.deepEqual(JSON.parse(requests[2].options.body), { project_id: 'project A' });
+  } finally {
+    globalThis.fetch = savedFetch;
+  }
 });

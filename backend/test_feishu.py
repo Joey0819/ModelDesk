@@ -1143,6 +1143,393 @@ class FeishuTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((self.store.directory / "config.json").stat().st_mode & 0o777, 0o600)
         self.assertEqual((self.store.directory / "receipts.sqlite3").stat().st_mode & 0o777, 0o600)
 
+    async def test_smart_natural_language_discovery_fuzzy_switch_current_help_and_false_positive_guard(self):
+        from backend import projects
+        mst_project, dev_room = str(uuid.uuid4()), str(uuid.uuid4())
+        rd_project, review_room = str(uuid.uuid4()), str(uuid.uuid4())
+        rooms_data = [
+            {
+                "id": self.room_id,
+                "project_id": self.project_id,
+                "title": "article",
+                "team_snapshot": {"members": [{"id": "m1", "name": "产品经理"}, {"id": "m2", "name": "总编辑"}]},
+                "updated_at": "2026-11-20T10:00:00+00:00",
+            },
+            {
+                "id": dev_room,
+                "project_id": mst_project,
+                "title": "project development项目群",
+                "team_snapshot": {"members": [{"id": "a1", "name": "架构师"}, {"id": "a2", "name": "工程师"}]},
+                "updated_at": "2026-11-22T12:00:00+00:00",
+            },
+            {
+                "id": review_room,
+                "project_id": rd_project,
+                "title": "代码审查群聊",
+                "team_snapshot": {"members": [{"id": "r1", "name": "评审员"}]},
+                "updated_at": "2026-11-21T12:00:00+00:00",
+            },
+        ]
+        registry = {
+            self.project_id: {"id": self.project_id, "name": "2.21 实际交付验收"},
+            mst_project: {"id": mst_project, "name": "MST"},
+            rd_project: {"id": rd_project, "name": "研发中心"},
+        }
+
+        def fake_room_get(rid, pid=None):
+            for item in rooms_data:
+                if item["id"] == rid and item["project_id"] == pid:
+                    return item
+            raise HTTPException(404, "项目群不存在")
+
+        destinations = []
+
+        async def submit_multi(room, request, project, **kwargs):
+            destinations.append((project, room, request.prompt, request.context_mode))
+            job = {
+                "id": kwargs["job_id"],
+                "mode": "group",
+                "status": "running",
+                "project_id": project,
+                "group_room_id": room,
+                "conversation_id": room,
+                "group_context_mode": request.context_mode,
+                "external_source": kwargs["external_source"],
+                "events": [],
+                "created_at": workbench.now(),
+                "autonomy": {"state": "running"},
+            }
+            self.jobs.jobs[job["id"]] = job
+            return job
+
+        self.store.save_config(ConfigInput(
+            enabled=True,
+            app_id="cli_test",
+            bindings=[
+                {**self.binding, "allow_all_groups": True, "natural_language_tasks": True},
+                {**self.binding, "chat_id": "oc_locked", "allow_all_groups": False, "natural_language_tasks": True},
+            ],
+        ))
+        revision = self.store.config()["revision"]
+
+        with patch.object(groups.store, "get", side_effect=fake_room_get), \
+             patch.object(groups.store, "_rooms", return_value=rooms_data), \
+             patch.object(projects.store, "read_registry", return_value=registry), \
+             patch.object(groups, "submit_message", AsyncMock(side_effect=submit_multi)) as submit_mock:
+            # 1. Real-user question finds "project development项目群", reserves number 1, NEVER starts a task!
+            find_rec = self.received(text="你能找到我的project development吗")
+            await self.controller.tick()
+            submit_mock.assert_not_awaited()
+            self.assertEqual(find_rec["command"], "find project development")
+            find_reply = self.sdk.calls[-1][3]["text"]
+            self.assertIn("MST · project development项目群", find_reply)
+            self.assertIn(dev_room, find_reply)
+            self.assertIn("切换群 1", find_reply)
+            self.assertEqual(self.store.shown_room_numbers(find_rec), {"1": dev_room})
+
+            # 2. Conversational group search & no-match fallback with recent rooms
+            self.received(text="看看有没有代码审查群聊")
+            self.received(text="找群 不存在的关键词xyz")
+            await self.controller.tick()
+            submit_mock.assert_not_awaited()
+            self.assertIn("研发中心 · 代码审查群聊", self.sdk.calls[-2][3]["text"])
+            no_match_reply = self.sdk.calls[-1][3]["text"]
+            self.assertIn("未找到包含「不存在的关键词xyz」的项目群", no_match_reply)
+            self.assertIn("2.21 实际交付验收 · article", no_match_reply)
+            self.assertIn("最近活跃的项目群", no_match_reply)
+
+            # 3. Current group query & natural help query never create tasks
+            self.received(text="当前群")
+            self.received(text="现在在哪个群呢？")
+            self.received(text="怎么用？")
+            await self.controller.tick()
+            submit_mock.assert_not_awaited()
+            current_reply = self.sdk.calls[-3][3]["text"]
+            self.assertIn("当前默认项目群：2.21 实际交付验收 · article", current_reply)
+            self.assertIn("产品经理", current_reply)
+            self.assertIn("找群 关键词", current_reply)
+            self.assertIn("当前默认项目群：2.21 实际交付验收 · article", self.sdk.calls[-2][3]["text"])
+            help_reply = self.sdk.calls[-1][3]["text"]
+            self.assertIn("当前默认项目群：2.21 实际交付验收 · article", help_reply)
+            self.assertIn("/modeldesk task", help_reply)
+            self.assertIn("找群 关键词", help_reply)
+
+            # 4. Fuzzy switch works for "切换群 project development", "切换到 代码审查", compact form, and reserved number "切换群 1"!
+            self.received(text="切换群 project development")
+            await self.controller.tick()
+            self.assertEqual(self.store.config()["revision"], revision)
+            self.assertEqual(self.store.get_chat_route("cli_test", "oc_one", revision, "ou_person")["room_id"], dev_room)
+            self.assertIn("MST · project development项目群", self.sdk.calls[-1][3]["text"])
+
+            self.received(text="当前群")
+            await self.controller.tick()
+            self.assertIn("MST · project development项目群", self.sdk.calls[-1][3]["text"])
+            self.assertIn("架构师", self.sdk.calls[-1][3]["text"])
+
+            self.received(text="切换到 代码审查")
+            await self.controller.tick()
+            self.assertEqual(self.store.get_chat_route("cli_test", "oc_one", revision, "ou_person")["room_id"], review_room)
+
+            # Switching via the number reserved by "你能找到我的project development吗" works cleanly!
+            self.received(text="切换群 1")
+            await self.controller.tick()
+            self.assertEqual(self.store.get_chat_route("cli_test", "oc_one", revision, "ou_person")["room_id"], dev_room)
+
+            # 5. Locked chat (allow_all_groups=False) never leaks other rooms on natural discovery or current
+            self.received(chat_id="oc_locked", text="你能找到我的project development吗")
+            self.received(chat_id="oc_locked", text="当前群")
+            await self.controller.tick()
+            submit_mock.assert_not_awaited()
+            locked_find = self.sdk.calls[-2][3]["text"]
+            locked_current = self.sdk.calls[-1][3]["text"]
+            self.assertNotIn("project development", locked_find)
+            self.assertNotIn("MST", locked_find)
+            self.assertIn("2.21 实际交付验收 · article", locked_find)
+            self.assertIn("2.21 实际交付验收 · article", locked_current)
+            self.assertNotIn("MST", locked_current)
+
+        # 6. Compact switch, strict /modeldesk to (allow_fuzzy=False), false-positive guard, and reply continuation guard
+        self.store.save_config(ConfigInput(
+            enabled=True,
+            app_id="cli_test",
+            bindings=[{**self.binding, "chat_id": "oc_two", "allow_all_groups": True, "natural_language_tasks": True}],
+        ))
+        rev2 = self.store.config()["revision"]
+        with patch.object(groups.store, "get", side_effect=fake_room_get), \
+             patch.object(groups.store, "_rooms", return_value=rooms_data), \
+             patch.object(projects.store, "read_registry", return_value=registry), \
+             patch.object(groups, "submit_message", AsyncMock(side_effect=submit_multi)) as submit_mock:
+            # Compact no-space switch
+            self.received(chat_id="oc_two", text="切换到project development")
+            await self.controller.tick()
+            self.assertEqual(self.store.get_chat_route("cli_test", "oc_two", rev2, "ou_person")["room_id"], dev_room)
+
+            # parse_to_command keeps allow_fuzzy=False (strict matching for /modeldesk to)
+            self.received(chat_id="oc_two", text="/modeldesk to project development 写方案")
+            await self.controller.tick()
+            submit_mock.assert_not_awaited()
+            self.assertIn("未找到匹配", self.sdk.calls[-1][3]["text"])
+
+            # False-positive guard: real task with "找一下" + task verb STILL executes as a task in dev_room!
+            task_rec = self.received(chat_id="oc_two", text="帮我找一下竞品资料并写报告")
+            await self.controller.tick()
+            self.assertEqual(submit_mock.await_count, 1)
+            self.assertEqual(destinations[-1], (mst_project, dev_room, "帮我找一下竞品资料并写报告", "fresh"))
+            ack_reply_id = f"om_reply_{len(self.sdk.calls)}"
+            # Replying to a task receipt with a discovery-like question continues the task instead of hijacking!
+            self.received(chat_id="oc_two", text="你能找到我的project development吗", parent_id=ack_reply_id)
+            await self.controller.tick()
+            self.assertEqual(submit_mock.await_count, 2)
+            self.assertEqual(destinations[-1], (mst_project, dev_room, "你能找到我的project development吗", "continue"))
+            self.assertEqual(self.jobs.jobs[self.store.events()[-1]["job_id"]]["external_source"]["parent_job_id"], task_rec["job_id"])
+
+    async def test_activate_room_endpoint_local_only_routes_notifications_open_chat_and_direct(self):
+        from backend import projects
+        mst_project, dev_room = str(uuid.uuid4()), str(uuid.uuid4())
+        rooms_data = [
+            {
+                "id": self.room_id,
+                "project_id": self.project_id,
+                "title": "article",
+                "team_snapshot": {"members": [{"id": "a"}]},
+                "updated_at": "2026-11-20T10:00:00+00:00",
+            },
+            {
+                "id": dev_room,
+                "project_id": mst_project,
+                "title": "project development项目群",
+                "team_snapshot": {"members": [{"id": "b"}]},
+                "updated_at": "2026-11-22T10:00:00+00:00",
+            },
+        ]
+        registry = {
+            self.project_id: {"id": self.project_id, "name": "2.21 实际交付验收"},
+            mst_project: {"id": mst_project, "name": "MST"},
+        }
+
+        def fake_room_get(rid, pid=None):
+            for item in rooms_data:
+                if item["id"] == rid:
+                    if item["project_id"] != pid:
+                        raise HTTPException(403, "项目群不属于当前项目")
+                    return item
+            raise HTTPException(404, "项目群不存在")
+
+        api = FastAPI()
+        api.include_router(feishu.router)
+        local_headers = {"Origin": "http://localhost:5173"}
+
+        with patch.object(feishu, "store", self.store), \
+             patch.object(feishu, "controller", self.controller), \
+             patch.object(groups.store, "get", side_effect=fake_room_get), \
+             patch.object(groups.store, "_rooms", return_value=rooms_data), \
+             patch.object(projects.store, "read_registry", return_value=registry):
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=api), base_url="http://127.0.0.1:8001") as client:
+                # 1. Local-only security: missing Origin, X-ModelDesk-Remote, and cross-origin are rejected with 403.
+                activate_url = f"/api/feishu/rooms/{dev_room}/activate"
+                self.assertEqual((await client.post(activate_url, json={"project_id": mst_project})).status_code, 403)
+                self.assertEqual((await client.post(
+                    activate_url,
+                    headers={"Origin": "http://localhost:5173", "X-ModelDesk-Remote": "phone"},
+                    json={"project_id": mst_project},
+                )).status_code, 403)
+                self.assertEqual((await client.post(
+                    activate_url,
+                    headers={"Origin": "https://evil.invalid"},
+                    json={"project_id": mst_project},
+                )).status_code, 403)
+
+                # 2. Missing room (404), mismatched project (403), missing allow_all_groups binding (409).
+                self.assertEqual((await client.post(
+                    f"/api/feishu/rooms/{uuid.uuid4()}/activate",
+                    headers=local_headers,
+                    json={"project_id": mst_project},
+                )).status_code, 404)
+                self.assertEqual((await client.post(
+                    activate_url,
+                    headers=local_headers,
+                    json={"project_id": self.project_id},
+                )).status_code, 403)
+                # Initial config only has a direct binding to self.room_id (allow_all_groups=False).
+                self.assertEqual((await client.post(
+                    activate_url,
+                    headers=local_headers,
+                    json={"project_id": mst_project},
+                )).status_code, 409)
+
+                # 3. Direct binding to self.room_id succeeds with already_direct=True and notifies when requested.
+                direct_resp = await client.post(
+                    f"/api/feishu/rooms/{self.room_id}/activate",
+                    headers=local_headers,
+                    json={"project_id": self.project_id, "notify_feishu": True},
+                )
+                self.assertEqual(direct_resp.status_code, 200, direct_resp.text)
+                self.assertNotIn("test-secret", direct_resp.text)
+                direct_body = direct_resp.json()
+                self.assertTrue(direct_body["ok"])
+                self.assertTrue(direct_body["already_direct"])
+                self.assertEqual(direct_body["updated_chats"], ["oc_one"])
+                self.assertTrue(direct_body["feishu_notified"])
+                self.assertIsNone(direct_body["notify_error"])
+                self.assertEqual(len(self.sdk.calls), 1)
+                self.assertEqual(self.sdk.calls[0][0], "send")
+
+                # 4. Allowlisted allow_all_groups=True binding updates all allowed senders WITHOUT rotating revision!
+                self.sdk.calls.clear()
+                self.store.save_config(ConfigInput(
+                    enabled=True,
+                    app_id="cli_test",
+                    owner_sender_ids=["ou_owner"],
+                    bindings=[
+                        {
+                            **self.binding,
+                            "allowed_sender_ids": ["ou_person", "ou_colleague"],
+                            "allow_all_groups": True,
+                            "natural_language_tasks": True,
+                        },
+                        {
+                            **self.binding,
+                            "chat_id": "oc_open",
+                            "allowed_sender_ids": [],
+                            "allow_all_groups": True,
+                            "natural_language_tasks": True,
+                        },
+                    ],
+                ))
+                rev = self.store.config()["revision"]
+                inflight = self.received(text="保持在旧群的在途任务")
+                # Seed an event from ou_known in oc_open so known_senders_for_chat sees ou_known.
+                self.received(chat_id="oc_open", sender_id="ou_known", text="你好")
+
+                # Activate dev_room on oc_one specifically with notify_feishu=True
+                resp = await client.post(
+                    activate_url,
+                    headers=local_headers,
+                    json={"project_id": mst_project, "chat_id": "oc_one", "notify_feishu": True},
+                )
+                self.assertEqual(resp.status_code, 200, resp.text)
+                self.assertNotIn("test-secret", resp.text)
+                body = resp.json()
+                self.assertTrue(body["ok"])
+                self.assertFalse(body["already_direct"])
+                self.assertEqual(body["room_id"], dev_room)
+                self.assertEqual(body["project_id"], mst_project)
+                self.assertEqual(body["room_label"], "MST · project development项目群")
+                self.assertEqual(body["updated_chats"], ["oc_one"])
+                self.assertTrue(body["feishu_notified"])
+                self.assertIsNone(body["notify_error"])
+                self.assertEqual(body["active_routes"], {"oc_one": {"project_id": mst_project, "room_id": dev_room}})
+                # Config revision was NOT rotated; inflight event remains valid!
+                self.assertEqual(self.store.config()["revision"], rev)
+                self.assertTrue(self.store.current(inflight))
+                # Both allowlisted senders updated, NO wildcard '*' written for restricted chat.
+                self.assertEqual(self.store.get_chat_route("cli_test", "oc_one", rev, "ou_person")["room_id"], dev_room)
+                self.assertEqual(self.store.get_chat_route("cli_test", "oc_one", rev, "ou_colleague")["room_id"], dev_room)
+                self.assertIsNone(self.store.get_chat_route("cli_test", "oc_one", rev, "*"))
+                self.assertEqual(len(self.sdk.calls), 1)
+                self.assertIn("MST · project development项目群", self.sdk.calls[0][3]["text"])
+
+                # 5. notify_feishu=False sends no outbound message
+                self.sdk.calls.clear()
+                quiet = await client.post(
+                    activate_url,
+                    headers=local_headers,
+                    json={"project_id": mst_project, "chat_id": "oc_one", "notify_feishu": False},
+                )
+                self.assertEqual(quiet.status_code, 200, quiet.text)
+                self.assertFalse(quiet.json()["feishu_notified"])
+                self.assertIsNone(quiet.json()["notify_error"])
+                self.assertFalse(self.sdk.calls)
+
+                # 6. Offline Feishu error degrades gracefully (HTTP 200, route saved, sanitized notify_error, no secret leak)
+                self.sdk.fail = True
+                offline = await client.post(
+                    f"/api/feishu/rooms/{self.room_id}/activate",
+                    headers=local_headers,
+                    json={"project_id": self.project_id, "chat_id": "oc_one", "notify_feishu": True},
+                )
+                self.assertEqual(offline.status_code, 200, offline.text)
+                self.assertNotIn("unconfirmed secret", offline.text)
+                self.assertNotIn("test-secret", offline.text)
+                off_body = offline.json()
+                self.assertTrue(off_body["ok"])
+                self.assertFalse(off_body["feishu_notified"])
+                self.assertTrue(off_body["notify_error"])
+                self.assertEqual(self.store.get_chat_route("cli_test", "oc_one", rev, "ou_person")["room_id"], self.room_id)
+
+                # 7. Open chat (allowed_sender_ids=[]) sets known senders + owners + '*' fallback WITHOUT breaking personal isolation!
+                self.sdk.calls.clear()
+                open_resp = await client.post(
+                    activate_url,
+                    headers=local_headers,
+                    json={"project_id": mst_project, "chat_id": "oc_open", "notify_feishu": False},
+                )
+                self.assertEqual(open_resp.status_code, 200, open_resp.text)
+                self.assertEqual(open_resp.json()["active_routes"]["oc_open"], {"project_id": mst_project, "room_id": dev_room})
+                self.assertEqual(self.store.get_chat_route("cli_test", "oc_open", rev, "ou_known")["room_id"], dev_room)
+                self.assertEqual(self.store.get_chat_route("cli_test", "oc_open", rev, "ou_owner")["room_id"], dev_room)
+                self.assertEqual(self.store.get_chat_route("cli_test", "oc_open", rev, "*")["room_id"], dev_room)
+                # Brand new sender uses '*' fallback -> dev_room
+                newcomer_rec = self.received(chat_id="oc_open", sender_id="ou_newcomer", text="新任务")
+                self.assertEqual(self.controller.active_target(newcomer_rec), (mst_project, dev_room))
+                # If ou_known personally switches to self.room_id, ou_newcomer STILL stays on dev_room!
+                switch_rec = self.received(chat_id="oc_open", sender_id="ou_known", text=f"/modeldesk use {self.room_id}")
+                await self.controller.accept(switch_rec)
+                known_next = self.received(chat_id="oc_open", sender_id="ou_known", text="回到旧群任务")
+                self.assertEqual(self.controller.active_target(known_next), (self.project_id, self.room_id))
+                self.assertEqual(self.controller.active_target(newcomer_rec), (mst_project, dev_room))
+
+                # 8. Disabled connection or missing secret returns 422
+                self.store.save_config(ConfigInput(enabled=False, app_id="cli_test", bindings=[{**self.binding, "allow_all_groups": True}]))
+                disabled_resp = await client.post(activate_url, headers=local_headers, json={"project_id": mst_project})
+                self.assertEqual(disabled_resp.status_code, 422)
+                self.store.save_config(ConfigInput(enabled=False, app_id="cli_test", clear_secret=True, bindings=[]))
+                nosecret_resp = await client.post(activate_url, headers=local_headers, json={"project_id": mst_project})
+                self.assertEqual(nosecret_resp.status_code, 422)
+
+        self.assertEqual((self.store.directory / "config.json").stat().st_mode & 0o777, 0o600)
+        self.assertEqual((self.store.directory / "receipts.sqlite3").stat().st_mode & 0o777, 0o600)
+
 
 class FeishuSDKTests(unittest.TestCase):
     def test_official_typed_sdk_requests_and_no_retry(self):

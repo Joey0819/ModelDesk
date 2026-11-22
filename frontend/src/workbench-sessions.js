@@ -102,8 +102,10 @@ export function buildCommandItems({
   includeOlder = false,
   history = [],
   projects = [],
+  rooms = [],
   activeProjectId = null,
   onOpenGroups,
+  onOpenGroupRoom,
   onOpenMissions,
   onOpenTodo,
   onOpenProjects,
@@ -117,6 +119,8 @@ export function buildCommandItems({
   onSelectJob,
   onSelectProject,
 }) {
+  const projectNameById = new Map((Array.isArray(projects) ? projects : []).map((project) => [project.id, project.name]));
+  const roomList = Array.isArray(rooms) ? rooms.filter((room) => room && typeof room.id === 'string' && room.title) : [];
   const items = [
     {
       id: 'nav:groups',
@@ -172,6 +176,18 @@ export function buildCommandItems({
       icon: 'settings',
       action: () => onOpenAgentSettings?.('connections'),
     },
+    ...(includeOlder ? roomList : roomList.slice(0, 10)).map((room) => {
+      const projectName = projectNameById.get(room.project_id) || room.project_name || '独立项目';
+      return {
+        id: `room:${room.project_id || 'none'}:${room.id}`,
+        category: '项目群聊',
+        title: room.title,
+        subtitle: `${projectName} · 直接进入群聊`,
+        keywords: `group room 群聊 项目群 ${room.title} ${projectName}`,
+        icon: 'group',
+        action: () => onOpenGroupRoom?.(room.project_id || null, room.id),
+      };
+    }),
     {
       id: 'action:new-chat',
       category: '快捷操作',

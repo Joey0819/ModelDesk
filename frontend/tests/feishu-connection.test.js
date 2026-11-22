@@ -395,3 +395,73 @@ test('Feishu room access and existing-session reuse send only scoped requests', 
     globalThis.fetch = savedFetch;
   }
 });
+
+test('feishuApi.activateRoom posts scoped room activation payload', async () => {
+  const savedFetch = globalThis.fetch;
+  const calls = [];
+  globalThis.fetch = async (url, options) => {
+    calls.push({ url: new URL(url), options });
+    return { ok: true, json: async () => ({ activated: true, feishu_notified: true }) };
+  };
+  try {
+    await feishuApi.activateRoom('room/1', 'proj A', { notify_feishu: true });
+    await feishuApi.activateRoom('room-2', null);
+    assert.deepEqual(
+      calls.map(({ url, options }) => [url.pathname + url.search, options.method]),
+      [
+        ['/api/feishu/rooms/room%2F1/activate', 'POST'],
+        ['/api/feishu/rooms/room-2/activate', 'POST'],
+      ],
+    );
+    assert.deepEqual(JSON.parse(calls[0].options.body), { project_id: 'proj A', notify_feishu: true });
+    assert.deepEqual(JSON.parse(calls[1].options.body), { project_id: null });
+  } finally {
+    globalThis.fetch = savedFetch;
+  }
+});
+
+test('GroupFeishuAccess exposes local 1-click activate and natural-language tips while hiding activate on remote clients', () => {
+  const access = {
+    room_id: 'room-mst',
+    project_id: 'proj-mst',
+    mode: 'all_groups',
+    status: 'connected',
+    destination: 'private',
+    switch_command: '/modeldesk use room-mst',
+    bot_url: 'https://applink.feishu.cn/client/bot/open?appId=cli_myapp',
+  };
+  const localHtml = renderToStaticMarkup(React.createElement(GroupFeishuAccess, {
+    access,
+    roomTitle: 'MST项目群',
+    remote: false,
+    onActivate() {},
+  }));
+  assert.match(localHtml, /<button[^>]+>一键设为飞书当前默认群<\/button>/);
+  assert.match(localHtml, /打开飞书机器人/);
+  assert.match(localHtml, /在飞书里直接发自然语言（无需记群 ID）/);
+  assert.match(localHtml, /直接发你的需求/);
+  assert.match(localHtml, /切换群 MST项目群/);
+  assert.match(localHtml, /找群 关键词/);
+  assert.match(localHtml, /当前群/);
+  assert.match(localHtml, /群列表/);
+  assert.match(localHtml, /\/modeldesk use room-mst/);
+
+  const activatingHtml = renderToStaticMarkup(React.createElement(GroupFeishuAccess, {
+    access,
+    roomTitle: 'MST项目群',
+    remote: false,
+    activating: true,
+    onActivate() {},
+  }));
+  assert.match(activatingHtml, /disabled="">正在切换飞书默认群…<\/button>/);
+
+  const remoteHtml = renderToStaticMarkup(React.createElement(GroupFeishuAccess, {
+    access,
+    roomTitle: 'MST项目群',
+    remote: true,
+    onActivate() {},
+  }));
+  assert.doesNotMatch(remoteHtml, /一键设为飞书当前默认群|正在切换飞书默认群/);
+  assert.match(remoteHtml, /\/modeldesk use room-mst/);
+  assert.match(remoteHtml, /复制切换指令/);
+});

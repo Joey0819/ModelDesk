@@ -9,7 +9,7 @@ import sys
 import uuid
 from urllib.parse import urlencode
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from .feishu_sdk import FeishuAPIError, FeishuSDK, safe_error
@@ -66,7 +66,35 @@ def _format_room_disambiguation(selector, matches):
     return "\n".join(lines)
 
 
-def resolve_room_selector(selector, rooms, numbers):
+def _matches_query(haystack, query):
+    if not query:
+        return False
+    if query in haystack:
+        return True
+    tokens = query.split()
+    return len(tokens) > 1 and all(token in haystack for token in tokens)
+
+
+def _fuzzy_match_rooms(selector, rooms):
+    folded = _selector_key(selector)
+    stripped = re.sub(r"(?:项目群|群聊|群)$", "", folded).strip()
+    queries = [folded] if not stripped or stripped == folded else [folded, stripped]
+    for query in queries:
+        title_matches = [room for room in rooms if _matches_query(_selector_key(room["title"]), query)]
+        if title_matches:
+            return title_matches
+    for query in queries:
+        combined_matches = [
+            room for room in rooms
+            if _matches_query(_selector_key(f"{room['project_name']} {room['title']}"), query)
+            or any(_matches_query(_selector_key(label), query) for label in _room_labels(room)[1:])
+        ]
+        if combined_matches:
+            return combined_matches
+    return []
+
+
+def resolve_room_selector(selector, rooms, numbers, *, allow_fuzzy=False):
     selector = selector.strip()
     quoted = QUOTED_SELECTOR.fullmatch(selector)
     if quoted and not quoted[5]:
@@ -83,6 +111,8 @@ def resolve_room_selector(selector, rooms, numbers):
     else:
         folded = _selector_key(selector)
         matches = [room for room in rooms if any(_selector_key(label) == folded for label in _room_labels(room))]
+        if not matches and allow_fuzzy:
+            matches = _fuzzy_match_rooms(selector, rooms)
     if len(matches) == 1:
         return matches[0], None
     if len(matches) > 1:
@@ -275,9 +305,218 @@ class FeishuController:
         binding = record["binding"]
         if binding.get("allow_all_groups"):
             route = self.store.get_chat_route(record["app_id"], record["chat_id"], record["config_revision"], record["sender_id"])
+            if not route:
+                route = self.store.get_chat_route(record["app_id"], record["chat_id"], record["config_revision"], "*")
             if route:
                 return route["project_id"], route["room_id"]
         return binding["project_id"], binding["room_id"]
+
+    def _describe_active_room(self, record):
+        binding = record["binding"]
+        active_project_id, active_room_id = self.active_target(record)
+        title = ""
+        project_name = "独立项目" if active_project_id is None else ""
+        member_names = []
+        member_count = 0
+
+        if binding.get("allow_all_groups"):
+            try:
+                matched = next(
+                    (
+                        room for room in list_all_rooms()
+                        if room["id"] == active_room_id and room["project_id"] == active_project_id
+                    ),
+                    None,
+                )
+            except Exception:
+                matched = None
+            if matched:
+                title = matched.get("title") or ""
+                project_name = matched.get("project_name") or project_name
+                member_count = int(matched.get("member_count") or 0)
+
+        try:
+            from .groups import store as group_store
+            room = group_store.get(active_room_id, active_project_id)
+            if isinstance(room, dict):
+                title = title or room.get("title") or ""
+                members = (room.get("team_snapshot") or {}).get("members") or []
+                if members:
+                    member_count = len(members)
+                    member_names = [
+                        str(member.get("name") or member.get("id")).strip()
+                        for member in members
+                        if isinstance(member, dict) and (member.get("name") or member.get("id"))
+                    ]
+        except Exception:
+            pass
+
+        if active_project_id and not project_name:
+            try:
+                from .projects import store as project_store
+                reg = project_store.read_registry()
+                project_name = (reg.get(active_project_id) or {}).get("name") or ""
+            except Exception:
+                project_name = ""
+
+        label = ""
+        if title:
+            label = f"{project_name} · {title}" if project_name else title
+
+        member_summary = ""
+        if member_names:
+            shown = "、".join(member_names[:6])
+            suffix = " 等" if len(member_names) > 6 else ""
+            member_summary = f"{member_count} 位成员：{shown}{suffix}"
+        elif member_count > 0:
+            member_summary = f"{member_count} 位成员"
+
+        return {
+            "project_id": active_project_id,
+            "room_id": active_room_id,
+            "title": title,
+            "project_name": project_name,
+            "label": label,
+            "member_summary": member_summary,
+        }
+
+    async def send_find_rooms(self, record, prompt):
+        binding = record["binding"]
+        if not binding.get("allow_all_groups"):
+            active_info = self._describe_active_room(record)
+            bound_label = active_info["label"] or binding["room_id"]
+            text = (
+                f"当前飞书会话仅绑定到项目群：{bound_label}\n"
+                "如需按名称搜索或切换全部项目群，请在本机项目群顶部的「飞书机器人」中为此会话开启全部项目群接入。"
+            )
+            await self.reply_once(record, "find", text)
+            self.store.update(record, state="delivered", reason="未开启访问全部项目群权限")
+            return
+
+        if "find_result" not in record:
+            rooms = list_all_rooms()
+            active_project_id, active_room_id = self.active_target(record)
+            active_info = self._describe_active_room(record)
+            active_label = active_info["label"] or active_room_id
+            raw_query = prompt.strip()
+            folded = _selector_key(raw_query)
+            stripped = re.sub(r"(?:项目群|群聊|群)$", "", folded).strip()
+            effective_query = stripped or folded
+            tokens = effective_query.split() if effective_query else []
+
+            if not tokens:
+                recent_rooms = sorted(
+                    rooms,
+                    key=lambda room: (room.get("updated_at") or "", room["id"]),
+                    reverse=True,
+                )[:5]
+                room_ids = [room["id"] for room in recent_rooms]
+                numbers = self.store.reserve_room_numbers(record, room_ids) if room_ids else {}
+                lines = [
+                    "请附带关键词搜索项目群，例如「找群 project」或「找群 研发」。",
+                    f"当前默认群：{active_label}",
+                ]
+                if recent_rooms:
+                    lines.append("最近活跃的项目群：")
+                    for room in recent_rooms:
+                        mark = "★ " if (room["project_id"], room["id"]) == (active_project_id, active_room_id) else ""
+                        lines.append(f"{numbers[room['id']]}. {mark}{room['project_name']} · {room['title']}\n{room['id']}")
+                    lines.append("回复「切换群 编号」可立即切换，或发送「群列表」查看全部项目群。")
+                self.store.update(record, find_result={"room_ids": room_ids, "text": "\n".join(lines)})
+            else:
+                def room_matches(room):
+                    haystack = _selector_key(f"{room['project_name']} {room['title']} {room['id']}")
+                    return all(token in haystack for token in tokens)
+
+                def title_matches(room):
+                    title_key = _selector_key(room["title"])
+                    return all(token in title_key for token in tokens)
+
+                matches = [room for room in rooms if room_matches(room)]
+                matches.sort(key=lambda room: (room["project_name"].casefold(), room["title"].casefold(), room["id"]))
+                matches.sort(key=lambda room: room.get("updated_at") or "", reverse=True)
+                matches.sort(key=lambda room: 0 if title_matches(room) else 1)
+
+                if matches:
+                    visible = matches[:10]
+                    room_ids = [room["id"] for room in visible]
+                    numbers = self.store.reserve_room_numbers(record, room_ids)
+                    header_suffix = "（显示前 10 个，★ 为当前默认群）" if len(matches) > 10 else "（★ 为当前默认群）"
+                    lines = [f"找到 {len(matches)} 个与「{raw_query[:80]}」匹配的项目群{header_suffix}"]
+                    for room in visible:
+                        mark = "★ " if (room["project_id"], room["id"]) == (active_project_id, active_room_id) else ""
+                        lines.append(f"{numbers[room['id']]}. {mark}{room['project_name']} · {room['title']}\n{room['id']}")
+                    if len(matches) == 1:
+                        only = visible[0]
+                        num = numbers[only["id"]]
+                        lines.append(
+                            f"回复「切换群 {num}」或「切换群 {only['title']}」设为当前默认群，之后直接发你的需求即可执行。\n"
+                            f"或发送「@{only['title']} 你的任务」单次派发。"
+                        )
+                    else:
+                        lines.append("回复「切换群 编号」设为当前默认群，之后直接发需求即可执行。")
+                    self.store.update(record, find_result={"room_ids": room_ids, "text": "\n".join(lines)})
+                else:
+                    recent_rooms = sorted(
+                        rooms,
+                        key=lambda room: (room.get("updated_at") or "", room["id"]),
+                        reverse=True,
+                    )[:5]
+                    room_ids = [room["id"] for room in recent_rooms]
+                    numbers = self.store.reserve_room_numbers(record, room_ids) if room_ids else {}
+                    lines = [
+                        f"未找到包含「{raw_query[:80]}」的项目群。",
+                        f"当前默认群：{active_label}",
+                    ]
+                    if recent_rooms:
+                        lines.append("最近活跃的项目群：")
+                        for room in recent_rooms:
+                            mark = "★ " if (room["project_id"], room["id"]) == (active_project_id, active_room_id) else ""
+                            lines.append(f"{numbers[room['id']]}. {mark}{room['project_name']} · {room['title']}\n{room['id']}")
+                        lines.append("回复「切换群 编号」可立即切换，或发送「群列表」查看全部项目群。")
+                    else:
+                        lines.append("当前 ModelDesk 中暂无可用项目群。")
+                    self.store.update(record, find_result={"room_ids": room_ids, "text": "\n".join(lines)})
+
+        snapshot = record["find_result"]
+        await self.reply_once(record, "find", snapshot["text"])
+        if snapshot["room_ids"]:
+            self.store.mark_room_numbers_shown(record, snapshot["room_ids"])
+        self.store.update(record, state="delivered", reason="群搜索结果已回传")
+
+    async def send_current_room(self, record):
+        binding = record["binding"]
+        info = self._describe_active_room(record)
+        if info["label"]:
+            suffix = f"（{info['member_summary']}）" if info["member_summary"] else ""
+            header = f"当前默认项目群：{info['label']}{suffix}"
+        else:
+            header = f"当前默认项目群（{info['room_id']}）暂不可用。"
+
+        first_line = (
+            "1. 直接发送你的需求，立即交给这个群执行"
+            if binding.get("natural_language_tasks")
+            else "1. 发送 /modeldesk task 你的需求，立即交给这个群执行"
+        )
+        if binding.get("allow_all_groups"):
+            lines = [
+                header,
+                "你可以：",
+                first_line,
+                "2. 发送「找群 关键词」按名称搜索其他群",
+                "3. 发送「切换群 群名或编号」切换默认群",
+                "4. 发送「群列表」查看全部项目群",
+            ]
+        else:
+            lines = [
+                header,
+                "你可以：",
+                first_line,
+                "2. 发送「状态」或 /modeldesk status 查看最近任务进度",
+                "如需搜索或切换其他项目群，请在本机项目群顶部的「飞书机器人」中开启全部项目群接入。",
+            ]
+        await self.reply_once(record, "current", "\n".join(lines))
+        self.store.update(record, state="delivered", reason="当前默认群已回传")
 
     async def send_rooms_page(self, record, prompt):
         if "rooms_page" not in record:
@@ -347,6 +586,12 @@ class FeishuController:
                 await self.reply_once(record, "unlink", "当前会话没有绑定，无需解绑。")
                 self.store.update(record, state="delivered", reason="解绑指令已处理（无绑定）")
             return
+        if action in {"current", "当前群", "当前项目群", "默认群"}:
+            await self.send_current_room(record)
+            return
+        if action in {"find", "search", "找群", "搜群"}:
+            await self.send_find_rooms(record, prompt)
+            return
         if action in {"groups", "群列表"}:
             if binding.get("allow_all_groups"):
                 await self.send_rooms_page(record, prompt)
@@ -382,7 +627,12 @@ class FeishuController:
                 )
                 self.store.update(record, state="delivered", reason="未开启访问全部项目群权限")
                 return
-            chosen, error = resolve_room_selector(prompt, list_all_rooms(), self.store.shown_room_numbers(record))
+            chosen, error = resolve_room_selector(
+                prompt,
+                list_all_rooms(),
+                self.store.shown_room_numbers(record),
+                allow_fuzzy=True,
+            )
             if not chosen:
                 await self.reply_once(record, "use", error)
                 self.store.update(record, state="delivered", reason="切换群未匹配目标")
@@ -461,11 +711,15 @@ class FeishuController:
             prompt = task_prompt
             action = "task"
         if action not in {"task", "continue"} or not prompt:
+            active_info = self._describe_active_room(record)
+            active_line = f"当前默认项目群：{active_info['label']}\n" if active_info["label"] else ""
             direct_help = ('直接描述需求可开始新任务。回复任务回执，或用“继续：完整任务ID 修改要求”继续该任务。\n'
                            if binding.get('natural_language_tasks') else '')
-            multi_help = ("\n/modeldesk groups（查看全部项目群）\n/modeldesk use 群ID（切换默认群）\n/modeldesk to 群ID 任务内容（单次指定群）"
+            shortcut_help = ('常用快捷语：当前群 / 找群 关键词 / 切换群 群名或编号 / 群列表\n'
+                             if binding.get('natural_language_tasks') and binding.get('allow_all_groups') else '')
+            multi_help = ("\n/modeldesk current（查看当前默认群）\n/modeldesk find 关键词（搜索项目群）\n/modeldesk groups（查看全部项目群）\n/modeldesk use 群ID（切换默认群）\n/modeldesk to 群ID 任务内容（单次指定群）"
                           if binding.get("allow_all_groups") else "")
-            await self.reply_once(record, "usage", direct_help + "使用方法：\n/modeldesk task 完整任务（新任务）\n/modeldesk continue 完整任务ID 修改要求\n回复任务回执：/modeldesk continue 修改要求\n/modeldesk status\n/modeldesk cancel 完整任务ID" + multi_help)
+            await self.reply_once(record, "usage", active_line + direct_help + shortcut_help + "使用方法：\n/modeldesk task 完整任务（新任务）\n/modeldesk continue 完整任务ID 修改要求\n回复任务回执：/modeldesk continue 修改要求\n/modeldesk status\n/modeldesk cancel 完整任务ID" + multi_help)
             self.store.update(record, state="delivered", reason="已回传指令用法，没有创建任务")
             return
         job = self.jobs.jobs.get(record["job_id"])
@@ -1038,6 +1292,13 @@ class AllowAllRoomGroupsInput(BaseModel):
     project_id: uuid.UUID | None = None
 
 
+class ActivateRoomInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    project_id: uuid.UUID | None = None
+    chat_id: str | None = Field(default=None, pattern=r"^oc_[A-Za-z0-9_-]{1,180}$")
+    notify_feishu: bool = True
+
+
 def rooms_payload():
     public = controller.public()
     try:
@@ -1112,3 +1373,105 @@ async def delete_room_binding(
             except Exception:
                 controller.status.update(state="error", reason="配置已保存，但飞书连接未能启动，请检查本机环境后重试")
         return rooms_payload()
+
+
+@router.post("/rooms/{room_id}/activate")
+async def activate_room(room_id: uuid.UUID, body: ActivateRoomInput = Body(default_factory=ActivateRoomInput)):
+    from .groups import store as group_store
+    from .projects import store as project_store
+
+    room_id_str = str(room_id)
+    pid = str(body.project_id) if body.project_id else None
+    room = group_store.get(room_id_str, pid)
+    project = project_store.get(pid) if pid else None
+    project_name = (project.get("name") if isinstance(project, dict) else None) or (pid if pid else "独立项目")
+    room_title = (room.get("title") if isinstance(room, dict) else None) or room_id_str
+    room_label = f"{project_name} · {room_title}"
+
+    async with controller.config_lock:
+        config = store.config()
+        if not config.get("app_id") or not config.get("app_secret"):
+            raise HTTPException(422, "请先填写并保存飞书应用的 App ID 和 App Secret")
+        if not config.get("enabled"):
+            raise HTTPException(422, "飞书连接尚未启用，请先启用飞书连接")
+        bindings = config.get("bindings") or []
+        already_direct = False
+        if body.chat_id:
+            target = next((item for item in bindings if item["chat_id"] == body.chat_id), None)
+            if not target or not target.get("allow_all_groups"):
+                raise HTTPException(409, "指定的飞书会话不存在或未开启全部项目群接入。")
+            targets = [target]
+        else:
+            targets = [item for item in bindings if item.get("allow_all_groups")]
+            if not targets:
+                direct = [
+                    item for item in bindings
+                    if item["room_id"] == room_id_str and item.get("project_id") == pid
+                ]
+                if direct:
+                    already_direct = True
+                    targets = direct
+                else:
+                    raise HTTPException(
+                        409,
+                        "当前没有支持全部项目群的飞书会话，也没有直接绑定到此群的会话。请先开启全群接入或绑定飞书会话。",
+                    )
+        app_id = config["app_id"]
+        revision = config["revision"]
+        updated_chats = []
+        if already_direct:
+            updated_chats = [item["chat_id"] for item in targets]
+        else:
+            owners = list(config.get("owner_sender_ids") or [])
+            for binding in targets:
+                chat_id = binding["chat_id"]
+                allowed = list(binding.get("allowed_sender_ids") or [])
+                if allowed:
+                    sender_targets = allowed
+                else:
+                    known = store.known_senders_for_chat(app_id, chat_id)
+                    sender_targets = sorted(set(known) | set(owners)) + ["*"]
+                for sender_id in sender_targets:
+                    store.set_chat_route(app_id, chat_id, revision, sender_id, pid, room_id_str)
+                updated_chats.append(chat_id)
+        active_routes = store.active_routes(app_id, revision)
+        sdk_config = copy.deepcopy(config)
+
+    feishu_notified = False
+    notify_error = None
+    if body.notify_feishu and updated_chats:
+        if already_direct:
+            notify_text = (
+                f"当前飞书会话已直接绑定到项目群：{room_label}\n"
+                "现在可以直接在这里发你的需求，由这个群为你执行。\n"
+                "提示：发送「当前群」可随时确认当前项目群。"
+            )
+        else:
+            notify_text = (
+                f"已将你的当前默认项目群切换为：{room_label}\n"
+                "现在可以直接在这里发你的需求，由这个群为你执行。\n"
+                "提示：发送「当前群」「找群 关键词」或「群列表」可随时确认或切换项目群。"
+            )
+        sdk = controller.sdk_factory(sdk_config)
+        notified_count = 0
+        errors = []
+        for chat_id in updated_chats:
+            try:
+                await asyncio.to_thread(sdk.send, chat_id, "text", {"text": notify_text}, str(uuid.uuid4()))
+                notified_count += 1
+            except Exception as error:
+                errors.append(safe_error(error))
+        feishu_notified = notified_count == len(updated_chats)
+        notify_error = errors[0] if errors else None
+
+    return {
+        "ok": True,
+        "already_direct": already_direct,
+        "room_id": room_id_str,
+        "project_id": pid,
+        "room_label": room_label,
+        "updated_chats": updated_chats,
+        "feishu_notified": feishu_notified,
+        "notify_error": notify_error,
+        "active_routes": active_routes,
+    }

@@ -66,9 +66,10 @@ export default function GroupAgentTasks(props) {
   return <ProjectAgentTasks key={`${props.projectId}:${props.room.id}`} {...props} />;
 }
 
-function ProjectAgentTasks({ projectId, room, kind, onKindChange, onOpenArtifacts, status }) {
+function ProjectAgentTasks({ projectId, project, room, kind, onKindChange, onOpenProjects, onOpenArtifacts, status }) {
   const hostShort = machineShort(status);
   const roomId = room.id;
+  const missingGit = Boolean(projectId && project && project.git && project.git.available === false);
   const members = (room.team_snapshot?.members || []).filter((member) => groupMemberKind(member) !== 'muse');
   const [draft, setDraft] = useState(() => readTaskDraft(localStorage, projectId, roomId));
   const [tasks, setTasks] = useState([]);
@@ -145,6 +146,19 @@ function ProjectAgentTasks({ projectId, room, kind, onKindChange, onOpenArtifact
   const review = (task) => { update({ sourceTaskId: task.id, engine: 'member_model', memberId: (members.find((member) => member.id !== task.member_id && groupMemberKind(member) === 'model') || members.find((member) => member.id !== task.member_id))?.id || '', prompt: `请独立审阅这份改动，重点检查正确性、回归风险和验证证据。列出必须修复的问题，并明确当前审阅的限制。` }); onKindChange('review'); setComposerOpen(true); promptRef.current?.focus(); };
   return <div className={`group-agent-workspace ${composerOpen ? 'agent-composer-open' : 'agent-composer-collapsed'}`}>
     <div className="group-agent-timeline">
+      {missingGit && (
+        <div className="group-agent-git-notice" role="note">
+          <div className="group-agent-git-notice-head">
+            <span className="group-agent-git-badge" aria-hidden="true">!</span>
+            <h2>当前项目「{project.name}」尚未初始化 Git 仓库</h2>
+          </div>
+          <p>代码 Agent（Codex / Claude Code）会在独立 Git 工作区修改代码并生成可审阅补丁。请先在项目目录初始化 Git（例如运行 <code>git init</code> 并提交一次初始版本）后刷新，或切换到一个 Git 项目；你也可以先回到「群聊与协同」用 LLM 讨论需求与架构方案。</p>
+          <div className="group-agent-git-actions">
+            <button type="button" className="primary-button" onClick={() => onKindChange('discussion')}>回到群聊与协同</button>
+            {onOpenProjects && <button type="button" className="subtle-button" onClick={onOpenProjects}>查看项目与资料</button>}
+          </div>
+        </div>
+      )}
       {error && <div className="error-banner" role="alert">{error}<button type="button" className="subtle-button" onClick={() => { setError(''); refresh(); refreshEngines(); }}>重新连接</button></div>}
       {loading && <p role="status" className="mission-loading"><span className="small-spinner" />正在读取成员任务…</p>}
       {!loading && !tasks.length && <div className="group-task-empty"><Icon name="tasks" size={30} /><h2>把讨论交给成员执行</h2><p>指定一位成员，在独立 Git 工作区完成任务。另一位成员审阅实际补丁后，由你决定是否合入本地项目。</p><div className="group-task-sequence"><span>分配任务</span><Icon name="chevron" size={13} /><span>独立审阅</span><Icon name="chevron" size={13} /><span>你来批准</span></div></div>}

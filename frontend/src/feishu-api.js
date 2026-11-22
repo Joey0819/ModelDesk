@@ -29,6 +29,11 @@ export const feishuApi = {
   chats: (pageToken) => request(`/feishu/chats${pageToken ? `?page_token=${encodeURIComponent(pageToken)}` : ''}`),
   rooms: () => request('/feishu/rooms'),
   roomAccess: (roomId, projectId, signal) => request(`/groups/${encodeURIComponent(roomId)}/feishu${projectId ? `?project_id=${encodeURIComponent(projectId)}` : ''}`, 'GET', undefined, { signal }),
+  activateRoom: (roomId, projectId, options = {}) => request(
+    `/feishu/rooms/${encodeURIComponent(roomId)}/activate`,
+    'POST',
+    { project_id: projectId || null, ...options },
+  ),
   enableAllGroups: (roomId, chatId, projectId) => request(`/feishu/rooms/${encodeURIComponent(roomId)}/binding/${encodeURIComponent(chatId)}/allow-all-groups`, 'PUT', { project_id: projectId || null }),
   saveRoomBinding: (roomId, body) => request(`/feishu/rooms/${encodeURIComponent(roomId)}/binding`, 'PUT', body),
   removeRoomBinding: (roomId, chatId, projectId) => request(`/feishu/rooms/${encodeURIComponent(roomId)}/binding/${encodeURIComponent(chatId)}${projectId ? `?project_id=${encodeURIComponent(projectId)}` : ''}`, 'DELETE'),

@@ -45,6 +45,129 @@ class Binding(BaseModel):
 OWNER_PATTERN = re.compile(r"^ou_[A-Za-z0-9_-]{1,180}$")
 SETUP_COMMAND = re.compile(r"^[/／]modeldesk\s+(setup|confirm)\b", re.IGNORECASE)
 
+NATURAL_HELP_PHRASES = {
+    "怎么用", "怎么操作", "如何使用", "怎么执行任务", "怎么发任务", "怎么开始",
+    "使用说明", "操作指南", "指令", "指令列表", "命令", "菜单", "用法",
+    "how to use", "usage", "menu", "commands",
+}
+NATURAL_CURRENT_PHRASES = {
+    "当前群", "当前项目群", "当前默认群", "默认群", "默认项目群",
+    "现在在哪个群", "现在是哪个群", "目前在哪个群", "目前是哪个群",
+    "当前在哪个群", "当前是哪个群", "我在哪个群",
+    "当前群是哪个", "当前群是什么", "当前项目群是哪个", "当前默认群是哪个",
+    "默认群是哪个", "默认群是什么",
+    "which group", "current group", "active group",
+}
+NATURAL_GROUPS_LIST = re.compile(
+    r"^(?:请问|请)?(?:帮我)?(?:看看|查看|列出|显示)?(?:都有|有)?(?:哪些|什么)(?:项目群|群聊|群)(?:吗|么|呢)?[?？!！。]*$"
+)
+EXPLICIT_FIND_COMMAND = re.compile(
+    r"^(?:找群|找一下群|找项目群|搜群|搜索群|搜索项目群|查找群|查找项目群|find|search)(?:[：:\s]+(.*))?$",
+    re.IGNORECASE,
+)
+NATURAL_SWITCH_COMMAND = re.compile(
+    r"^(?:切换群|切换项目群|切换默认群|切换到群|切换到|切到|切换为|进入群|打开群|switch\s+to|use)(?:[：:\s]+(.*))?$",
+    re.IGNORECASE,
+)
+NATURAL_SWITCH_COMPACT_GROUP = re.compile(
+    r"^(?:切换到群|切换到|切到|切换为|进入群|打开群)([^，,。；;]{1,60}(?:项目群|群聊|群)|[A-Za-z0-9][A-Za-z0-9 _.-]{0,60})$"
+)
+TASK_EXECUTION_VERBS = re.compile(
+    r"写|生成|制作|整理|分析|修复|修改|开发|实现|翻译|总结|润色|评审|审核"
+)
+CONVERSATIONAL_FIND_GROUP = re.compile(
+    r"^(?:请问|请)?"
+    r"(?:帮我|给我|帮忙)?"
+    r"(?:(?:看看|看下|看一下|查一下|查下)\s*(?:有没有|有没|是否有|有)|"
+    r"有没有|有没|是否有|"
+    r"(?:你能|你可以|能不能|可以|帮我看看能不能)?(?:找到|找得到|查到|看到)|"
+    r"找一下|找下|找找|查找|搜索|搜一下|搜下|找|搜|查)"
+    r"(?:我的|一下|一个|那个|这个)?"
+    r"(?:叫|叫做|名为)?"
+    r"\s*(.+?)\s*"
+    r"(?:的)?(?:这个项目群|这个群|项目群|群聊|群)(?:吗|么|呢)?[?？!！。]*$"
+)
+CONVERSATIONAL_FIND_ITEM = re.compile(
+    r"^(?:请问|请)?"
+    r"(?P<modal>你能|你可以|能不能|可以|帮我看看能不能)?"
+    r"(?P<verb>找到|找得到|查到|看到)"
+    r"(?:我的|一下)?"
+    r"\s*(?P<query>.+?)\s*"
+    r"(?:这个项目群|这个群|项目群|群聊|群)?"
+    r"(?:了)?(?P<qend>吗|么|呢)?(?P<punct>[?？!！。]*)$"
+)
+GENERIC_FIND_STOPWORDS = {"", "的", "个", "什么", "哪些", "这个", "那个", "我的", "项目", "其他", "别的"}
+
+
+def _clean_find_query(raw):
+    value = (raw or "").strip()
+    pairs = {('"', '"'), ("'", "'"), ("「", "」"), ("『", "』"), ("“", "”"), ("《", "》"), ("【", "】")}
+    while len(value) >= 2 and (value[0], value[-1]) in pairs:
+        value = value[1:-1].strip()
+    return re.sub(r"^[：:、，,。?？!！\s]+|[：:、，,。?？!！\s]+$", "", value)
+
+
+def _parse_natural_command(text, *, is_reply, leading_user_mention=False):
+    if not text or text.startswith(("/", "／")) or text.casefold() in {"你好", "您好", "hi", "hello", "帮助", "help"}:
+        return ""  # A greeting or unknown slash command shows help, never runs a task.
+    if text.casefold() in {"status", "状态"}:
+        return "status"
+    groups = re.fullmatch(r"(?:groups|群列表|所有群|全部群|项目群列表)(?:\s+([0-9]+))?", text, re.IGNORECASE)
+    if groups:
+        return "groups " + (groups[1] or "")
+
+    is_single_line = "\n" not in text and "\r" not in text
+    if not is_reply and is_single_line:
+        if len(text) <= 24:
+            help_key = " ".join(re.sub(r"[?？!！。~～\s]+$", "", text).casefold().split())
+            if help_key in NATURAL_HELP_PHRASES:
+                return ""
+            if NATURAL_GROUPS_LIST.fullmatch(text):
+                return "groups "
+        if len(text) <= 28:
+            current_key = re.sub(r"[?？!！。~～\s]+$", "", text)
+            current_key = re.sub(r"[吗么呢]+$", "", current_key).strip()
+            current_key = " ".join(current_key.casefold().split())
+            if current_key in NATURAL_CURRENT_PHRASES:
+                return "current"
+        if len(text) <= 100:
+            explicit_find = EXPLICIT_FIND_COMMAND.fullmatch(text)
+            if explicit_find:
+                return "find " + _clean_find_query(explicit_find[1])
+            switch_match = NATURAL_SWITCH_COMMAND.fullmatch(text)
+            if switch_match:
+                return "use " + (switch_match[1] or "").strip()
+            if not TASK_EXECUTION_VERBS.search(text):
+                compact_switch = NATURAL_SWITCH_COMPACT_GROUP.fullmatch(text)
+                if compact_switch:
+                    return "use " + compact_switch[1].strip()
+        if len(text) <= 80 and not TASK_EXECUTION_VERBS.search(text):
+            group_find = CONVERSATIONAL_FIND_GROUP.fullmatch(text)
+            if group_find:
+                query = _clean_find_query(group_find[1])
+                if query and query.casefold() not in GENERIC_FIND_STOPWORDS:
+                    return "find " + query
+            if len(text) <= 60:
+                item_find = CONVERSATIONAL_FIND_ITEM.fullmatch(text)
+                if item_find:
+                    is_question = bool(
+                        item_find.group("modal")
+                        or item_find.group("verb") == "找得到"
+                        or item_find.group("qend")
+                        or "?" in item_find.group("punct")
+                        or "？" in item_find.group("punct")
+                    )
+                    if is_question:
+                        query = _clean_find_query(item_find.group("query"))
+                        if query and query.casefold() not in GENERIC_FIND_STOPWORDS:
+                            return "find " + query
+
+    continuation = re.match(r"^(?:继续|continue)(?:[：:\s]+(.*)|$)", text, flags=re.IGNORECASE | re.DOTALL)
+    if continuation:
+        return "continue " + (continuation[1] or "")
+    room_request = text.startswith("@") and leading_user_mention is not True
+    return ("continue " if is_reply and not room_request else "task ") + text
+
 
 def binding_is_current(snapshot, bindings):
     # The local allow-all grant can widen the live binding without invalidating
@@ -397,6 +520,27 @@ class FeishuStore:
         with self.db() as db:
             db.execute("DELETE FROM sender_routes WHERE app_id=? AND chat_id=?", (app_id, chat_id))
 
+    def known_senders_for_chat(self, app_id, chat_id):
+        if not app_id or not chat_id:
+            return []
+        with self.db() as db:
+            event_rows = db.execute(
+                "SELECT DISTINCT json_extract(data, '$.sender_id') FROM events WHERE app_id=? AND chat_id=?",
+                (app_id, chat_id),
+            ).fetchall()
+            route_rows = db.execute(
+                "SELECT DISTINCT sender_id FROM sender_routes WHERE app_id=? AND chat_id=? AND sender_id != '*'",
+                (app_id, chat_id),
+            ).fetchall()
+            observed_row = db.execute(
+                "SELECT json_extract(data, '$.last_sender_id') FROM observed WHERE id=? AND app_id=?",
+                (f"{app_id}:{chat_id}", app_id),
+            ).fetchone()
+        candidates = [row[0] for row in event_rows] + [row[0] for row in route_rows]
+        if observed_row:
+            candidates.append(observed_row[0])
+        return sorted({item for item in candidates if isinstance(item, str) and OWNER_PATTERN.fullmatch(item)})
+
     def reserve_room_numbers(self, record, room_ids):
         scope = (record["app_id"], record["chat_id"], record["sender_id"])
         with self.db() as db:
@@ -506,23 +650,12 @@ class FeishuStore:
         if command is None:
             if prefix:
                 command = text[prefix.end():].strip()
-            elif not text or text.startswith(('/', '／')) or text.casefold() in {'你好', '您好', 'hi', 'hello', '帮助', 'help'}:
-                command = ''  # A greeting or unknown slash command shows help, never runs a task.
-            elif text.casefold() in {'status', '状态'}:
-                command = 'status'
-            elif groups := re.fullmatch(r"(?:groups|群列表|所有群|全部群|项目群列表)(?:\s+([0-9]+))?", text, re.IGNORECASE):
-                command = "groups " + (groups[1] or "")
             else:
-                switch_match = re.fullmatch(r"(?:切换群|切换项目群|use)(?:[：:\s]+(.*))?", text, re.IGNORECASE | re.DOTALL)
-                if switch_match:
-                    command = "use " + (switch_match[1] or "").strip()
-                else:
-                    continuation = re.match(r'^(?:继续|continue)(?:[：:\s]+(.*)|$)', text, flags=re.IGNORECASE | re.DOTALL)
-                    if continuation:
-                        command = 'continue ' + (continuation[1] or '')
-                    else:
-                        room_request = text.startswith("@") and event.get("leading_user_mention") is not True
-                        command = ('continue ' if is_reply and not room_request else 'task ') + text
+                command = _parse_natural_command(
+                    text,
+                    is_reply=is_reply,
+                    leading_user_mention=event.get("leading_user_mention") is True,
+                )
         identifier = str(uuid.uuid5(uuid.NAMESPACE_URL, "modeldesk:feishu:" + config["app_id"] + ":" + message_id))
         with self.db() as db:
             db.execute("BEGIN IMMEDIATE")

@@ -29,7 +29,17 @@ const CONNECTION_LABELS = {
   not_configured: '未配置机器人',
 };
 
-export function GroupFeishuAccess({ access, error, remote = REMOTE_CLIENT, onRetry, onConfigure, onManage }) {
+export function GroupFeishuAccess({
+  access,
+  error,
+  roomTitle = '',
+  remote = REMOTE_CLIENT,
+  activating = false,
+  onActivate,
+  onRetry,
+  onConfigure,
+  onManage,
+}) {
   if (error) return <section className="group-feishu-callout">
     <p role="alert">{error}</p>
     <div className="group-feishu-callout-actions"><button type="button" className="subtle-button" onClick={onRetry}>重试</button></div>
@@ -60,15 +70,26 @@ export function GroupFeishuAccess({ access, error, remote = REMOTE_CLIENT, onRet
 
   const switchCommand = access.switch_command;
   const taskCommand = shared ? `/modeldesk to ${access.room_id} ` : '/modeldesk task ';
+  const canActivate = Boolean(shared && !remote && onActivate);
+  const hasBotLink = Boolean(access.destination === 'private' && access.bot_url);
   return <section className="group-feishu-callout">
     <h3>{heading}</h3>
-    <p>{access.destination === 'private' && access.bot_url
-      ? '打开机器人私聊，将指令粘贴到该会话。'
-      : access.destination === 'group'
-        ? '打开已接入的飞书群，@ 机器人后粘贴指令。'
-        : '打开已接入的飞书会话并粘贴指令。在飞书群内请先 @ 机器人。'}</p>
-    {access.destination === 'private' && access.bot_url && <div className="group-feishu-callout-actions">
-      <a className="subtle-button group-feishu-bot-link" href={access.bot_url} target="_blank" rel="noreferrer">打开飞书机器人</a>
+    <p>{canActivate
+      ? '点击下方按钮直接将本群设为飞书当前默认群，或打开机器人私聊粘贴指令。'
+      : access.destination === 'private' && access.bot_url
+        ? '打开机器人私聊，将指令粘贴到该会话。'
+        : access.destination === 'group'
+          ? '打开已接入的飞书群，@ 机器人后粘贴指令。'
+          : '打开已接入的飞书会话并粘贴指令。在飞书群内请先 @ 机器人。'}</p>
+    {(canActivate || hasBotLink) && <div className="group-feishu-callout-actions">
+      {canActivate && (
+        <button type="button" className="primary-button" disabled={activating} onClick={onActivate}>
+          {activating ? '正在切换飞书默认群…' : '一键设为飞书当前默认群'}
+        </button>
+      )}
+      {hasBotLink && (
+        <a className="subtle-button group-feishu-bot-link" href={access.bot_url} target="_blank" rel="noreferrer">打开飞书机器人</a>
+      )}
     </div>}
     <div className="group-feishu-cmd-list">
       {switchCommand && <div className="group-feishu-cmd-row">
@@ -78,6 +99,16 @@ export function GroupFeishuAccess({ access, error, remote = REMOTE_CLIENT, onRet
         <code>{taskCommand}任务内容</code><CopyTextButton text={taskCommand} label="复制任务指令" />
       </div>
     </div>
+    {shared && (
+      <div className="group-feishu-nl-tips">
+        <strong>在飞书里直接发自然语言（无需记群 ID）</strong>
+        <ul className="group-feishu-nl-list" role="list">
+          <li><code>直接发你的需求</code><span>交给当前默认群自动完成</span></li>
+          <li><code>切换群 {roomTitle || '群名'}</code> / <code>找群 关键词</code><span>按名称查找或切换群</span></li>
+          <li><code>当前群</code> / <code>群列表</code><span>确认正在操作的群或查看全部群</span></li>
+        </ul>
+      </div>
+    )}
     <p>{shared ? '用任务指令可单次指定本群。将指令粘贴到飞书后，在末尾填写实际任务。' : '将任务指令粘贴到飞书后，在末尾填写实际任务。'}</p>
   </section>;
 }
@@ -136,6 +167,7 @@ export default function GroupFeishuDialog({
   const [adminOpen, setAdminOpen] = useState(false);
   const [effectiveData, setLocalData] = useState(null);
   const [busy, setBusy] = useState(false);
+  const [activating, setActivating] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
 
@@ -379,6 +411,28 @@ export default function GroupFeishuDialog({
       : '暂未读取到飞书群聊。请先将机器人加入目标群或给机器人发一条消息，也可直接粘贴精确的 Chat ID。');
   });
 
+  const activateRoom = () => runAction(async () => {
+    setActivating(true);
+    try {
+      const result = await feishuApi.activateRoom(roomId, pid, { notify_feishu: true });
+      if (!aliveRef.current) return;
+      setNotice(
+        result?.feishu_notified
+          ? '已将本群设为飞书当前默认群，并已向飞书发送确认消息。现在直接打开飞书发你的需求即可！'
+          : '已将本群设为飞书当前默认群。现在直接打开飞书发你的需求即可！',
+      );
+      if (adminOpen) {
+        try {
+          const fresh = await feishuApi.rooms();
+          if (aliveRef.current) setLocalData(fresh);
+        } catch { /* Keep activation notice visible if local refresh fails. */ }
+      }
+      window.dispatchEvent(new Event('modeldesk-feishu-changed'));
+    } finally {
+      if (aliveRef.current) setActivating(false);
+    }
+  });
+
   const enableExistingForAllGroups = (targetBinding) => runAction(async () => {
     await feishuApi.enableAllGroups(targetBinding.room_id, targetBinding.chat_id, targetBinding.project_id);
     if (!aliveRef.current) return;
@@ -465,7 +519,16 @@ export default function GroupFeishuDialog({
           {error && <div className="group-feishu-error" role="alert">{error}</div>}
           {notice && <p className="group-feishu-notice" role="status">{notice}</p>}
 
-          <GroupFeishuAccess access={access} error={accessError} onRetry={onRetry} onConfigure={openGlobalSettings} onManage={openAdmin} />
+          <GroupFeishuAccess
+            access={access}
+            error={accessError}
+            roomTitle={roomTitle}
+            activating={activating}
+            onActivate={!REMOTE_CLIENT ? activateRoom : undefined}
+            onRetry={onRetry}
+            onConfigure={openGlobalSettings}
+            onManage={openAdmin}
+          />
           {!REMOTE_CLIENT && access && access.status !== 'not_configured' && <div className="group-feishu-bot-actions">
             {access.mode !== 'none' && <button type="button" className="subtle-button" aria-expanded={adminOpen} onClick={adminOpen ? () => setAdminOpen(false) : openAdmin}>{adminOpen ? '收起会话绑定' : '管理飞书会话绑定'}</button>}
             <button type="button" className="subtle-button" onClick={openGlobalSettings}>飞书连接设置</button>

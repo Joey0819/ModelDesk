@@ -16,7 +16,7 @@ import RemoteAccessPanel from './components/RemoteAccessPanel';
 import AutonomyTaskCenter from './components/AutonomyTaskCenter';
 import { REMOTE_CLIENT } from './api-base';
 import { machineShort, hostIsMacos } from './machine';
-import { groupScopeKey } from './group-state';
+import { groupScopeKey, readGroupSelection } from './group-state';
 import { groupApi } from './group-api';
 import { groupTaskApi } from './group-task-api';
 import { autonomyApi } from './autonomy-api';
@@ -104,6 +104,9 @@ function ModelDeskWorkspace() {
   const [agentSettingsSection, setAgentSettingsSection] = useState('agents');
   const [groupTarget, setGroupTarget] = useState(null);
   const [groupContext, setGroupContext] = useState(() => ({ ...EMPTY_CONTEXT, project_id: activeProjectId }));
+  const [projectRooms, setProjectRooms] = useState([]);
+  const [paletteRooms, setPaletteRooms] = useState([]);
+  const [activeGroupRoomId, setActiveGroupRoomId] = useState(() => readGroupSelection(localStorage, activeProjectId));
   const [platformSection, setPlatformSection] = useState(() => {
     const saved = localStorage.getItem('modeldesk.platformSection');
     return Object.hasOwn(PLATFORM_SECTIONS, saved) ? saved : 'overview';
@@ -175,6 +178,34 @@ function ModelDeskWorkspace() {
     });
     return () => { disposed = true; };
   }, [todoView, todoCatalogRevision, refreshProjects]);
+  useEffect(() => {
+    let disposed = false;
+    const loadRooms = () => {
+      groupApi.list(activeProjectId).then((result) => {
+        if (disposed) return;
+        const list = Array.isArray(result) ? result : [];
+        setProjectRooms(list.filter((room) => room && typeof room.id === 'string' && (room.project_id || null) === activeProjectId));
+      }).catch(() => { /* Keep existing rooms on transient failure. */ });
+    };
+    loadRooms();
+    const syncSelection = () => setActiveGroupRoomId(readGroupSelection(localStorage, activeProjectId));
+    syncSelection();
+    window.addEventListener('modeldesk-groups-changed', loadRooms);
+    window.addEventListener('modeldesk-group-selection-changed', syncSelection);
+    return () => {
+      disposed = true;
+      window.removeEventListener('modeldesk-groups-changed', loadRooms);
+      window.removeEventListener('modeldesk-group-selection-changed', syncSelection);
+    };
+  }, [activeProjectId]);
+  useEffect(() => {
+    if (!commandPaletteOpen) return;
+    let disposed = false;
+    groupApi.catalog().then((rooms) => {
+      if (!disposed && Array.isArray(rooms)) setPaletteRooms(rooms);
+    }).catch(() => { /* Fall back to current project rooms when catalog is unavailable. */ });
+    return () => { disposed = true; };
+  }, [commandPaletteOpen]);
   const sessionsRef = useRef(readSessions(localStorage));
   const conversationDraftsRef = useRef(readConversationDrafts(localStorage));
   const workspacesRef = useRef(readConversationWorkspaces(localStorage));
@@ -599,6 +630,9 @@ function ModelDeskWorkspace() {
     window.addEventListener('pointermove', move); window.addEventListener('pointerup', done, { once: true });
   };
 
+  const visibleProjectRooms = projectRooms.filter((room) => (room.project_id || null) === activeProjectId);
+  const currentGroupRoomId = (groupTarget?.projectId === activeProjectId && groupTarget?.roomId) || activeGroupRoomId;
+
   return <ModelCatalogProvider theme={theme} status={status} onRefresh={refreshStatus}><div className={`modeldesk ${sidebarCollapsed ? 'sidebar-collapsed' : ''}`} data-theme={theme}>
     <CommandPalette
       open={commandPaletteOpen}
@@ -610,8 +644,10 @@ function ModelDeskWorkspace() {
       canOpenArtifacts={canOpenPreview}
       history={commandPaletteOpen && historyQuery.trim() ? conversationGroups(scopedJobs.filter((item) => !item.harness_run_id)) : allHistory}
       projects={projectHub.projects || []}
+      rooms={paletteRooms.length ? paletteRooms : visibleProjectRooms}
       activeProjectId={activeProjectId}
       onOpenGroups={openGroups}
+      onOpenGroupRoom={openGroupRoom}
       onOpenMissions={openMissions}
       onOpenTodo={openTodo}
       onOpenProjects={projectHub.openManager}
@@ -638,6 +674,32 @@ function ModelDeskWorkspace() {
         </div>
       </div>
       <WorkspaceNavigation workspace={workspace} platformSection={platformSection} mode={mode} activeJobs={activeJobs} onAgents={() => openAgentSettings()} onGroups={openGroups} onMissions={openMissions} onTodo={openTodo} onMode={selectMode} onPlatform={openPlatform} onNewConversation={openNewConversation} onProjects={openProjectMaterials} />
+      {visibleProjectRooms.length > 0 && (
+        <section className="sidebar-project-rooms" aria-label="当前项目群聊">
+          <div className="sidebar-rooms-heading">
+            <span>当前项目群聊 ({visibleProjectRooms.length})</span>
+            <button type="button" className="sidebar-rooms-all" onClick={openGroups}>全部</button>
+          </div>
+          <div className="sidebar-rooms-list">
+            {visibleProjectRooms.map((room) => {
+              const isCurrent = groupsView && currentGroupRoomId === room.id;
+              return (
+                <button
+                  key={room.id}
+                  type="button"
+                  className={`sidebar-room-item${isCurrent ? ' selected' : ''}`}
+                  aria-current={isCurrent ? 'page' : undefined}
+                  title={room.title}
+                  onClick={() => { openGroupRoom(room.project_id, room.id); closeNavigation(); }}
+                >
+                  <Icon name="group" size={13} />
+                  <span>{room.title}</span>
+                </button>
+              );
+            })}
+          </div>
+        </section>
+      )}
       <div className="history-heading">
         <span>最近会话 ({history.length})</span>
         <div className="history-filter-pills" role="group" aria-label="筛选会话类型">

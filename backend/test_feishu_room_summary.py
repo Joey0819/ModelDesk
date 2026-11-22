@@ -158,6 +158,8 @@ class FeishuRoomSummaryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await client.get("/api/feishu/rooms")).status_code, 403)
         grant_path = f"/api/feishu/rooms/{self.anchor['id']}/binding/oc_private/allow-all-groups"
         self.assertEqual((await client.put(grant_path, headers={"Origin": PHONE_ORIGIN}, json={"project_id": self.project["id"]})).status_code, 403)
+        activate_path = f"/api/feishu/rooms/{self.room['id']}/activate"
+        self.assertEqual((await client.post(activate_path, headers={"Origin": PHONE_ORIGIN}, json={"project_id": self.other["id"]})).status_code, 403)
         self.phone.revoke()
         self.assertEqual((await client.get(path)).status_code, 401)
 

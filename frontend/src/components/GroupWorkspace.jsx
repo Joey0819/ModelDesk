@@ -305,7 +305,7 @@ function GroupHeader({ rooms, roomId, roomTitle, selectRoom, onOpenNavigation, w
 
 function GroupRoom({ roomId, projectId, initialJob, header, onOpenTodo, status, models, context, onContextChange, onOpenArtifacts, onClearArtifacts, onCloseArtifacts, artifactsVisible, onResultShortcutChange, onOpenProjects, onOpenAgentSettings, renderIntegration, focusHistory, onToggleFocusHistory }) {
   const machine = machineInfo(status);
-  const { assets, transfers } = useProjects();
+  const { assets, transfers, activeProject } = useProjects();
   const [workMode, setWorkMode] = useState(() => { const value = localStorage.getItem(`modeldesk.group.mode.${projectId || 'none'}.${roomId}`); return !initialJob && ['code', 'review'].includes(value) ? value : 'discussion'; });
   useEffect(() => { localStorage.setItem(`modeldesk.group.mode.${projectId || 'none'}.${roomId}`, workMode); }, [workMode, projectId, roomId]);
   const [saved] = useState(() => readGroupDraft(localStorage, projectId, roomId));
@@ -498,6 +498,72 @@ function GroupRoom({ roomId, projectId, initialJob, header, onOpenTodo, status, 
   };
   const members = useMemo(() => room?.team_snapshot?.members || [], [room]);
   const deliveryMembers = useMemo(() => members.filter((member) => member.mcp_can_plan !== true), [members]);
+  const hasCodeAgents = useMemo(() => members.some((member) => ['codex', 'claude'].includes(groupMemberKind(member))), [members]);
+  const hasMuseAgent = useMemo(() => members.some((member) => groupMemberKind(member) === 'muse'), [members]);
+  const projectMissingGit = Boolean(projectId && activeProject && activeProject.git && activeProject.git.available === false);
+  const feishuConnected = Boolean(feishuAccess?.status === 'connected' && feishuAccess.mode !== 'none');
+  const starterPrompts = useMemo(() => {
+    if (hasCodeAgents) {
+      return [
+        {
+          title: '需求拆解与开发计划',
+          prompt: '请围绕当前项目目标，先梳理核心功能与边界，再给出分阶段的技术架构、模块拆分和开发任务清单。',
+        },
+        {
+          title: '技术选型与风险评审',
+          prompt: '请评估当前项目最关键的技术选型、目录结构与工程风险，给出可执行的第一版落地方案和验收标准。',
+        },
+        {
+          title: '核心接口与数据设计',
+          prompt: '请设计第一版的核心数据模型、关键 API 与交互流程，并列出优先实现的代码模块。',
+        },
+      ];
+    }
+    if (hasMuseAgent) {
+      return [
+        {
+          title: '策划分镜与脚本',
+          prompt: '请围绕主题先策划视频创意、镜头节奏与文案脚本，确认后再安排生成。',
+        },
+        {
+          title: '多角度创意方案对比',
+          prompt: '请提出 3 套不同风格的内容创意方向，并对比目标受众与执行成本。',
+        },
+        {
+          title: '拆解制作里程碑',
+          prompt: '请将本次内容制作拆解为可执行步骤、验收标准与素材清单。',
+        },
+      ];
+    }
+    return [
+      {
+        title: '拆解目标与执行方案',
+        prompt: '请把这项任务拆解为清晰步骤、关键里程碑和第一版可执行方案，并标注需要确认的风险点。',
+      },
+      {
+        title: '多视角深度评审',
+        prompt: '请分别从产品价值、可行性与潜在风险三个角度分析这个想法，并给出综合建议。',
+      },
+      {
+        title: '起草结构化交付文档',
+        prompt: '请起草一份结构清晰、可直接使用的方案文档，包含背景目标、核心设计与下一步行动项。',
+      },
+    ];
+  }, [hasCodeAgents, hasMuseAgent]);
+  const toggleRecipient = useCallback((member, focusComposer = false) => {
+    const runtime = !['model', 'image', 'mcp'].includes(groupMemberKind(member));
+    if (groupMemberKind(member) === 'mcp') setDeliveryMode('auto');
+    setRecipientIds((previous) => {
+      const selected = previous.includes(member.id);
+      return runtime
+        ? (selected ? [] : [member.id])
+        : [
+          ...previous.filter((id) => deliveryMembers.some((item) => item.id === id && ['model', 'image', 'mcp'].includes(groupMemberKind(item))) && id !== member.id),
+          ...(selected ? [] : [member.id]),
+        ];
+    });
+    if (focusComposer) requestAnimationFrame(() => composerInputRef.current?.focus());
+  }, [deliveryMembers]);
   const { runtimeMember, discussionMembers: selectedMembers, selectionError } = groupSelection(deliveryMembers, recipientIds);
   const runtimeKind = runtimeMember ? groupMemberKind(runtimeMember) : null;
   const selectedMcp = deliveryMembers.some((member) => groupMemberKind(member) === 'mcp' && recipientIds.includes(member.id));
@@ -589,6 +655,7 @@ function GroupRoom({ roomId, projectId, initialJob, header, onOpenTodo, status, 
     const element = timelineRef.current;
     if (!element) return;
     if (olderPosition.current) { element.scrollTop = element.scrollHeight - olderPosition.current.height + olderPosition.current.top; olderPosition.current = null; }
+    else if (!jobs.length && !museTasks.length && !agentTasks.length) element.scrollTop = 0;
     else if (nearBottom.current) element.scrollTop = element.scrollHeight;
   }, [jobs, museTasks, agentTasks, workMode]);
   useEffect(() => {
@@ -826,7 +893,7 @@ function GroupRoom({ roomId, projectId, initialJob, header, onOpenTodo, status, 
   const contextLabel = contextMode === 'fresh' ? '新任务' : '继续任务';
 
   return <>
-    <GroupHeader {...header} onOpenTodo={room && onOpenTodo ? () => onOpenTodo(room) : undefined} roomId={roomId} roomTitle={room?.title || header.roomTitle} workMode={workMode} onWorkModeChange={setWorkMode} memberCount={members.length} onOpenRoster={room ? () => rosterDialog.current?.showModal() : undefined} onOpenMuse={renderIntegration ? openMuse : undefined} onOpenRoutines={room ? () => setRoutinesOpen(true) : undefined} feishuConnected={feishuAccess?.status === 'connected' && feishuAccess.mode !== 'none'} onOpenFeishu={openFeishu} focusHistory={focusHistory} onToggleFocusHistory={toggleReading} artifactsVisible={artifactsVisible} onToggleResults={toggleResults} resultAvailable={resultAvailable} />
+    <GroupHeader {...header} onOpenTodo={room && onOpenTodo ? () => onOpenTodo(room) : undefined} roomId={roomId} roomTitle={room?.title || header.roomTitle} workMode={workMode} onWorkModeChange={setWorkMode} memberCount={members.length} onOpenRoster={room ? () => rosterDialog.current?.showModal() : undefined} onOpenMuse={renderIntegration ? openMuse : undefined} onOpenRoutines={room ? () => setRoutinesOpen(true) : undefined} feishuConnected={feishuConnected} onOpenFeishu={openFeishu} focusHistory={focusHistory} onToggleFocusHistory={toggleReading} artifactsVisible={artifactsVisible} onToggleResults={toggleResults} resultAvailable={resultAvailable} />
     {room && routinesOpen && <GroupRoutines room={room} composerDraft={{ prompt, documentFormats: documentOptions.documentFormats }} onDismiss={() => setRoutinesOpen(false)} onOpenJob={openRoutineJob} onRefreshRoom={roomState.refresh} />}
     {feishuOpen && <GroupFeishuDialog room={room || { id: roomId, title: header.roomTitle }} projectId={projectId} access={feishuAccess} accessError={feishuError} onRetry={refreshFeishu} onOpenFeishuSettings={() => onOpenAgentSettings?.('feishu')} onClose={() => setFeishuOpen(false)} />}
     {header.error && <div className="error-banner" role="alert">{header.error}<button type="button" className="subtle-button" onClick={header.refresh}>重试</button></div>}
@@ -846,7 +913,7 @@ function GroupRoom({ roomId, projectId, initialJob, header, onOpenTodo, status, 
       </div>
     </dialog>}
     {memberSettings && <GroupTeamSettings room={memberSettings.room} models={models} catalog={status?.models || []} addRequested={memberSettings.add} onOpenAgentSettings={onOpenAgentSettings} onApplied={applyMembers} onClose={() => setMemberSettings(null)} />}
-    {workMode !== 'discussion' && room ? <GroupAgentTasks projectId={projectId} room={room} kind={workMode} onKindChange={setWorkMode} onOpenProjects={onOpenProjects} onOpenArtifacts={openTurnArtifact} status={status} /> : <>
+    {workMode !== 'discussion' && room ? <GroupAgentTasks projectId={projectId} project={activeProject} room={room} kind={workMode} onKindChange={setWorkMode} onOpenProjects={onOpenProjects} onOpenArtifacts={openTurnArtifact} status={status} /> : <>
       {renderIntegration && <dialog ref={museDialog} className="group-options-dialog group-muse-dialog" aria-label="Muse 任务与连接">
         <header><div><strong>Muse 任务与连接</strong><p>查看原生任务、实际回复和媒体。</p></div><button type="button" className="subtle-button" onClick={() => museDialog.current?.close()}>关闭</button></header>
         <div ref={integrationRef} className="group-options-body">{renderIntegration({ projectId, roomId, onUseReply: useMuseReply })}</div>
@@ -868,7 +935,126 @@ function GroupRoom({ roomId, projectId, initialJob, header, onOpenTodo, status, 
         )}
         {loading ? <p className="mission-loading" role="status"><span className="small-spinner" />正在读取群聊记录…</p> : <>
           {roomState.before && <button className="group-load-older subtle-button" type="button" disabled={roomState.olderLoading} onClick={loadOlder}>{roomState.olderLoading ? '正在加载' : '查看更早的消息'}</button>}
-          {!allTimelineItems.length && room && <div className="group-empty-conversation"><Icon name="group" size={28} /><h2>给项目群发第一条消息</h2><p>描述你要的成果，或输入 @ 点名成员。完成后可以从对应消息打开成果。</p></div>}
+          {!allTimelineItems.length && room && (
+            <div className="group-empty-conversation">
+              <header className="group-onboarding-header">
+                <div className="group-onboarding-title-wrap">
+                  <span className="group-onboarding-icon" aria-hidden="true">
+                    <Icon name="group" size={20} />
+                  </span>
+                  <div className="group-onboarding-heading-group">
+                    <h2>{room.title} 已就绪</h2>
+                    <p>在下方输入一句目标并点击「开始完成任务」，统筹会自动安排成员协作并交付成果。</p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  className={`subtle-button group-onboarding-feishu${feishuConnected ? ' connected' : ''}`}
+                  aria-haspopup="dialog"
+                  onClick={openFeishu}
+                >
+                  <span className="feishu-header-dot" aria-hidden="true" />
+                  飞书遥控本群
+                </button>
+              </header>
+
+              <div className="group-onboarding-block">
+                <div className="group-onboarding-block-head">
+                  <h3>本群成员与分工</h3>
+                  <div className="group-onboarding-meta">
+                    {(coordinatorMember || coordinatorModel) && (
+                      <span className="group-onboarding-coordinator">
+                        统筹：{coordinatorMember?.name || routeLabel(coordinatorModel)}
+                      </span>
+                    )}
+                    <button
+                      type="button"
+                      className="subtle-button group-onboarding-manage"
+                      onClick={() => rosterDialog.current?.showModal()}
+                    >
+                      管理成员
+                    </button>
+                  </div>
+                </div>
+                <div className="group-onboarding-roster" role="group" aria-label="点击成员快速 @点名">
+                  {deliveryMembers.map((member) => {
+                    const kind = groupMemberKind(member);
+                    const runtime = !['model', 'image', 'mcp'].includes(kind);
+                    const selected = recipientIds.includes(member.id);
+                    return (
+                      <button
+                        key={member.id}
+                        type="button"
+                        aria-pressed={selected}
+                        className={`group-onboarding-member${selected ? ' selected' : ''}${runtime ? ' runtime' : ''}`}
+                        title={member.role ? `${member.name} · ${member.role}` : `${member.name} · ${groupMemberKindLabel(member)}`}
+                        onClick={() => toggleRecipient(member, true)}
+                      >
+                        {selected && <Icon name="check" size={12} />}
+                        <span className="group-onboarding-member-name">@{member.name}</span>
+                        <span className="group-onboarding-member-badge">{groupMemberKindLabel(member)}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {hasCodeAgents && projectMissingGit && (
+                <div className="group-git-warning" role="note">
+                  <div className="group-git-warning-copy">
+                    <div className="group-git-warning-title">
+                      <span className="group-git-warning-mark" aria-hidden="true">!</span>
+                      <strong>当前项目「{activeProject.name}」还不是 Git 仓库</strong>
+                    </div>
+                    <p>本群包含代码 Agent，自动改代码需要本地 Git 仓库来创建隔离工作区。你现在可以直接发消息让 LLM 成员讨论需求、架构与开发方案；如需让代码 Agent 直接改文件，请在项目目录运行 <code>git init</code> 后刷新，或切换到 Git 项目。</p>
+                  </div>
+                  {onOpenProjects && (
+                    <button type="button" className="subtle-button group-git-warning-action" onClick={onOpenProjects}>
+                      打开项目与资料
+                    </button>
+                  )}
+                </div>
+              )}
+
+              <div className="group-onboarding-block">
+                <div className="group-onboarding-block-head">
+                  <h3>一键试发示例任务</h3>
+                  <span className="group-onboarding-hint">点击填入输入框，修改后发送</span>
+                </div>
+                <div className="group-starter-prompts">
+                  {starterPrompts.map((item) => (
+                    <button
+                      key={item.title}
+                      type="button"
+                      className="group-starter-card"
+                      onClick={() => {
+                        setPrompt(item.prompt);
+                        requestAnimationFrame(() => composerInputRef.current?.focus());
+                      }}
+                    >
+                      <strong>{item.title}</strong>
+                      <span>{item.prompt}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <ol className="group-onboarding-steps" role="list" aria-label="3 步操作速览">
+                <li>
+                  <strong>① 全组自动完成</strong>
+                  <p>直接在底部输入目标发送，统筹会自动分工并产出完整成果</p>
+                </li>
+                <li>
+                  <strong>② @ 点名 / 代码 Agent</strong>
+                  <p>输入 <code>@</code> 单独问成员，输入 <code>/</code> 切配方，或切顶部「代码 Agent」执行代码修改</p>
+                </li>
+                <li>
+                  <strong>③ 手机飞书遥控</strong>
+                  <p>点击上方「飞书遥控本群」或顶部「飞书机器人」，一键设为默认群即可在飞书直接发需求</p>
+                </li>
+              </ol>
+            </div>
+          )}
           {museHistoryError && <p className="result-note" role="status">Muse 历史暂未同步：{museHistoryError}</p>}
           {timelineItems.map(({ type, value }) => {
             if (type === 'muse') {
@@ -891,7 +1077,7 @@ function GroupRoom({ roomId, projectId, initialJob, header, onOpenTodo, status, 
           onOpenMuse={renderIntegration ? openMuse : undefined}
           onOpenCodeTasks={setWorkMode}
         />
-        {showLatest && composerSuggestions.length === 0 && <button type="button" className="group-jump-latest subtle-button" onClick={scrollToLatest}>回到最新消息 ↓</button>}
+        {showLatest && allTimelineItems.length > 0 && composerSuggestions.length === 0 && <button type="button" className="group-jump-latest subtle-button" onClick={scrollToLatest}>回到最新消息 ↓</button>}
         {roomState.streamError && activeJob && <p className="stream-warning">实时连接暂时中断，正在通过后台记录同步。</p>}
         {context.muse_task_id && <div className="group-muse-source-chip"><strong>Muse 回复待引用</strong><span>{context.muse_task_label || '已选定本群的已完成回复'}</span><button type="button" className="icon-button" aria-label="移除 Muse 回复引用" onClick={() => onContextChange((current) => ({ ...current, muse_task_id: null, muse_task_label: '', muse_harness_response: '' }))}><Icon name="close" size={14} /></button></div>}
         <div className="group-compose-summary">
@@ -911,7 +1097,7 @@ function GroupRoom({ roomId, projectId, initialJob, header, onOpenTodo, status, 
             {deliveryMembers.map((member) => {
               const runtime = !['model', 'image', 'mcp'].includes(groupMemberKind(member));
               const selected = recipientIds.includes(member.id);
-              return <button type="button" key={member.id} aria-pressed={selected} className={`${selected ? 'selected' : ''} ${runtime ? 'group-agent-recipient' : ''}`} title={`${groupMemberKindLabel(member)} · ${runtime ? '选择后需点击明确派发按钮' : routeLabel(member.model)}`} onClick={() => { if (groupMemberKind(member) === 'mcp') setDeliveryMode('auto'); setRecipientIds((previous) => runtime ? (selected ? [] : [member.id]) : [...previous.filter((id) => deliveryMembers.some((item) => item.id === id && ['model', 'image', 'mcp'].includes(groupMemberKind(item))) && id !== member.id), ...(selected ? [] : [member.id])]); }}>@{member.name}<small>{groupMemberKindLabel(member)}</small></button>;
+              return <button type="button" key={member.id} aria-pressed={selected} className={`${selected ? 'selected' : ''} ${runtime ? 'group-agent-recipient' : ''}`} title={`${groupMemberKindLabel(member)} · ${runtime ? '选择后需点击明确派发按钮' : routeLabel(member.model)}`} onClick={() => toggleRecipient(member)}>@{member.name}<small>{groupMemberKindLabel(member)}</small></button>;
             })}
           </div>
           {!runtimeMember && (
@@ -1076,7 +1262,10 @@ export default function GroupWorkspace({ initialRoomId, initialTeam, initialJob,
     finally { if (alive.current) setLoading(false); }
   }, [activeProjectId]);
   useEffect(() => { alive.current = true; refresh(); const timer = setInterval(refresh, 15000); return () => { alive.current = false; clearInterval(timer); }; }, [refresh]);
-  useEffect(() => { localStorage.setItem(groupScopeKey(activeProjectId), JSON.stringify({ roomId })); }, [activeProjectId, roomId]);
+  useEffect(() => {
+    localStorage.setItem(groupScopeKey(activeProjectId), JSON.stringify({ roomId }));
+    window.dispatchEvent(new Event('modeldesk-group-selection-changed'));
+  }, [activeProjectId, roomId]);
   const selectRoom = (id) => { onClearArtifacts(); setRoomId(id); };
   const defaultMembers = useMemo(() => temporaryMembers((models || []).slice(0, 4)), [models]);
   const canQuickCreate = !team?.id && !creating && !loading && !teamPending && Boolean(title.trim()) && defaultMembers.length >= 2;
@@ -1092,6 +1281,7 @@ export default function GroupWorkspace({ initialRoomId, initialTeam, initialJob,
       const savedTeam = createdTeam.team || createdTeam;
       if (alive.current) setTeam(savedTeam);
       const room = await groupApi.create({ title: title.trim(), project_id: activeProjectId || null, team_id: savedTeam.id });
+      window.dispatchEvent(new Event('modeldesk-groups-changed'));
       if (alive.current) { setRooms((previous) => scopedRooms([room, ...previous], activeProjectId)); selectRoom(room.id); }
     } catch (failure) { if (alive.current) setError(failure.message); }
     finally { if (alive.current) setCreating(false); }
@@ -1106,6 +1296,7 @@ export default function GroupWorkspace({ initialRoomId, initialTeam, initialJob,
     setCreating(true); setError('');
     try {
       const room = await groupApi.create({ title: title.trim(), project_id: activeProjectId || null, team_id: team.id });
+      window.dispatchEvent(new Event('modeldesk-groups-changed'));
       if (alive.current) { setRooms((previous) => scopedRooms([room, ...previous], activeProjectId)); selectRoom(room.id); }
     } catch (failure) { if (alive.current) setError(failure.message); }
     finally { if (alive.current) setCreating(false); }

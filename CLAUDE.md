@@ -47,36 +47,9 @@ LLM Council is a 3-stage deliberation system where multiple LLMs collaboratively
 
 ### Frontend Structure (`frontend/src/`)
 
-**`App.jsx`**
-- Main orchestration: manages conversations list and current conversation
-- Handles message sending and metadata storage
-- Important: metadata is stored in the UI state for display but not persisted to backend JSON
+**`App.jsx`** wires the project, room, workspace and result panel. **`components/WorkspaceNavigation.jsx`** exposes the workspaces and their modes.
 
-**`components/ChatInterface.jsx`**
-- Multiline textarea (3 rows, resizable)
-- Enter to send, Shift+Enter for new line
-- User messages wrapped in markdown-content class for padding
-
-**`components/Stage1.jsx`**
-- Tab view of individual model responses
-- ReactMarkdown rendering with markdown-content wrapper
-
-**`components/Stage2.jsx`**
-- **Critical Feature**: Tab view showing RAW evaluation text from each model
-- De-anonymization happens CLIENT-SIDE for display (models receive anonymous labels)
-- Shows "Extracted Ranking" below each evaluation so users can validate parsing
-- Aggregate rankings shown with average position and vote count
-- Explanatory text clarifies that boldface model names are for readability only
-
-**`components/Stage3.jsx`**
-- Final synthesized answer from chairman
-- Green-tinted background (#f0fff0) to highlight conclusion
-
-**Styling (`*.css`)**
-- Light mode theme (not dark mode)
-- Primary color: #4a90e2 (blue)
-- Global markdown styling in `index.css` with `.markdown-content` class
-- 12px padding on all markdown content to prevent cluttered appearance
+**`components/WorkbenchResults.jsx`** renders Council responses, anonymous rankings and the chair's synthesis. **`components/ArtifactPanel.jsx`** displays the selected deliverable. The upstream conversation HTTP endpoints remain available in the backend.
 
 ## Key Design Decisions
 

@@ -6,7 +6,7 @@ import { Icon } from './WorkbenchResults';
 import WorkspaceDialog from './WorkspaceDialog';
 import {
   COLUMNS, TODO_SOURCES, groupByStatus, computeMove, filterTasks, validateTask, buildTaskPayload,
-  canReassignFleet, cardPreview, sourceLabel, sourceStatus, taskLocation, todoResultRef,
+  canReassignFleet, cardPreview, sourceInProgress, sourceLabel, sourceStatus, taskLocation, todoResultRef,
 } from '../todo-state';
 import './TodoBoard.css';
 import './TodoBoardTheme.css';
@@ -85,6 +85,7 @@ function ScopeFilters({ scope, projects, rooms, roomsLoading, onScopeChange }) {
 function TodoCard({ task, project, room, busy, onEdit, onDragStart, onDragEnd, onMove, onFollow, onReassign, onOpenResult, onOpenRoom }) {
   const platform = task.external_source?.platform;
   const executionStatus = platform ? sourceStatus(task) : null;
+  const pendingOutsideLane = sourceInProgress(task) && !['todo', 'doing'].includes(executionStatus);
   const label = sourceLabel(task);
   const manualPlacement = platform && task.status_mode === 'manual';
   const groupTitle = room?.title || (task.room_id ? '未知群聊' : null);
@@ -120,7 +121,7 @@ function TodoCard({ task, project, room, busy, onEdit, onDragStart, onDragEnd, o
         <div className="todo-execution">
           <span className={`todo-execution-state state-${executionStatus}`}>
             <span className="todo-execution-dot" aria-hidden="true" />
-            执行 · {STATUS_LABELS[executionStatus] || '未知'}
+            执行 · {pendingOutsideLane ? '尚未结束' : STATUS_LABELS[executionStatus] || '未知'}
           </span>
           <span className="todo-execution-sep" aria-hidden="true">·</span>
           <span className={`todo-execution-mode${manualPlacement ? ' is-manual' : ''}`}>{manualPlacement ? '手动放置' : '跟随来源'}</span>
@@ -164,11 +165,12 @@ function TodoCard({ task, project, room, busy, onEdit, onDragStart, onDragEnd, o
   );
 }
 
-function TaskModal({ task, projects, rooms, onClose, onSave, onDelete, saving, error }) {
+function TaskModal({ task, projects, rooms, onClose, onSave, onArchive, onStopFleet, onVisitRoom, active, executionStatus, saving, error }) {
   const titleRef = useRef(null);
   const [fields, setFields] = useState(task);
   const [tags, setTags] = useState((task.tags || []).join(', '));
   const [errors, setErrors] = useState([]);
+  const [confirmStop, setConfirmStop] = useState(false);
   const isNew = !task.id;
   const synced = Boolean(task.external_source);
   const shownRooms = rooms.filter((room) => (room.project_id || null) === (fields.project_id || null));
@@ -227,7 +229,7 @@ function TaskModal({ task, projects, rooms, onClose, onSave, onDelete, saving, e
             <select id="todo-status" value={fields.status} onChange={(event) => handleChange('status', event.target.value)} disabled={task.archived}>
               {COLUMNS.map((column) => <option key={column.id} value={column.id}>{column.label}</option>)}
             </select>
-            {synced && <small className="todo-field-hint">执行状态 · {STATUS_LABELS[sourceStatus(task)] || '未知'}</small>}
+            {synced && <small className="todo-field-hint">执行状态 · {STATUS_LABELS[executionStatus] || '未知'}</small>}
           </div>
           <div className="todo-field">
             <label htmlFor="todo-priority">优先级</label>
@@ -251,8 +253,20 @@ function TaskModal({ task, projects, rooms, onClose, onSave, onDelete, saving, e
           <input id="todo-tags" value={tags} onChange={(event) => setTags(event.target.value)} placeholder="标签1, 标签2" />
         </div>
         {(errors.length > 0 || error) && <div className="todo-field-error" role="alert">{errors.join('；') || error}</div>}
+        {active && <p className="todo-field-hint">
+          {task.external_source?.platform === 'fleet'
+            ? '节点任务尚未结束。可在本机停止任务，或等任务结束后再归档。'
+            : '来源任务尚未结束。请在任务来源停止执行，或等任务结束后再归档。'}
+        </p>}
+        {active && onVisitRoom && !onStopFleet && <button type="button" className="todo-card-action" onClick={onVisitRoom} disabled={saving}>打开来源群聊</button>}
+        {active && onStopFleet && confirmStop && <p className="todo-field-hint">
+          停止后，节点任务将标记为已停止。请在节点核对已经开始的工作。
+        </p>}
         <div className="todo-modal-actions">
-          {!isNew && onDelete && <button type="button" className="todo-btn-danger" onClick={onDelete} disabled={saving}>删除</button>}
+          {onArchive && !active && <button type="button" className="todo-btn-secondary" onClick={onArchive} disabled={saving}>归档卡片</button>}
+          {active && onStopFleet && <button type="button" className="todo-btn-danger" onClick={() => confirmStop ? onStopFleet() : setConfirmStop(true)} disabled={saving}>
+            {confirmStop ? '确认停止节点任务' : '停止节点任务'}
+          </button>}
           <button type="button" className="todo-btn-secondary" onClick={onClose} disabled={saving}>取消</button>
           <button type="submit" className="todo-btn-primary" disabled={saving}>{saving ? '保存中…' : '保存'}</button>
         </div>
@@ -275,6 +289,7 @@ export default function TodoBoard({
   const [showDone, setShowDone] = useState(true);
   const [showAllDone, setShowAllDone] = useState(false);
   const [showArchived, setShowArchived] = useState(false);
+  const [filtersOpen, setFiltersOpen] = useState(false);
   const [editTask, setEditTask] = useState(null);
   const [modalError, setModalError] = useState('');
   const [busy, setBusy] = useState(false);
@@ -311,7 +326,7 @@ export default function TodoBoard({
 
   useEffect(() => {
     const refresh = () => {
-      if (!document.hidden && !dragIdRef.current && !mutationPending.current && !editTask) loadTasks({ background: true });
+      if (!document.hidden && !dragIdRef.current && !mutationPending.current) loadTasks({ background: true });
     };
     const timer = setInterval(refresh, REFRESH_INTERVAL_MS);
     document.addEventListener('visibilitychange', refresh);
@@ -319,7 +334,7 @@ export default function TodoBoard({
       clearInterval(timer);
       document.removeEventListener('visibilitychange', refresh);
     };
-  }, [loadTasks, editTask]);
+  }, [loadTasks]);
 
   const filtered = filterTasks(tasks, { search, priority: priorityFilter, source: sourceFilter, showDone, showArchived, scope });
   const grouped = groupByStatus(filtered);
@@ -359,9 +374,9 @@ export default function TodoBoard({
     report('');
     setBusy(true);
     try {
-      await request();
+      const result = await request();
       await loadTasks();
-      if (message) setNotice(message);
+      if (message) setNotice(typeof message === 'function' ? message(result) : message);
       return true;
     } catch (failure) {
       if (refreshOnFailure) await loadTasks();
@@ -392,9 +407,17 @@ export default function TodoBoard({
     if (saved) setEditTask(null);
   };
 
-  const handleDelete = async () => {
-    const removed = await runMutation(() => todoApi.remove(editTask.id), { report: setModalError });
-    if (removed) setEditTask(null);
+  const handleArchive = async () => {
+    const archived = await runMutation(() => todoApi.archive(editTask.id), { report: setModalError, refreshOnFailure: true, message: '卡片已归档' });
+    if (archived) setEditTask(null);
+  };
+
+  const handleStopFleet = async () => {
+    const updated = await runMutation(() => todoApi.cancelFleetTask(editTask.external_source.task_id), {
+      report: setModalError, refreshOnFailure: true,
+      message: (job) => job.status === 'cancelled' ? '节点任务已标记为停止' : '节点任务已完成',
+    });
+    if (updated) setEditTask(null);
   };
 
   const handleInlineCreate = async (status, title) => {
@@ -420,7 +443,7 @@ export default function TodoBoard({
       if (showDone || status !== 'done') setMobileColumn(status);
       requestAnimationFrame(() => {
         const control = boardRef.current?.querySelector(`[data-task-id="${CSS.escape(task.id)}"] [data-status-control]`);
-        (control || boardRef.current?.querySelector('.todo-scope-filters select'))?.focus();
+        (control || boardRef.current?.querySelector('.todo-toolbar-main input'))?.focus();
       });
     }
   };
@@ -479,6 +502,8 @@ export default function TodoBoard({
   });
   const selectedRoom = scope.type === 'room' ? roomsByScope.get(roomKey(scope.projectId, scope.roomId)) : null;
   const selectedProject = scope.type === 'project' && projects.find((project) => project.id === scope.projectId);
+  const liveEditTask = editTask && (tasks.find((task) => task.id === editTask.id) || editTask);
+  const editRoom = liveEditTask && roomsByScope.get(roomKey(liveEditTask.project_id, liveEditTask.room_id));
 
   return (
     <main className="workspace todo-board" ref={boardRef}>
@@ -492,15 +517,18 @@ export default function TodoBoard({
       </header>
       <div className="todo-toolbar">
         <div className="todo-toolbar-main">
+          <input type="text" aria-label="搜索任务" placeholder="搜索任务…" value={search} onChange={(event) => { setMobileColumn(null); setSearch(event.target.value); }} />
+          <button type="button" className="todo-new-task" onClick={openNewTask} disabled={busy}>+ 新建任务</button>
+          <button type="button" className="todo-card-action todo-filter-toggle" aria-label="筛选任务" aria-expanded={filtersOpen} aria-controls="todo-filter-options" onClick={() => setFiltersOpen(!filtersOpen)}>
+            <Icon name="settings" size={15} />筛选{(hasFilters || showArchived) && <span aria-label="已应用筛选"> · 已选</span>}
+          </button>
+          <span className="todo-stats">共 {filtered.length} 个任务</span>
+        </div>
+        <div className="todo-toolbar-filters" id="todo-filter-options" data-mobile-open={filtersOpen}>
           <ScopeFilters scope={scope} projects={projects} rooms={rooms} roomsLoading={roomsLoading} onScopeChange={changeScope} />
           {selectedProject && onOpenProject && <button type="button" className="todo-card-action" onClick={() => openContext(onOpenProject, selectedProject.id)}>打开项目</button>}
           {selectedRoom && onOpenRoom && <button type="button" className="todo-card-action" onClick={() => openContext(onOpenRoom, selectedRoom)}>打开群聊</button>}
           {selectedRoom && <TodoGroupStandards key={roomKey(scope.projectId, scope.roomId)} roomId={scope.roomId} projectId={scope.projectId} />}
-          <button type="button" className="todo-new-task" onClick={openNewTask} disabled={busy}>+ 新建任务</button>
-          <button type="button" className="todo-card-action todo-refresh" onClick={refreshTasks} disabled={busy}>刷新任务</button>
-        </div>
-        <div className="todo-toolbar-filters">
-          <input type="text" aria-label="搜索任务" placeholder="搜索任务…" value={search} onChange={(event) => { setMobileColumn(null); setSearch(event.target.value); }} />
           <select aria-label="筛选来源" value={sourceFilter} onChange={(event) => { setMobileColumn(null); onSourceChange(event.target.value); }}>
             <option value="">全部来源</option>
             {Object.entries(TODO_SOURCES).map(([key, label]) => <option key={key} value={key}>{label}</option>)}
@@ -511,7 +539,7 @@ export default function TodoBoard({
           </select>
           <label><input type="checkbox" checked={showDone} onChange={(event) => setShowDone(event.target.checked)} />显示已完成</label>
           <label><input type="checkbox" checked={showArchived} disabled={busy} onChange={(event) => setShowArchived(event.target.checked)} />显示归档</label>
-          <span className="todo-stats">共 {filtered.length} 个任务</span>
+          <button type="button" className="todo-card-action todo-refresh" onClick={refreshTasks} disabled={busy}>刷新任务</button>
         </div>
       </div>
       {roomsLoading && <div className="todo-board-feedback" role="status">正在读取群聊…</div>}
@@ -580,7 +608,10 @@ export default function TodoBoard({
         </div>
       )}
       {editTask && <TaskModal task={editTask} projects={projects} rooms={rooms} onClose={closeEdit} onSave={handleSave}
-        onDelete={editTask.id && !editTask.archived && !(REMOTE_CLIENT && editTask.external_source?.platform === 'fleet') ? handleDelete : null}
+        active={sourceInProgress(liveEditTask)} executionStatus={sourceStatus(liveEditTask)}
+        onArchive={liveEditTask.id && !liveEditTask.archived ? handleArchive : null}
+        onStopFleet={!REMOTE_CLIENT && liveEditTask.external_source?.platform === 'fleet' ? handleStopFleet : null}
+        onVisitRoom={editRoom && onOpenRoom ? () => { closeEdit(); void openContext(onOpenRoom, editRoom); } : null}
         saving={busy} error={modalError} />}
     </main>
   );

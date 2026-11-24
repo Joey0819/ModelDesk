@@ -297,29 +297,66 @@ class TodoBoardTests(unittest.IsolatedAsyncioTestCase):
             repaired = (await client.get("/api/todo")).json()
             self.assertEqual(next(task for task in repaired if task["title"] == "Incomplete")["status"], "review")
 
-    async def test_only_local_admin_can_cancel_fleet_from_board(self):
+    async def test_fleet_board_archive_and_local_cancellation_are_separate(self):
         from backend import fleet
 
         store = fleet.FleetStore(Path(self._tmpdir.name) / "fleet")
         self.enterContext(patch.object(fleet, "store", store))
         job = store.enqueue_job(fleet.CreateJobRequest(title="Fleet fixture", task_type="generic"))
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=_make_app()), base_url="http://127.0.0.1:8001") as client:
+        app = _make_app()
+        app.include_router(fleet.router)
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://127.0.0.1:8001") as client:
             card = (await client.get("/api/todo")).json()[0]
             route = f"/api/todo/{card['id']}"
             local = {"Origin": "http://localhost:5173"}
             phone = {**local, "X-ModelDesk-Remote": "phone"}
             denied = await client.put(route, json={"archived": True, "priority": "urgent"}, headers=phone)
-            self.assertEqual(denied.status_code, 403)
-            self.assertEqual((await client.delete(route, headers=phone)).status_code, 403)
+            self.assertEqual(denied.status_code, 409)
+            self.assertEqual((await client.delete(route, headers=local)).status_code, 409)
             self.assertEqual(store.get_job(job["job_id"])["status"], "queued")
             visible = (await client.get("/api/todo")).json()[0]
             self.assertEqual(visible["priority"], "medium")
 
             manual = (await client.post("/api/todo", json={"title": "Manual"}, headers=phone)).json()
             self.assertEqual((await client.delete(f"/api/todo/{manual['id']}", headers=phone)).status_code, 200)
-            cancelled = await client.delete(route, headers=local)
+            cancel_route = f"/api/fleet/jobs/{job['job_id']}/cancel"
+            self.assertEqual((await client.post(cancel_route, headers=phone)).status_code, 403)
+            cancelled = await client.post(cancel_route, headers=local)
             self.assertEqual(cancelled.status_code, 200, cancelled.text)
             self.assertEqual(store.get_job(job["job_id"])["status"], "cancelled")
+
+    async def test_active_workbench_mirror_cannot_be_archived_even_after_manual_move(self):
+        from backend import workbench
+
+        manager = workbench.JobManager(Path(self._tmpdir.name) / "workbench")
+        job = {"id": str(uuid.uuid4()), "mode": "group", "status": "running", "prompt": "Running fixture"}
+        manager.jobs[job["id"]] = job
+        manager._todo_sync_enabled = True
+        with patch.object(workbench, "manager", manager):
+            manager.save(job)
+            async with await self._client() as client:
+                card, = (await client.get("/api/todo")).json()
+                path = f"/api/todo/{card['id']}"
+                self.assertEqual((await client.put(path, json={"board_status": "done"})).status_code, 200)
+                for attempt in [await client.delete(path), await client.put(path, json={"archived": True})]:
+                    self.assertEqual(attempt.status_code, 409, attempt.text)
+                self.assertEqual(job["status"], "running")
+                self.assertEqual((await client.get("/api/todo")).json()[0]["status"], "done")
+                job["status"] = "complete"
+                job["autonomy"] = {"enabled": True, "state": "retry_wait"}
+                manager.save(job)
+                self.assertEqual((await client.delete(path)).status_code, 409)
+                job["autonomy"]["state"] = "needs_attention"
+                manager.save(job)
+                archived = await client.delete(path)
+                self.assertEqual(archived.status_code, 200, archived.text)
+                self.assertTrue(archived.json()["archived"])
+                self.assertEqual(job["status"], "complete")
+                job["status"] = "running"
+                manager.save(job)
+                card, = (await client.get("/api/todo")).json()
+                self.assertFalse(card["archived"])
+                self.assertTrue(card["source_active"])
 
     # --- Soft delete ---
 
@@ -533,8 +570,8 @@ class TodoBoardTests(unittest.IsolatedAsyncioTestCase):
                 with (patch.object(todo_board, "_save_board", side_effect=OSError("temporary board write failure")),
                       self.assertLogs("backend.todo_sync", "ERROR")):
                     jobs.save(job)
-                with patch("backend.todo_sync.reverse_sync_task"):
-                    await client.delete(path)
+                archived_response = await client.delete(path)
+                self.assertEqual(archived_response.status_code, 200, archived_response.text)
                 self.assertEqual((await client.get("/api/todo")).json(), [])
                 archived = (await client.get("/api/todo", params={"archived": True})).json()
                 saved = next(item for item in archived if item["id"] == card["id"])

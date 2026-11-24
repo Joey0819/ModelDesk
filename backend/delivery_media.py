@@ -567,7 +567,8 @@ def delivery_bundle(job):
         assets.append(entry)
         binaries.append(raw)
         seen.add(entry["id"])
-    article = _portable_markdown(content, assets, delivery.get("media_reuse_origins"))
+    from .report_content import report_markdown
+    article = _portable_markdown(report_markdown(job, delivery, content), assets, delivery.get("media_reuse_origins"))
     status = str(delivery.get("status") or job.get("status") or "partial")[:100]
     limitations = delivery.get("limitations") or []
     if not isinstance(limitations, list) or len(limitations) > 100:
@@ -590,7 +591,7 @@ async def bundle_content(job_id: str, project_id: str | None = Query(None)):
     job = _scoped_job(job_id, project_id)
     # Freeze on the event-loop thread before file I/O yields. A task finishing
     # during export must not pair old prose with a newer "complete" status.
-    snapshot = {"id": job["id"], "project_id": job.get("project_id"), "status": job.get("status"),
+    snapshot = {"id": job["id"], "project_id": job.get("project_id"), "status": job.get("status"), "prompt": job.get("prompt"),
                 "result": {"delivery": copy.deepcopy((job.get("result") or {}).get("delivery"))}}
     raw = await asyncio.to_thread(delivery_bundle, snapshot)
     return Response(raw, media_type="application/zip", headers={"Content-Disposition": f'attachment; filename="ModelDesk-{job_id}.zip"',

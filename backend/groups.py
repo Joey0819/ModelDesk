@@ -18,6 +18,7 @@ from . import workbench
 from .coordination import ContinueRequest
 from .harness.models import TeamRequest
 from .harness.store import RunStore, checked_id
+from .task_context import is_composer_task
 
 router = APIRouter(prefix="/api/groups", tags=["project-groups"])
 # This capability never enters a request or a persisted job. Only this module
@@ -224,10 +225,22 @@ def room_models(room):
 
 
 def freeze_agent_sources(room):
-    """Quote bounded, completed runtime deliveries without granting their text authority."""
+    """Quote bounded runtime deliveries from the current composer task."""
     from .group_tasks import manager as tasks
+
+    scoped_jobs = set()
+    boundary = None
+    for job in reversed(room_jobs(room)):
+        if not is_composer_task(job):
+            continue
+        scoped_jobs.add(job["id"])
+        if job.get("group_context_mode") == "fresh":
+            boundary = job["created_at"]
+            break
     completed = sorted((item for item in tasks.records.values()
                         if item.get("project_id") == room["project_id"] and item.get("room_id") == room["id"]
+                        and (not item.get("parent_job_id") or item["parent_job_id"] in scoped_jobs)
+                        and isinstance(item.get("created_at"), str) and (boundary is None or item["created_at"] >= boundary)
                         and item.get("status") == "complete" and isinstance(item.get("output"), str) and item["output"].strip()),
                        key=lambda item: (item["created_at"], item["id"]))[-3:]
     return [{"task_id": item["id"], "member_id": item["member_id"], "member_name": item["member"]["name"],
@@ -539,7 +552,6 @@ async def create_room_message(room, request, *, native_allowed, job_id, external
                 "group_context_mode": request.context_mode,
                 "group_team_snapshot": room["team_snapshot"], "group_recipient_member_ids": selected,
                 "group_broadcast": broadcast, "group_coordinator_model": room["team_snapshot"].get("coordinator_model"),
-                "group_agent_sources": [] if (external_source or {}).get("platform") == "feishu" else freeze_agent_sources(room),
                 "group_delivery_mode": request.delivery_mode,
                 "group_harness_version": 1 if request.delivery_mode == "auto" else None,
                 "group_output_format": request.output_format, "group_image_count": request.image_count, "group_media_provider": request.media_provider,
@@ -548,6 +560,8 @@ async def create_room_message(room, request, *, native_allowed, job_id, external
                 "group_native_allowed": request.delivery_mode == "auto" and native_allowed is True}
     if external_source:
         metadata["external_source"] = copy.deepcopy(external_source)
+    elif request.delivery_mode == "discussion" and request.context_mode == "continue":
+        metadata["group_agent_sources"] = freeze_agent_sources(room)
     if receipt:
         metadata.update(receipt)
     from .skill_library import frozen_skills

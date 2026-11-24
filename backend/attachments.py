@@ -442,7 +442,10 @@ class AssetStore:
         inherited, omitted, inherited_descriptors = [], [], []
         known = {item["id"] for item in images}
         total = sum(len(verified_image_bytes(item)) for item in images)
-        for reference in reversed(history["metadata"]["references"]):
+        references = history["metadata"]["references"]
+        group_scope = ({item["job_id"] for item in references}
+                       if job.get("mode") == "group" and job.get("group_room_id") else None)
+        for reference in reversed(references):
             previous = jobs.get(reference["job_id"])
             if not previous or previous.get("project_id") != job.get("project_id"):
                 continue
@@ -457,7 +460,9 @@ class AssetStore:
             historical_refs, historical_images = self.historical_images(previous, inputs_root)
             source_items = {item["id"]: item for item in [*data["manifest"]["items"], *historical_refs]}
             for descriptor in [*data["images"], *historical_images]:
-                if descriptor["id"] in known:
+                source = source_items[descriptor["id"]]
+                source_job_id = source.get("source_job_id") or previous["id"]
+                if descriptor["id"] in known or (group_scope is not None and source_job_id not in group_scope):
                     continue
                 raw = verified_image_bytes(descriptor)
                 if len(images) >= 8 or len(job.get("attachments", [])) + len(inherited) >= MAX_JOB_FILES or total + len(raw) > 40_000_000:
@@ -471,9 +476,8 @@ class AssetStore:
                 copied_descriptor = {**descriptor, "job_id": job["id"], "path": str(copied)}
                 images.append(copied_descriptor)
                 inherited_descriptors.append(copied_descriptor)
-                source = source_items[descriptor["id"]]
                 url = f"/api/workbench/jobs/{job['id']}/attachments/{descriptor['id']}/content"
-                inherited.append({**source, "source": "history", "source_job_id": source.get("source_job_id") or previous["id"], "content_url": url, "preview_url": url})
+                inherited.append({**source, "source": "history", "source_job_id": source_job_id, "content_url": url, "preview_url": url})
                 total += len(raw)
                 known.add(descriptor["id"])
         manifest = {"items": inherited, "coverage": {"included_count": len(inherited), "omitted": omitted, "truncated": bool(omitted)}}

@@ -28,6 +28,7 @@ BOARD_FILE = DATA_DIR / "board.json"
 SCHEMA_VERSION = 2
 MAX_ACTIVE_TASKS = 2000
 VALID_EXTERNAL_PLATFORMS = {"workbench", "group", "feishu", "fleet", "muse"}
+ACTIVE_SOURCE_LANES = {"todo", "doing"}
 BoardStatus = Literal["todo", "doing", "blocked", "review", "done"]
 
 _lock = threading.RLock()
@@ -65,6 +66,7 @@ def _load_board() -> dict:
         task.setdefault("status_mode", "source" if synced else "manual")
         if synced:
             task.setdefault("source_status", task.get("status"))
+            task.setdefault("source_active", not task.get("archived") and task["source_status"] in ACTIVE_SOURCE_LANES)
         task.setdefault("room_id", None)
     _cache = data
     return data
@@ -325,7 +327,7 @@ def upsert_external_task(
     result_ref: dict | None = None,
     *,
     room_id: str | None = None,
-    restore_archived: bool = True,
+    source_active: bool | None = None,
 ) -> dict:
     """Mirror source state while preserving any manual board placement."""
     with _lock:
@@ -334,7 +336,7 @@ def upsert_external_task(
         identity = _external_identity(external_source)
         matches = [task for task in tasks if _external_identity(task.get("external_source")) == identity]
         task = next((task for task in matches if not task.get("archived")), matches[0] if matches else None)
-        if (task is None or (task.get("archived") and restore_archived)) and _active_count(tasks) >= MAX_ACTIVE_TASKS:
+        if task is None and _active_count(tasks) >= MAX_ACTIVE_TASKS:
             logger.warning(
                 "todo_board: active task limit reached (%d), skipping sync for %s/%s",
                 MAX_ACTIVE_TASKS, *identity,
@@ -342,7 +344,7 @@ def upsert_external_task(
             return {}
         task, changed = _mirror_external_task(
             tasks, task, external_source, title, status, description, source_label,
-            project_id, result_ref, room_id=room_id, restore_archived=restore_archived,
+            project_id, result_ref, room_id=room_id, source_active=source_active,
         )
         if changed:
             _save_board({**data, "tasks": tasks})
@@ -357,7 +359,7 @@ def _mirror_external_task(
     tasks: list[dict], task: dict | None, external_source: dict, title: str, status: str,
     description: str = "", source_label: str = "", project_id: str | None = None,
     result_ref: dict | None = None, *, room_id: str | None = None,
-    preserve_board_state: bool = False, restore_archived: bool = True,
+    preserve_board_state: bool = False, source_active: bool | None = None,
 ) -> tuple[dict, bool]:
     from .result_refs import card_result_ref
 
@@ -387,7 +389,8 @@ def _mirror_external_task(
             "external_source": {"platform": platform, "task_id": task_id},
         }
         tasks.append(task)
-    if restore_archived:
+    task["source_active"] = status in ACTIVE_SOURCE_LANES if source_active is None else source_active
+    if task["source_active"]:
         task["archived"] = False
     if not task.get("archived") and task["status_mode"] == "source":
         _apply_board_status(tasks, task, status)
@@ -429,19 +432,20 @@ def backfill_external_tasks(cards: Iterable[dict]) -> int:
             seen.add(key)
             task = index.get(key)
             if snapshot["status"] == "archived":
-                if task is not None and not task.get("archived"):
-                    task.update(archived=True, updated_at=_now_iso())
+                if task is not None and (not task.get("archived") or task.get("source_active")):
+                    active_count -= int(not task.get("archived"))
+                    task.update(archived=True, source_active=False, updated_at=_now_iso())
                     changed_count += 1
-                    active_count -= 1
                 continue
             candidates.append((snapshot, task))
         for snapshot, task in candidates:
             if task is None and active_count >= MAX_ACTIVE_TASKS:
                 continue
-            _, changed = _mirror_external_task(tasks, task, **snapshot, preserve_board_state=True, restore_archived=False)
+            was_visible = task is not None and not task.get("archived")
+            saved, changed = _mirror_external_task(tasks, task, **snapshot, preserve_board_state=True)
             if changed:
                 changed_count += 1
-            if task is None:
+            if not was_visible and not saved.get("archived"):
                 active_count += 1
         if changed_count:
             _save_board({**data, "tasks": tasks})
@@ -469,13 +473,13 @@ def archive_external_task(external_source: dict) -> Optional[dict]:
                 es
                 and es.get("platform") == platform
                 and es.get("task_id") == task_id
-                and not t.get("archived", False)
+                and (not t.get("archived", False) or t.get("source_active"))
             ):
                 target = t
                 break
         if target is None:
             return None
-        target["archived"] = True
+        target.update(archived=True, source_active=False)
         target["updated_at"] = _now_iso()
         _save_board({**data, "tasks": tasks})
         return target
@@ -484,7 +488,7 @@ def archive_external_task(external_source: dict) -> Optional[dict]:
 def repair_workbench_delivery_cards(jobs: dict) -> None:
     """Correct older cards from the source records recovered at startup."""
     from .result_refs import card_result_ref, workbench_result_ref
-    from .todo_sync import STATUS_MAP, workbench_card_state
+    from .todo_sync import STATUS_MAP, workbench_card_state, workbench_source_active
 
     with _lock:
         data = _load_board()
@@ -502,14 +506,18 @@ def repair_workbench_delivery_cards(jobs: dict) -> None:
             status, detail = workbench_card_state(job)
             lane = STATUS_MAP.get(status)
             if lane == "archived":
-                if not task.get("archived"):
-                    task.update(archived=True, updated_at=_now_iso())
-            elif lane and lane != task.get("source_status"):
-                task.update(source_status=lane, updated_at=_now_iso())
-                if job.get("status") == "complete" and lane in {"review", "blocked"}:
-                    task["description"] = detail
-                if task["status_mode"] == "source" and not task.get("archived"):
-                    _apply_board_status(tasks, task, lane)
+                if not task.get("archived") or task.get("source_active"):
+                    task.update(archived=True, source_active=False, updated_at=_now_iso())
+            elif lane:
+                active = workbench_source_active(job)
+                if (lane, active) != (task.get("source_status"), task.get("source_active")) or (active and task.get("archived")):
+                    task.update(source_status=lane, source_active=active, updated_at=_now_iso())
+                    if active:
+                        task["archived"] = False
+                    if job.get("status") == "complete" and lane in {"review", "blocked"}:
+                        task["description"] = detail
+                    if task["status_mode"] == "source" and not task.get("archived"):
+                        _apply_board_status(tasks, task, lane)
         if tasks != data["tasks"]:
             _save_board({**data, "tasks": tasks})
 
@@ -729,6 +737,9 @@ def create_task(body: TaskCreate, request: Request = None):
 
 @router.put("/{task_id}")
 def update_task(task_id: str, body: TaskUpdate, request: Request):
+    if body.archived:
+        from .workbench import manager
+        manager.retry_todo_sync()
     rooms = _room_store() if body.room_id else None
     with (rooms.lock if rooms is not None else nullcontext()), _lock:
         data = _load_board()
@@ -766,9 +777,8 @@ def update_task(task_id: str, body: TaskUpdate, request: Request):
         if not updates and not (status or board_status or follow_source):
             return target
         old = target.copy()
-        old_archived = target.get("archived")
-        if not old_archived and updates.get("archived"):
-            _require_source_archive_access(ext, request)
+        if updates.get("archived"):
+            _check_card_archival(target)
         if follow_source:
             _apply_board_status(tasks, target, target["source_status"])
             target["status_mode"] = "source"
@@ -788,14 +798,14 @@ def update_task(task_id: str, body: TaskUpdate, request: Request):
             new_data = _record_status_event(new_data, target, request, target["updated_at"])
         _save_board(new_data)
 
-    if isinstance(ext, dict) and not old_archived and target.get("archived"):
-        _archive_source(ext, target.get("source_status", target.get("status")))
     return target
 
 
 @router.delete("/{task_id}")
-def delete_task(task_id: str, request: Request):
-    """Soft delete: set archived=True."""
+def delete_task(task_id: str):
+    """Archive a card without changing the original execution."""
+    from .workbench import manager
+    manager.retry_todo_sync()
     with _lock:
         data = _load_board()
         tasks = copy.deepcopy(data.get("tasks", []))
@@ -806,34 +816,20 @@ def delete_task(task_id: str, request: Request):
                 break
         if target is None:
             raise HTTPException(status_code=404, detail="任务不存在")
-        ext = target.get("external_source")
-        _require_source_archive_access(ext, request)
+        _check_card_archival(target)
+        if target.get("archived"):
+            return target
         target["archived"] = True
         target["updated_at"] = _now_iso()
         new_data = _retire_card_event({**data, "tasks": tasks}, task_id)
         _save_board(new_data)
 
-    if isinstance(ext, dict):
-        _archive_source(ext, target.get("source_status", target.get("status")))
     return target
 
 
-def _require_source_archive_access(external_source: dict | None, request: Request) -> None:
-    if not external_source or external_source.get("platform") != "fleet":
-        return
-    from .fleet import fleet_admin_guard
-    from .platform_support import machine_label
-
-    if request.headers.get("x-modeldesk-remote"):
-        raise HTTPException(403, f"节点任务取消只能在{machine_label()}的 ModelDesk 中操作")
-    fleet_admin_guard(request)
-
-
-def _archive_source(external_source: dict, status: str):
-    # Fleet calls forward sync while holding its store lock, so reverse sync
-    # must run outside the board lock.
-    from .todo_sync import reverse_sync_task
-    reverse_sync_task(external_source.get("platform"), external_source.get("task_id"), target_status=status, is_archived=True)
+def _check_card_archival(task: dict) -> None:
+    if task.get("external_source") and task.get("source_active"):
+        raise HTTPException(409, "来源任务仍在执行或排队。请在任务来源停止执行，或等待任务结束后再归档。")
 
 
 @router.post("/move")

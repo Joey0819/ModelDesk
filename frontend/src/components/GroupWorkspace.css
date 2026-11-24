@@ -588,7 +588,11 @@
 .group-delivery-progress > header > strong { flex: 1; min-width: 150px; font-size: 13px; }
 .group-delivery-progress > header > button { font-size: 11px; }
 .group-delivery-progress > p { color: var(--muted); line-height: 1.65; margin: 8px 0 0; }
-.group-delivery-progress .group-delivery-title { color: var(--ink); font-weight: 550; }
+.group-delivery-progress h3.group-delivery-title { margin: 12px 0 6px; font-size: 17px; line-height: 1.45; color: var(--ink); overflow-wrap: anywhere; }
+.group-delivery-excerpt { margin: 5px 0 13px; max-width: 76ch; }
+.group-delivery-excerpt > .markdown { display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; font-size: 14px; line-height: 1.65; }
+.group-delivery-excerpt .markdown > :first-child { margin-top: 0; }
+.group-delivery-excerpt .markdown > :last-child { margin-bottom: 0; }
 .group-delivery-progress > ol { list-style: none; padding: 0; margin: 12px 0 0; display: grid; gap: 10px; }
 .group-delivery-progress > ol > li { border-left: 2px solid var(--line); padding-left: 10px; }
 .group-delivery-progress > ol > .group-delivery-step-complete { border-color: #3e7960; }

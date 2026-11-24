@@ -72,7 +72,7 @@ def _validate_external_source(platform: str, task_id: str) -> dict:
 
 
 def _board_card(platform, task_id, *, title, status, detail="", source_label="", project_id=None,
-                room_id=None, result_ref=None):
+                room_id=None, result_ref=None, source_active=None):
     external_source = _validate_external_source(platform, task_id)
     label = source_label or platform
     title = title.strip() if isinstance(title, str) else ""
@@ -85,6 +85,7 @@ def _board_card(platform, task_id, *, title, status, detail="", source_label="",
         "project_id": project_id,
         "room_id": room_id,
         "result_ref": result_ref,
+        "source_active": source_active,
     }
 
 
@@ -99,22 +100,39 @@ def sync_task(
     project_id: Optional[str] = None,
     room_id: str | None = None,
     result_ref: dict | None = None,
+    source_active: bool | None = None,
 ) -> bool:
     """Mirror a saved task and report whether it reached the board."""
     try:
         from .todo_board import upsert_external_task, archive_external_task
 
         card = _board_card(platform, task_id, title=title, status=status, detail=detail, source_label=source_label,
-                           project_id=project_id, room_id=room_id, result_ref=result_ref)
+                           project_id=project_id, room_id=room_id, result_ref=result_ref, source_active=source_active)
         if status not in STATUS_MAP:
             logger.warning("todo_sync: unknown status %r for %s/%s, defaulting to 'todo'", status, platform, task_id)
         if card["status"] == "archived":
             archive_external_task(card["external_source"])
             return True
-        return bool(upsert_external_task(**card, restore_archived=platform != "workbench"))
+        return bool(upsert_external_task(**card))
     except Exception:
         logger.exception("todo_sync: failed to sync task %s/%s", platform, task_id)
         return False
+
+
+def workbench_source_active(job):
+    if job.get("status") in {"queued", "running"}:
+        return True
+    if job.get("status") == "cancelled" or job.get("mode") != "group":
+        return False
+    autonomy = job.get("autonomy") or {}
+    if autonomy.get("enabled") and autonomy.get("state") in {"running", "retry_wait"}:
+        return True
+    result = job.get("result")
+    delivery = (result.get("delivery") or {}) if isinstance(result, dict) else {}
+    return any(
+        ((step.get("task_observation") or {}).get("remote_task") or {}).get("status") in {"working", "input_required"}
+        for step in delivery.get("steps", [])
+    )
 
 
 def workbench_card(job, status, detail):
@@ -134,6 +152,7 @@ def workbench_card(job, status, detail):
         "project_id": ref["project_id"],
         "room_id": ref["room_id"],
         "result_ref": ref,
+        "source_active": workbench_source_active(job),
     }
 
 
@@ -161,6 +180,7 @@ def muse_card(task):
         "source_label": "Muse",
         "project_id": task.get("project_id"),
         "room_id": task.get("room_id"),
+        "source_active": task.get("monitoring"),
     }
 
 
@@ -210,34 +230,3 @@ def archive_task(platform: str, task_id: str) -> None:
         logger.exception(
             "todo_sync: failed to archive task %s/%s", platform, task_id,
         )
-
-
-def reverse_sync_task(platform: str, task_id: str, target_status: str, is_archived: bool = False) -> dict:
-    """Reverse sync: action from Kanban board back to originating task system.
-
-    Never raises exceptions. Logs errors and returns diagnostic status.
-    """
-    if not platform or not task_id:
-        return {"action": "none", "reason": "invalid_source"}
-    try:
-        if is_archived or target_status == "archived":
-            if platform == "fleet":
-                from .fleet import store as fleet_store
-                fleet_store.cancel_job(task_id)
-                return {"action": "cancelled", "platform": platform, "task_id": task_id}
-            elif platform == "workbench":
-                from .workbench import manager as wb_manager
-                import asyncio
-                try:
-                    loop = asyncio.get_running_loop()
-                    loop.create_task(wb_manager.cancel(task_id))
-                except RuntimeError:
-                    try:
-                        asyncio.run(wb_manager.cancel(task_id))
-                    except Exception:
-                        pass
-                return {"action": "cancelled", "platform": platform, "task_id": task_id}
-    except Exception as exc:
-        logger.warning("reverse_sync_task failed for %s/%s to status %s: %s", platform, task_id, target_status, exc)
-        return {"action": "error", "error": str(exc)}
-    return {"action": "none"}

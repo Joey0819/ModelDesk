@@ -122,6 +122,26 @@ class AttachmentTests(unittest.TestCase):
         self.assertEqual(len(result['items']), 1)
         self.assertEqual(len(attachment_io.image_content_parts({'_attachments': images})), 1)
 
+    def test_group_image_inheritance_excludes_previously_copied_images_from_other_tasks(self):
+        external_image = self.assets.add(self.project["id"], "routine.png", self.image())
+        desktop_image = self.assets.add(self.project["id"], "desktop.png", self.image())
+        external = self.freeze(self.job(ids=[external_image["id"]]))
+        external["external_source"] = {"platform": "routine"}
+        desktop = self.freeze(self.job(ids=[desktop_image["id"]]))
+        _, _, desktop_images = self.assets.prepared(desktop, self.inputs)
+        old_history = {"metadata": {"references": [{"job_id": external["id"]}]}}
+        saved = self.assets.inherit_images(desktop, old_history, {external["id"]: external}, desktop_images, self.inputs)
+        self.assertEqual(saved["items"][0]["source_job_id"], external["id"])
+        desktop["history_attachment_manifest"] = saved
+        desktop["attachments"] += saved["items"]
+
+        current = self.freeze(self.job())
+        current.update(mode="group", group_room_id="room")
+        current_history = {"metadata": {"references": [{"job_id": desktop["id"]}]}}
+        inherited = self.assets.inherit_images(current, current_history,
+            {desktop["id"]: desktop, external["id"]: external}, [], self.inputs)
+        self.assertEqual([item["id"] for item in inherited["items"]], [desktop_image["id"]])
+
     def test_task_memory_selects_only_missing_frozen_documents_without_old_project_header(self):
         from backend.task_context import build_task_context, include_task_attachments, context_summary
         brief = self.assets.add(self.project['id'], 'brief.md', b'BRIEF_CONTENT')

@@ -161,7 +161,14 @@ function ProjectAgentTasks({ projectId, project, room, kind, onKindChange, onOpe
       )}
       {error && <div className="error-banner" role="alert">{error}<button type="button" className="subtle-button" onClick={() => { setError(''); refresh(); refreshEngines(); }}>重新连接</button></div>}
       {loading && <p role="status" className="mission-loading"><span className="small-spinner" />正在读取成员任务…</p>}
-      {!loading && !tasks.length && <div className="group-task-empty"><Icon name="tasks" size={30} /><h2>把讨论交给成员执行</h2><p>指定一位成员，在独立 Git 工作区完成任务。另一位成员审阅实际补丁后，由你决定是否合入本地项目。</p><div className="group-task-sequence"><span>分配任务</span><Icon name="chevron" size={13} /><span>独立审阅</span><Icon name="chevron" size={13} /><span>你来批准</span></div></div>}
+      {!loading && !tasks.length && <div className="group-task-empty">
+        <Icon name={kind === 'review' ? 'council' : 'tasks'} size={30} />
+        <h2>{kind === 'review' ? '还没有可审阅的补丁' : '分配第一个代码任务'}</h2>
+        {kind === 'review' ? <>
+          <p>代码 Agent 提交改动后，在这里选择补丁和审阅成员。</p>
+          <button type="button" className="subtle-button" onClick={() => onKindChange('code')}>打开代码任务</button>
+        </> : <p>在下方选择成员并描述要改的代码。完成后可以查看补丁，安排独立审阅。</p>}
+      </div>}
       {[...tasks].sort((a, b) => String(a.created_at).localeCompare(String(b.created_at))).map((task) => <div key={task.id}><TaskCard onOpenArtifacts={showArtifact} task={task} tasks={tasks} approvals={approvals} busy={busy} onReview={review} onCancel={(target) => mutate(() => groupTaskApi.cancel(target.id, projectId, roomId))} onInspect={(target) => groupTaskApi.get(target.id, projectId, roomId)} onRequestApproval={(target, selectedReview) => mutate(() => groupTaskApi.requestApproval({ project_id: projectId, room_id: roomId, task_id: target.id, review_task_id: selectedReview.id }))} />{approvals.filter((card) => card.task_id === task.id).map((card) => <ApprovalCard key={`${card.id}:${card.base_sha}:${card.patch_sha256}`} card={card} busy={busy} onDecision={(target, decision) => mutate(() => groupTaskApi.decide(target.id, approvalDecision(target, decision)))} />)}</div>)}
     </div>
     {(dispatch.error || canRetry || warning || dispatchNotice) && <div className="group-agent-dispatch-feedback">

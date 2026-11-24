@@ -3,7 +3,7 @@ const { execFile } = require('node:child_process');
 const { promisify } = require('node:util');
 const fs = require('node:fs');
 const path = require('node:path');
-const { UI_URL, healthURLsFor, workspaceRoot, serviceEnvironment, isWorkbenchURL, isOriginalFrameURL, isExportURL, exportFormat, isExternalURL, isStatusURL, isTrustedWorkbenchIPC } = require('./runtime.cjs');
+const { UI_URL, REQUIRED_SERVICES, workspaceRoot, serviceEnvironment, isWorkbenchURL, isOriginalFrameURL, isExportURL, exportFormat, isExternalURL, isStatusURL, isTrustedWorkbenchIPC } = require('./runtime.cjs');
 const { INPUT_EXTENSIONS, collectSelectedFiles } = require('./input-files.cjs');
 const { installMusePermissionActions } = require('./muse-permissions.cjs');
 
@@ -19,9 +19,13 @@ let attachmentPickerInProgress = false;
 app.setName('ModelDesk');
 app.enableSandbox();
 
-async function healthy(url) {
+async function healthy(service, url) {
   try {
     const response = await fetch(url, { signal: AbortSignal.timeout(2500), redirect: 'error' });
+    if (response.ok && service === 'council-api') {
+      const payload = await response.json();
+      return payload?.status === 'ok' && payload.service === 'ModelDesk API';
+    }
     await response.body?.cancel();
     return response.ok;
   } catch {
@@ -40,21 +44,25 @@ async function showState(state) {
   }
 }
 
-async function startMacServices() {
-  const root = workspaceRoot();
+async function startMacServices(root, services) {
   const controller = path.join(root, 'scripts', 'services.py');
   if (fs.existsSync(controller)) {
-    // Fixed executable and separate arguments; renderer content never becomes shell code.
-    await execFileAsync('/usr/bin/python3', [controller, 'start'], {
-      cwd: root,
-      env: serviceEnvironment(),
-      timeout: 65000,
-      maxBuffer: 128 * 1024,
-      windowsHide: true,
-    });
+    for (const service of services) {
+      try {
+        await execFileAsync('/usr/bin/python3', [controller, 'start', '--service', service], {
+          cwd: root, env: serviceEnvironment(), timeout: 35000, maxBuffer: 128 * 1024, windowsHide: true,
+        });
+      } catch {
+        console.warn('[ModelDesk] service controller could not start', service);
+      }
+    }
   } else {
     console.warn('[ModelDesk] workspace controller not found at', controller, '; falling back to health probe.');
   }
+}
+
+async function startMacSupervisor() {
+  const root = workspaceRoot();
   const supervisor = path.join(root, '..', 'llm-council', 'scripts', 'modeldesk_worker.py');
   if (fs.existsSync(supervisor)) {
     await execFileAsync('/usr/bin/python3', [supervisor, 'start', '--workspace', root], {
@@ -70,10 +78,19 @@ async function connectWorkbench() {
   startInProgress = true;
   try {
     await showState('starting');
-    if (process.platform === 'darwin') await startMacServices();
-    const checks = await Promise.all(healthURLsFor().map(healthy));
-    if (!checks.every(Boolean)) throw new Error('workbench-not-ready');
+    const services = Object.entries(REQUIRED_SERVICES);
+    const checks = await Promise.all(services.map(([name, url]) => healthy(name, url)));
+    const missing = services.filter((_, index) => !checks[index]);
+    if (missing.length && process.platform === 'darwin') {
+      await startMacServices(workspaceRoot(), missing.map(([name]) => name));
+    }
+    if (missing.length && !(await Promise.all(missing.map(([name, url]) => healthy(name, url)))).every(Boolean)) {
+      throw new Error('workbench-not-ready');
+    }
     if (mainWindow && !mainWindow.isDestroyed()) await mainWindow.loadURL(UI_URL);
+    if (process.platform === 'darwin') {
+      void startMacSupervisor().catch(() => console.warn('[ModelDesk] background supervisor did not start'));
+    }
   } catch {
     // Avoid showing controller stderr or credentials in the renderer.
     await showState('error');

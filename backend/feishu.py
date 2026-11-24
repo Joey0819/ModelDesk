@@ -7,6 +7,7 @@ import re
 import sqlite3
 import sys
 import uuid
+from collections import defaultdict
 from urllib.parse import urlencode
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
@@ -1046,44 +1047,44 @@ class FeishuController:
                 and binding_is_current(binding_snapshot, live["bindings"])
             )
 
-        room_titles = {}
-        try:
-            room_titles = {room["id"]: room["title"] for room in list_all_rooms()}
-        except Exception:
-            room_titles = {}
-        jobs_snapshot = sorted(self.jobs.jobs.values(), key=lambda item: item.get("created_at") or "")
+        rooms = {(binding["project_id"], binding["room_id"]) for binding in push_bindings}
+        candidates = defaultdict(list)
+        for job in self.jobs.jobs.values():
+            scope = (job.get("project_id"), job.get("group_room_id"))
+            if job.get("mode") != "group" or scope not in rooms or (job.get("created_at") or "") < cutoff:
+                continue
+            # Feishu requests deliver to their origin, regardless of subscriptions.
+            source = job.get("external_source")
+            if source and source.get("platform") != "routine":
+                continue
+            candidates[scope].append(job)
+
+        room_titles = None
         for binding in push_bindings:
-            if not push_still_authorized(binding):
-                return
-            sdk = self.sdk_factory(config)
-            for job in jobs_snapshot:
-                if not push_still_authorized(binding):
-                    return
-                if (job.get("mode") != "group"
-                        or job.get("project_id") != binding["project_id"]
-                        or job.get("group_room_id") != binding["room_id"]):
-                    continue
-                # Chat requests deliver to their origin. Room subscriptions cover
-                # desktop and scheduled work only, even if several chats share a room.
-                source = job.get("external_source")
-                if source and source.get("platform") != "routine":
-                    continue
-                if (job.get("created_at") or "") < cutoff:
-                    continue
+            sdk = None
+            queued = candidates.get((binding["project_id"], binding["room_id"]), ())
+            for job in sorted(queued, key=lambda candidate: candidate.get("created_at") or ""):
                 autonomy = job.get("autonomy") or {}
                 delivery = (job.get("result") or {}).get("delivery") or {}
                 state = autonomy.get("state")
                 notification = autonomy.get("notification_id")
-                if state in {"complete", "needs_attention"} and notification:
-                    pass
-                elif job.get("status") == "complete" and delivery.get("status") == "complete":
+                if not (state in {"complete", "needs_attention"} and notification):
+                    if job.get("status") != "complete" or delivery.get("status") != "complete":
+                        continue
                     state = "complete"
                     notification = "complete:" + job["id"]
-                else:
-                    continue
                 cache_key = (app_id, expected_revision, binding["chat_id"], job["id"], notification)
                 if cache_key in self._pushed_keys:
                     continue
+                if not push_still_authorized(binding):
+                    return
+                if room_titles is None:
+                    try:
+                        room_titles = {room["id"]: room["title"] for room in list_all_rooms()}
+                    except Exception:
+                        room_titles = {}
+                if sdk is None:
+                    sdk = self.sdk_factory(config)
                 event_id = "push:" + job["id"]
                 base_key = f"modeldesk:feishu-push:{app_id}:{binding['chat_id']}:{job['id']}:{notification}"
                 summary_id = str(uuid.uuid5(uuid.NAMESPACE_URL, base_key + ":summary"))

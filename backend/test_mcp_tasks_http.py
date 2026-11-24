@@ -2,6 +2,7 @@
 import asyncio
 from contextlib import ExitStack
 from datetime import datetime, timedelta, timezone
+import os
 from pathlib import Path
 import socket
 import tempfile
@@ -15,13 +16,20 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
 
-from backend import mcp_agent, mcp_tasks, mcp_observation
+from backend import mcp_agent, mcp_tasks, mcp_observation, super_platform
 from backend.harness.models import TeamMember
 from backend.harness.store import RunStore
 from backend.platform_store import PlatformStore
 
 
 class McpTasksHttpTests(unittest.IsolatedAsyncioTestCase):
+    async def test_remote_transport_keeps_the_standard_proxy_configuration(self):
+        with patch.object(mcp_tasks, "create_mcp_http_client", wraps=mcp_tasks.create_mcp_http_client) as standard:
+            with patch.dict(os.environ, {"NO_PROXY": "*"}):
+                async with mcp_tasks.http_client_factory("https://mcp.example.test/rpc")():
+                    pass
+            standard.assert_called_once()
+
     async def test_server_owned_task_reconnects_with_required_wire_fields_and_single_dispatch(self):
         calls=[]
         created=datetime.now(timezone.utc).isoformat()
@@ -75,6 +83,11 @@ class McpTasksHttpTests(unittest.IsolatedAsyncioTestCase):
                 job={'id':scope[0],'project_id':None,'group_room_id':scope[2],'group_team_snapshot':{'members':[member]}}
                 for context in [patch.object(mcp_agent,'resources',resources),patch.object(mcp_agent,'STORE',RunStore(Path(folder)/'runs')),patch('backend.group_delivery_runtime._scope',return_value=scope)]:
                     patches.enter_context(context)
+                proxy = "socks5://127.0.0.1:9"
+                patches.enter_context(patch.dict(os.environ, {"HTTP_PROXY": proxy, "HTTPS_PROXY": proxy, "ALL_PROXY": proxy, "NO_PROXY": ""}))
+                patches.enter_context(patch.object(super_platform, "store", resources))
+                catalog = await super_platform.mcp_discover(config["id"])
+                self.assertEqual(catalog["tools"][0]["name"], "execute_task")
                 await mcp_agent.freeze_mcp_members(job)
                 prompt='Preserve original constraints and finish the artifact'
                 receipt=await mcp_agent.run_mcp_step(job,member,prompt,scope=scope)

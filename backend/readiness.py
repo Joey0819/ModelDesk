@@ -176,10 +176,10 @@ async def inspect():
 
 
 @router.get("")
-async def status():
+async def status(refresh: bool = False):
     global _cached, _cached_at
     async with _lock:
-        if _cached is None or time.monotonic() - _cached_at >= 30:
+        if refresh or _cached is None or time.monotonic() - _cached_at >= 30:
             _cached = await inspect()
             _cached_at = time.monotonic()
         return _cached

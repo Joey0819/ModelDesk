@@ -3,6 +3,7 @@ import { workbenchApi } from '../api';
 import { ProjectContext } from '../project-context';
 
 const array = (value, key) => Array.isArray(value) ? value : value?.[key] || [];
+const EMPTY_ASSETS = [];
 
 export default function ProjectProvider({ children }) {
   const [projects, setProjects] = useState([]);
@@ -10,7 +11,8 @@ export default function ProjectProvider({ children }) {
     const saved = localStorage.getItem('modeldesk.activeProject'); if (saved) return saved === 'unassigned' ? null : saved;
     try { return JSON.parse(localStorage.getItem('modeldesk.sessions.v1') || '{}')[localStorage.getItem('modeldesk.mode') || 'chat']?.context?.project_id || null; } catch { return null; }
   });
-  const [assets, setAssets] = useState([]);
+  const [assetList, setAssetList] = useState(null);
+  const assets = assetList?.projectId === activeProjectId ? assetList.items : EMPTY_ASSETS;
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [createOpen, setCreateOpen] = useState(false);
@@ -20,7 +22,8 @@ export default function ProjectProvider({ children }) {
   selectionRef.current = activeProjectId;
   const pendingProject = useRef(null);
   const selectProject = useCallback((id) => {
-    const next = id || null; setActiveProjectId(next); setAssets([]);
+    const next = id || null;
+    setActiveProjectId(next);
     localStorage.setItem('modeldesk.activeProject', next || 'unassigned');
     if (pendingProject.current && next) { pendingProject.current(next); pendingProject.current = null; setCreateOpen(false); }
   }, []);
@@ -32,7 +35,7 @@ export default function ProjectProvider({ children }) {
   const refreshAssets = useCallback(async (id = selectionRef.current) => {
     if (!id) return [];
     const list = array(await workbenchApi.listAssets(id), 'assets');
-    if (id === selectionRef.current) setAssets(list);
+    if (id === selectionRef.current) setAssetList({ projectId: id, items: list });
     return list;
   }, []);
   useEffect(() => { refreshProjects(); }, [refreshProjects]);

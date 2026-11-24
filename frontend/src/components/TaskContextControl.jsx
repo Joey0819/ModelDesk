@@ -2,7 +2,7 @@ import { useRef } from 'react';
 
 export default function TaskContextControl({ value, onChange, disabled, jobs = [] }) {
   const memoryDialog = useRef(null);
-  const latest = jobs.at(-1);
+  const latest = jobs.findLast((job) => !job.external_source?.platform);
   const previous = latest?.context_history;
   const memory = latest?.task_context;
   const brief = latest?.result?.delivery?.task_brief || latest?.task_brief;

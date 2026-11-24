@@ -1,3 +1,4 @@
+import asyncio
 from datetime import datetime, timedelta, timezone
 import platform
 import unittest
@@ -5,10 +6,28 @@ from unittest.mock import AsyncMock, patch
 
 import httpx
 from backend import antigravity_catalog, readiness, workbench
-from fastapi import HTTPException
+from fastapi import FastAPI, HTTPException
 
 
 class ReadinessTests(unittest.IsolatedAsyncioTestCase):
+    async def test_explicit_recheck_refreshes_status_during_cache_ttl(self):
+        app = FastAPI()
+        app.include_router(readiness.router)
+        original = {"checked_at": "first"}
+        refreshed = {"checked_at": "second"}
+        with patch.object(readiness, "_cached", None), patch.object(readiness, "_cached_at", 0), \
+             patch.object(readiness, "_lock", asyncio.Lock()), \
+             patch.object(readiness, "inspect", AsyncMock(side_effect=[original, refreshed])) as inspect:
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://127.0.0.1") as client:
+                first = await client.get("/api/readiness")
+                cached = await client.get("/api/readiness")
+                manual = await client.get("/api/readiness", params={"refresh": "true"})
+                next_poll = await client.get("/api/readiness")
+        self.assertEqual([response.status_code for response in (first, cached, manual, next_poll)], [200] * 4)
+        self.assertEqual([response.json() for response in (first, cached, manual, next_poll)],
+                         [original, original, refreshed, refreshed])
+        self.assertEqual(inspect.await_count, 2)
+
     async def test_native_status_distinguishes_installed_from_verified_when_gateway_is_down(self):
         model = antigravity_catalog.DEFAULT_ID
         jobs = {}

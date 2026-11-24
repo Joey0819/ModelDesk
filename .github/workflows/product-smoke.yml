@@ -119,7 +119,8 @@ jobs:
             backend.test_todo_board \
             backend.test_todo_sync \
             backend.test_fleet \
-            backend.test_fleet_worker
+            backend.test_fleet_worker \
+            backend.test_mcp_tasks_http
 
       - name: Test and lint the frontend
         run: |

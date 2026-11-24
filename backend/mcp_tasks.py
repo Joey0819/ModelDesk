@@ -5,11 +5,14 @@ read-only polling. The deprecated 2025 experimental wire format is not guessed.
 Protocol: https://tasks.extensions.modelcontextprotocol.io/specification/2026-07-28/tasks
 """
 from datetime import datetime, timedelta, timezone
+import ipaddress
 import json
 from typing import Literal
+from urllib.parse import urlsplit
 
+import httpx
 from mcp.shared.exceptions import McpError
-from mcp.shared._httpx_utils import create_mcp_http_client
+from mcp.shared._httpx_utils import MCP_DEFAULT_SSE_READ_TIMEOUT, MCP_DEFAULT_TIMEOUT, create_mcp_http_client
 from mcp.types import Result
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -134,7 +137,24 @@ async def routing_headers(request):
         request.headers["Mcp-Name"] = params["name"]
 
 
-def http_client_factory(headers=None, timeout=None, auth=None):
-    client = create_mcp_http_client(headers=headers, timeout=timeout, auth=auth)
-    client.event_hooks["request"].append(routing_headers)
-    return client
+def http_client_factory(url, *, route_tasks=False):
+    hostname = urlsplit(url).hostname
+    try:
+        loopback = ipaddress.ip_address(hostname).is_loopback
+    except ValueError:
+        loopback = hostname in {"localhost", "localhost."}
+
+    def create(headers=None, timeout=None, auth=None):
+        if loopback:
+            # A transport supplied explicitly avoids environment proxy discovery
+            # while still respecting configured certificate authorities.
+            timeout = timeout or httpx.Timeout(MCP_DEFAULT_TIMEOUT, read=MCP_DEFAULT_SSE_READ_TIMEOUT)
+            client = httpx.AsyncClient(headers=headers, timeout=timeout, auth=auth,
+                                       transport=httpx.AsyncHTTPTransport())
+        else:
+            client = create_mcp_http_client(headers=headers, timeout=timeout, auth=auth)
+        if route_tasks:
+            client.event_hooks["request"].append(routing_headers)
+        return client
+
+    return create

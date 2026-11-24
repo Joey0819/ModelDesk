@@ -96,8 +96,6 @@
 .group-task-empty h2 { font-size: 20px; line-height: 1.5; font-weight: 550; color: var(--ink); text-wrap: balance; }
 .group-task-empty p { font-size: 13px; line-height: 1.9; text-wrap: pretty; overflow-wrap: break-word; }
 .group-task-empty > svg { color: var(--accent); }
-.group-task-sequence { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin-top: 23px; font-size: 12px; color: var(--ink); }
-.group-task-sequence > svg { transform: rotate(-90deg); color: var(--muted); }
 .group-agent-task { border-bottom: 1px solid var(--line); padding: 6px 0 23px; margin-bottom: 24px; }
 .group-agent-task > header { display: flex; align-items: center; gap: 10px; }
 .group-agent-task header > div { flex: 1; min-width: 0; }

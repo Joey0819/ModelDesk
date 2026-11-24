@@ -197,6 +197,35 @@ class DeliveryMediaTests(unittest.IsolatedAsyncioTestCase):
                 (self.asset_path(entry) / entry["name"]).write_bytes(b"not image")
                 self.assertEqual((await client.get(entry["url"])).status_code, 409)
 
+    async def test_bundle_projects_whole_html_reports_into_readable_portable_prose(self):
+        entry = self.save()
+        self.job["prompt"] = "请提供研究报告和图文成果包"
+        self.job["result"]["delivery"].update(title="研究材料", media=[entry], content=(
+            '<!doctype html><html><body><h2>分析结果</h2><p>图前正文</p>'
+            f'<img alt="研究图" src="{entry["url"]}"><p>图后正文</p>'
+            '<script>hiddenContent()</script></body></html>'
+        ))
+        with patch.object(media, "store", self.store), patch.object(workbench, "manager", self.manager):
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=self.app), base_url="http://test") as client:
+                response = await client.get(f'/api/media/jobs/{self.job["id"]}/bundle',
+                                            params={"project_id": self.job["project_id"]})
+        self.assertEqual(response.status_code, 200, response.text)
+        with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+            article = archive.read("article.md")
+            preview = archive.read("index.html").decode()
+            manifest = json.loads(archive.read("manifest.json"))
+            portable_path = "media/" + entry["name"]
+            self.assertIn("## 分析结果", article.decode())
+            self.assertIn(f"![研究图]({portable_path})", article.decode())
+            self.assertNotIn(b"<!doctype", article)
+            self.assertNotIn(b"hiddenContent", article)
+            self.assertIn("<h2>分析结果</h2>", preview)
+            self.assertIn("<p>图前正文</p>", preview)
+            self.assertLess(preview.index("图前正文"), preview.index(f'src="{portable_path}"'))
+            self.assertLess(preview.index(f'src="{portable_path}"'), preview.index("图后正文"))
+            self.assertEqual(archive.read(portable_path), self.raw)
+            self.assertEqual(manifest["article_sha256"], hashlib.sha256(article).hexdigest())
+
     async def test_bundle_contains_actual_canonical_assets_portable_markdown_and_safe_offline_html(self):
         entry = self.save(caption='<img src=x onerror="alert(1)">')
         extra = self.save(caption="not part of final delivery")

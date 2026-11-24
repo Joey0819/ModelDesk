@@ -174,8 +174,10 @@ try {
   assert.deepEqual(enabledPosts, [true, false]);
   await button('查看运行记录').click();
   await page.locator('[data-group-job="verified-job"]:focus').waitFor();
-  await button('查看完整成果', page).click();
-  await page.getByText(job.result.delivery.content, { exact: true }).first().waitFor();
+  const completedTurn = page.locator('[data-group-job="verified-job"]');
+  await completedTurn.getByLabel('成果正文摘录').getByText(job.result.delivery.content, { exact: true }).waitFor();
+  await button('查看完整成果', completedTurn).click();
+  await page.locator('.artifact-panel .artifact-preview-scroll').getByText(job.result.delivery.content, { exact: true }).waitFor();
   await button('收起成果面板', page).click();
   assert.equal(await composer.inputValue(), prompt);
 

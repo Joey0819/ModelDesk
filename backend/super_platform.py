@@ -308,12 +308,16 @@ async def web_search(query, max_results=5):
 @asynccontextmanager
 async def mcp_session(config):
     from mcp import ClientSession
+    from .mcp_tasks import http_client_factory
+    url = config["url"]
+    client_factory = http_client_factory(url)
     if config["transport"] == "sse":
         from mcp.client.sse import sse_client
-        context = sse_client(config["url"], timeout=15, sse_read_timeout=20)
+        context = sse_client(url, timeout=15, sse_read_timeout=20, httpx_client_factory=client_factory)
     else:
         from mcp.client.streamable_http import streamablehttp_client
-        context = streamablehttp_client(config["url"], timeout=timedelta(seconds=15), sse_read_timeout=timedelta(seconds=20))
+        context = streamablehttp_client(url, timeout=timedelta(seconds=15), sse_read_timeout=timedelta(seconds=20),
+                                        httpx_client_factory=client_factory)
     async with context as streams:
         async with ClientSession(streams[0], streams[1], read_timeout_seconds=timedelta(seconds=20)) as session:
             await session.initialize()

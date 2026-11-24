@@ -36,14 +36,16 @@ STORE = RunStore(Path(__file__).resolve().parents[1] / "data/mcp-agent-tasks")
 @asynccontextmanager
 async def agent_session(config):
     from mcp import ClientSession
+    url = config["url"]
     if config["transport"] == "sse":
         from mcp.client.sse import sse_client
-        transport = sse_client(config["url"], timeout=15, sse_read_timeout=TIMEOUT_SECONDS)
+        transport = sse_client(url, timeout=15, sse_read_timeout=TIMEOUT_SECONDS,
+                               httpx_client_factory=mcp_tasks.http_client_factory(url))
     else:
         from mcp.client.streamable_http import streamablehttp_client
-        transport = streamablehttp_client(config["url"], timeout=timedelta(seconds=15),
+        transport = streamablehttp_client(url, timeout=timedelta(seconds=15),
                                           sse_read_timeout=timedelta(seconds=TIMEOUT_SECONDS),
-                                          httpx_client_factory=mcp_tasks.http_client_factory)
+                                          httpx_client_factory=mcp_tasks.http_client_factory(url, route_tasks=True))
     async with transport as streams:
         async with ClientSession(streams[0], streams[1], read_timeout_seconds=timedelta(seconds=TIMEOUT_SECONDS)) as session:
             await session.initialize()

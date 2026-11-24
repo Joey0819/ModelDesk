@@ -197,6 +197,39 @@ class GroupRoomTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(job["result"]["delivery"]["steps"])
         self.assertEqual(self.calls, [])
 
+    async def test_desktop_continuation_uses_its_own_task_across_feishu_and_routine_turns(self):
+        from backend import coordination
+
+        room = await self.room()
+        root = await self.send(room, prompt="桌面报告原始目标", context_mode="fresh")
+        feishu_prompt = "飞书独立任务"
+        routine_prompt = "例程独立任务"
+        feishu = await groups.submit_message(room["id"], groups.MessageRequest(prompt=feishu_prompt, context_mode="fresh"),
+            room["project_id"], external_source={"platform": "feishu", "app_id": "app", "chat_id": "chat",
+                                                 "sender_id": "sender", "config_revision": "revision"})
+        await self.jobs.tasks[feishu["id"]]
+        with patch.object(coordination, "run", AsyncMock(return_value={
+            "delivery": {"status": "complete", "content": "例程成果"},
+        })):
+            routine = await groups.submit_message(room["id"],
+                groups.MessageRequest(prompt=routine_prompt, context_mode="fresh", delivery_mode="auto"),
+                room["project_id"], external_source={"platform": "routine", "run_id": str(uuid.uuid4())})
+            await self.jobs.tasks[routine["id"]]
+
+        self.calls.clear()
+        followup = await self.send(room, prompt="修订桌面报告", context_mode="continue")
+        self.assertEqual(followup["task_context"]["task_id"], root["id"])
+        self.assertEqual([item["job_id"] for item in followup["context_history"]["references"]], [root["id"]])
+        provider_input = str(self.calls)
+        self.assertIn(root["prompt"], provider_input)
+        self.assertNotIn(feishu_prompt, provider_input)
+        self.assertNotIn(routine_prompt, provider_input)
+        self.assertNotIn("例程成果", provider_input)
+        response = await self.client.get(f"/api/groups/{room['id']}/messages", params=self.params(room))
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual([job["id"] for job in response.json()["jobs"]],
+                         [root["id"], feishu["id"], routine["id"], followup["id"]])
+
     async def test_feishu_private_followups_use_reply_or_task_id_across_interleaved_jobs(self):
         from backend import coordination, feishu
         from backend.conversations import build_history
@@ -806,6 +839,22 @@ class GroupRoomTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("ACTUAL_AGENT_OUTPUT_935", str(self.calls[0]))
         self.assertNotIn("FOREIGN", str(self.calls[0]))
         self.assertNotIn("NOT_COMPLETE", str(self.calls[0]))
+
+        self.calls.clear()
+        record["output"] = output
+        with patch.object(group_tasks.manager, "records", records):
+            fresh = await self.send(room, context_mode="fresh", recipient_member_ids=["writer"])
+        self.assertFalse(fresh.get("group_agent_sources"))
+        self.assertNotIn("ACTUAL_AGENT_OUTPUT_935", str(self.calls))
+
+        current = {**record, "id": str(uuid.uuid4()), "created_at": workbench.now(), "output": "CURRENT_AGENT_OUTPUT"}
+        records[current["id"]] = current
+        self.calls.clear()
+        with patch.object(group_tasks.manager, "records", records):
+            followup = await self.send(room, context_mode="continue", recipient_member_ids=["writer"])
+        self.assertEqual([source["task_id"] for source in followup["group_agent_sources"]], [current["id"]])
+        self.assertIn("CURRENT_AGENT_OUTPUT", str(self.calls))
+        self.assertNotIn("ACTUAL_AGENT_OUTPUT_935", str(self.calls))
 
     async def test_group_metadata_cannot_override_saved_coordinator_or_broadcast_targets(self):
         room = await self.room()

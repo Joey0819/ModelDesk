@@ -80,6 +80,7 @@ try {
   let holdNextPoll = false;
   let postCount = 0;
   const scopedPosts = [];
+  const readinessReads = [];
   let statusReads = 0;
   let latestStatus = status([oldModel], cachedGateway);
 
@@ -129,7 +130,12 @@ try {
       unexpected.push(`${request.method()} ${url.pathname}`);
       return route.abort();
     }
-    if (url.pathname === '/api/readiness') return route.fulfill({ json: { checked_at: checkedAt, agents: [] } });
+    if (url.pathname === '/api/readiness') {
+      const forced = url.searchParams.get('refresh') === 'true';
+      readinessReads.push(forced);
+      const agents = forced ? [{ id: 'fixture', label: '测试连接', state: 'reachable', reason: '新检查结果' }] : [];
+      return route.fulfill({ json: { checked_at: checkedAt, agents } });
+    }
     if (url.pathname === '/api/workbench/status') {
       statusReads += 1;
       if (holdNextPoll) {
@@ -216,6 +222,11 @@ try {
   await model(picker, apiModel.id).getByText('新发现 · 加入选用', { exact: true }).waitFor();
 
   await closePicker(picker);
+  assert.ok(readinessReads.length > 0 && readinessReads.every((forced) => !forced), 'background checks use the cache');
+  const readiness = page.getByRole('region', { name: 'Agent 当前可用性' });
+  await readiness.getByRole('button', { name: '重新检查' }).click();
+  await readiness.getByText('新检查结果').waitFor();
+  assert.equal(readinessReads.at(-1), true, 'manual recheck requests fresh evidence');
   const settings = await loginSettings(page);
   const geminiCard = settings.getByRole('article', { name: 'Gemini', exact: true });
   const chatGptCard = settings.getByRole('article', { name: 'ChatGPT', exact: true });

@@ -625,6 +625,8 @@
   }
 }
 
+.todo-board .todo-filter-toggle { display: none; }
+
 /* ---------- 移动端适配 ---------- */
 
 @media (max-width: 640px) {
@@ -633,9 +635,11 @@
     gap: 8px;
   }
 
-  .todo-board .todo-toolbar-main {
-    gap: 8px;
-  }
+  .todo-board .todo-toolbar-main { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 6px; }
+  .todo-board .todo-toolbar-main input { width: 100%; min-width: 0; }
+  .todo-board .todo-toolbar-main .todo-stats { display: none; }
+  .todo-board .todo-filter-toggle { display: inline-flex; gap: 4px; align-items: center; justify-content: center; }
+  .todo-board .todo-toolbar-filters[data-mobile-open="false"] { display: none; }
 
   .todo-board .todo-scope-filters {
     display: grid;
@@ -653,11 +657,6 @@
   .todo-board .todo-scope-filters select {
     max-width: 100%;
     min-block-size: 36px;
-  }
-
-  .todo-board .todo-toolbar-filters input[type="text"] {
-    flex: 1 1 46%;
-    min-width: 0;
   }
 
   .todo-board .todo-toolbar-filters select {

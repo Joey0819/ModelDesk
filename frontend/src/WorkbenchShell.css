@@ -253,36 +253,25 @@
   padding: 7px 8px;
   gap: 7px;
   border-radius: 7px;
-  border: 1px solid var(--line);
-  background: var(--shell-paper);
+  border: 1px solid transparent;
+  background: transparent;
   display: flex;
   align-items: center;
   text-align: left;
   min-width: 0;
 }
+.modeldesk .sidebar-workspace-grid .sidebar-grid-tile:hover { background: var(--shell-soft); }
 .modeldesk .sidebar-workspace-grid .sidebar-grid-tile.selected,
 .modeldesk .sidebar-workspace-grid .sidebar-grid-tile.active {
   border-color: var(--accent);
   background: var(--shell-soft);
   color: var(--accent);
 }
-.modeldesk .sidebar-workspace-grid .sidebar-grid-tile span {
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-}
 .modeldesk .sidebar-workspace-grid .sidebar-grid-tile strong {
   font-size: 12px;
   line-height: 1.25;
   white-space: normal;
   overflow-wrap: anywhere;
-}
-.modeldesk .sidebar-workspace-grid .sidebar-grid-tile small {
-  font-size: 10px;
-  color: var(--muted);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 .modeldesk .sidebar-navigation-tabs {
   display: flex;
@@ -297,30 +286,8 @@
   border-radius: 5px;
   width: auto;
 }
-.history-filter-pills {
-  display: inline-flex;
-  align-items: center;
-  gap: 2px;
-  background: var(--shell-soft);
-  padding: 2px;
-  border-radius: 5px;
-}
-.history-filter-pills button {
-  border: 0;
-  background: transparent;
-  color: var(--muted);
-  font-size: 10px;
-  min-block-size: 24px;
-  min-inline-size: 32px;
-  padding: 3px 7px;
-  border-radius: 4px;
-  cursor: pointer;
-}
-.history-filter-pills button.selected {
-  background: var(--shell-paper);
-  color: var(--ink);
-  font-weight: 600;
-}
+.history-kind { min-height: 26px; padding-inline: 5px; border: 0; color: var(--muted); background: var(--shell-paper); font: inherit; border-radius: 4px; }
+.history-kind:focus-visible { outline: 2px solid var(--accent); }
 .modeldesk .history-mode {
   display: inline-block;
   font-size: 10px;

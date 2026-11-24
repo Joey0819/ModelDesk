@@ -40,8 +40,9 @@ export const todoApi = {
   list: (archived = false, signal) => request(archived ? `${TODO_PATH}?archived=true` : TODO_PATH, 'GET', undefined, signal),
   create: createCard,
   update: (id, fields) => request(`${TODO_PATH}/${encodeURIComponent(id)}`, 'PUT', fields),
-  remove: (id) => request(`${TODO_PATH}/${encodeURIComponent(id)}`, 'DELETE'),
+  archive: (id) => request(`${TODO_PATH}/${encodeURIComponent(id)}`, 'DELETE'),
   move: (placement) => request(`${TODO_PATH}/move`, 'POST', placement),
   followSource: (id) => request(`${TODO_PATH}/${encodeURIComponent(id)}`, 'PUT', { status_mode: 'source' }),
   reassignFleetTask: (id) => request(`/api/fleet/jobs/${encodeURIComponent(id)}/reassign`, 'POST'),
+  cancelFleetTask: (id) => request(`/api/fleet/jobs/${encodeURIComponent(id)}/cancel`, 'POST'),
 };

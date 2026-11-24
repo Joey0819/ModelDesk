@@ -47,11 +47,11 @@ export default function WorkspaceNavigation({
   onProjects,
 }) {
   const destinations = [
-    ['groups', '项目群聊', '多智能体协同', 'group', 'mission-entry', onGroups],
-    ['missions', '协作任务', '跨引擎流水线', 'tasks', 'mission-entry', onMissions],
-    ['projects', '项目与资料', '共享文件与快照', 'folder', 'projects-entry', onProjects],
-    ['agents', 'Agent 与连接', '模型 / API / Muse', 'settings', 'agent-settings-entry', onAgents],
-    ['todo', '任务看板', '待办 / 进行中 / 已完成', 'dashboard', 'todo-entry', onTodo],
+    ['groups', '项目群聊', 'group', 'mission-entry', onGroups],
+    ['missions', '协作任务', 'tasks', 'mission-entry', onMissions],
+    ['projects', '项目与资料', 'folder', 'projects-entry', onProjects],
+    ['agents', 'Agent 与连接', 'settings', 'agent-settings-entry', onAgents],
+    ['todo', '任务看板', 'dashboard', 'todo-entry', onTodo],
   ];
   const modeButton = (id, label, onClick) => <button type="button" key={id} className={mode === id ? 'active' : ''} aria-current={mode === id ? 'page' : undefined} onClick={onClick} title={MODES[id].description}>
     <Icon name={MODES[id].icon} size={15} />
@@ -67,9 +67,9 @@ export default function WorkspaceNavigation({
   return <>
     <nav className="workspace-destinations" aria-label="核心工作台切换">
       <div className="sidebar-workspace-grid">
-        {destinations.map(([id, label, description, icon, entryClass, onClick]) => <button type="button" key={id} className={`${entryClass} sidebar-grid-tile${workspace === id ? ' selected' : ''}`} aria-current={workspace === id ? 'page' : undefined} aria-haspopup={id === 'projects' ? 'dialog' : undefined} onClick={onClick}>
+        {destinations.map(([id, label, icon, entryClass, onClick]) => <button type="button" key={id} className={`${entryClass} sidebar-grid-tile${workspace === id ? ' selected' : ''}`} aria-current={workspace === id ? 'page' : undefined} aria-haspopup={id === 'projects' ? 'dialog' : undefined} onClick={onClick}>
           <Icon name={icon} size={16} />
-          <span><strong>{label}</strong><small>{description}</small></span>
+          <strong>{label}</strong>
         </button>)}
       </div>
       <div className="sidebar-navigation-tabs">

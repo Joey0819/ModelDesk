@@ -78,6 +78,10 @@ export function sourceStatus(task) {
   return task.source_status ?? task.status;
 }
 
+export function sourceInProgress(task) {
+  return Boolean(task.external_source && (task.source_active ?? (!task.archived && ['todo', 'doing'].includes(sourceStatus(task)))));
+}
+
 // Technical identifiers are available in card details. Keep the board preview focused on the work.
 export function cardPreview(task) {
   const text = task.description || '';

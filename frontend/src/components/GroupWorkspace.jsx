@@ -140,10 +140,21 @@ export function GroupDeliveryModeSelector({ value, onChange, disabled = false })
   </div>;
 }
 
+// The result panel owns links, downloads and media. A timeline preview only renders text.
+const excerptComponents = {
+  img: () => null,
+  a: ({ children }) => <>{children}</>,
+  pre: () => null,
+};
+
 export function GroupDeliveryProgress({ job, onOpenArtifacts }) {
   const delivery = job.result?.delivery || {};
   const active = groupActive(job);
-  const hasOutput = deriveArtifacts({ ...job, mode: 'group' }, API_BASE).length > 0;
+  const [artifact] = deriveArtifacts({ ...job, mode: 'group' }, API_BASE);
+  const hasOutput = Boolean(artifact);
+  const excerpt = !active && artifact?.format === 'markdown'
+    ? artifact.content.trim().replace(/^(?:#{1,6}[^\n]*(?:\n+|$))+/, '').trim().slice(0, 480)
+    : '';
   const stopped = ['cancelled', 'interrupted', 'error'].includes(job.status);
   const state = stopped ? hasOutput ? 'partial' : 'blocked' : delivery.status || (active ? 'planning' : 'blocked');
   const filesAwaitReview = state === 'partial' && delivery.media?.length > 0 && delivery.validation?.mechanical_checks?.length > 0 && delivery.validation.mechanical_checks.every((check) => check.met === true) && delivery.steps?.every((step) => step.status === 'complete');
@@ -157,7 +168,10 @@ export function GroupDeliveryProgress({ job, onOpenArtifacts }) {
     : delivery.title;
   return <section className={`group-delivery-progress group-delivery-${state}`} aria-label="自动交付进度" aria-live={active ? 'polite' : 'off'}>
     <header>{active ? <span className="small-spinner" /> : <Icon name="file" size={16} />}<strong>{label || '正在同步交付进度'}</strong>{hasOutput && <button className="subtle-button group-delivery-action" type="button" onClick={() => onOpenArtifacts(job, true)}><Icon name="panel" size={14} />{state === 'complete' ? '查看完整成果' : filesAwaitReview ? '查看文件与验收意见' : '查看部分成果'}</button>}</header>
-    {deliveryTitle && <p className="group-delivery-title">{deliveryTitle}</p>}
+    {deliveryTitle && <h3 className="group-delivery-title">{deliveryTitle}</h3>}
+    {excerpt && <div className="group-delivery-excerpt" aria-label="成果正文摘录">
+      <Markdown components={excerptComponents}>{excerpt}</Markdown>
+    </div>}
     {plannerLabel && <p className="group-delivery-title">{plannerLabel}</p>}
     {steps.length > 0 && <details className="group-execution-details"><summary>分工与执行 · {steps.filter((step) => step.status === 'complete').length}/{steps.length} 已完成{steps.some((step) => step.status === 'error') ? ' · 有步骤失败' : ''}</summary><ol>{steps.map((step, index) => <li key={step.id || index} className={`group-delivery-step-${step.status}`}><div><strong>{step.member_name || step.member_id || '协作成员'}</strong><span>{GROUP_DELIVERY_STEP_STATUS[step.status] || '状态待同步'}</span></div>{step.instruction && <p>{step.instruction}</p>}<HandoffReceipt step={step} />{step.kind === 'mcp' && step.task_id && step.task_observation && <McpTaskControls step={step} />}{step.error && <p className="output-error">{step.error}</p>}</li>)}</ol></details>}
     <details className="group-delivery-receipt"><summary>验收与素材{limitations.length > 0 ? ` · ${limitations.length} 条待处理说明` : ''}</summary><DeliveryMediaProgress job={job} />
@@ -199,9 +213,10 @@ export function GroupLiveActivityBar({ activeJob, museTasks = [], agentTasks = [
   </div>;
 }
 
-export function TaskPrompt({ text = '' }) {
-  if (text.length <= 360) return <Markdown>{text}</Markdown>;
-  return <details className="group-original-prompt"><summary><strong>任务要求</strong><span>{text.replace(/\s+/g, ' ').slice(0, 160)}…</span><small>展开完整要求 · {text.length} 字符</small></summary><Markdown>{text}</Markdown></details>;
+export function TaskPrompt({ text = '', hasResult = false }) {
+  const previewLength = hasResult ? 72 : 160;
+  if (text.length <= (hasResult ? 120 : 360)) return <Markdown>{text}</Markdown>;
+  return <details className="group-original-prompt"><summary><strong>任务要求</strong><span>{text.replace(/\s+/g, ' ').slice(0, previewLength)}…</span><small>展开完整要求 · {text.length} 字符</small></summary><Markdown>{text}</Markdown></details>;
 }
 
 export function GroupTurn({ job, room, onOpenArtifacts, onSendToMuse, onHandOffToAgent, onQuoteReply }) {
@@ -211,7 +226,7 @@ export function GroupTurn({ job, room, onOpenArtifacts, onSendToMuse, onHandOffT
   const MessageContainer = automatic ? 'details' : 'div';
   const hasDiscussionOutput = !automatic && deriveArtifacts({ ...job, mode: 'group' }).length > 0;
   return <article className="group-room-turn" data-group-job={job.id} tabIndex={-1} aria-label={`群聊记录 ${dateLabel(job.created_at)}`}>
-    <div className="group-user-message"><header><strong>你</strong><time>{dateLabel(job.created_at)}</time><CopyTextButton text={job.prompt} label="复制这条提问" /></header><div className="group-turn-recipients">{recipients.map((member) => <span key={member.id}>@{member.name}</span>)}{job.rounds > 1 && <span>共 {job.rounds} 轮深研</span>}</div><TaskPrompt text={job.prompt} /><JobAttachments job={job} />{job.group_muse_source && <details className="group-muse-provenance"><summary>引用了 Muse 实际回复</summary><p>{job.group_muse_source.prompt}</p>{safeMuseThreadUrl(job.group_muse_source.thread_url) && <a href={safeMuseThreadUrl(job.group_muse_source.thread_url)} target="_blank" rel="noopener noreferrer">打开原始 Muse 会话 ↗</a>}<Markdown>{job.group_muse_source.response}</Markdown>{job.group_muse_source.truncated && <p>引用超过保存预算，完整回复保留在原始 Muse 任务中。</p>}<p>{job.group_muse_source.verification}</p><CopyTextButton text={job.group_muse_source.response} label="复制引用的 Muse 回复" /></details>}</div>
+    <div className="group-user-message"><header><strong>你</strong><time>{dateLabel(job.created_at)}</time><CopyTextButton text={job.prompt} label="复制这条提问" /></header><div className="group-turn-recipients">{recipients.map((member) => <span key={member.id}>@{member.name}</span>)}{job.rounds > 1 && <span>共 {job.rounds} 轮深研</span>}</div><TaskPrompt text={job.prompt} hasResult={automatic && !groupActive(job) && Boolean(job.result?.delivery?.content || job.result?.delivery?.preview_content)} /><JobAttachments job={job} />{job.group_muse_source && <details className="group-muse-provenance"><summary>引用了 Muse 实际回复</summary><p>{job.group_muse_source.prompt}</p>{safeMuseThreadUrl(job.group_muse_source.thread_url) && <a href={safeMuseThreadUrl(job.group_muse_source.thread_url)} target="_blank" rel="noopener noreferrer">打开原始 Muse 会话 ↗</a>}<Markdown>{job.group_muse_source.response}</Markdown>{job.group_muse_source.truncated && <p>引用超过保存预算，完整回复保留在原始 Muse 任务中。</p>}<p>{job.group_muse_source.verification}</p><CopyTextButton text={job.group_muse_source.response} label="复制引用的 Muse 回复" /></details>}</div>
     {automatic && <GroupDeliveryProgress job={job} onOpenArtifacts={onOpenArtifacts} />}
     {messages.length > 0 && <MessageContainer className={automatic ? "group-delivery-discussion" : "group-discussion-messages"}>
     {automatic && <summary>查看讨论与规划记录（{messages.length} 条）</summary>}

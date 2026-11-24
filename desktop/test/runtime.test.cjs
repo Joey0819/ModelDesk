@@ -6,7 +6,69 @@ const os = require('node:os');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const { runInNewContext } = require('node:vm');
+const { createRequire } = require('node:module');
 const { workspaceRoot, defaultWorkspace, serviceEnvironment, isWorkbenchURL, isOriginalFrameURL, isExportURL, exportFormat, isExternalURL, isStatusURL, isTrustedWorkbenchIPC } = require('../runtime.cjs');
+
+test('MCP files in standalone and project rooms stay in the native save dialog', () => {
+  const id = 'df9d3857-3d01-4c24-9e64-b9343e217f9a';
+  const route = `http://localhost:8001/api/groups/${id}/messages/${id}/mcp-documents/${id}`;
+  for (const url of [route, `${route}?project_id=${id}`, route.replace('localhost', '127.0.0.1')]) {
+    assert.equal(isExportURL(url), true, url);
+    assert.equal(exportFormat(url), 'attachment', url);
+    assert.equal(isExternalURL(url), false, url);
+  }
+  for (const url of [`${route}?project_id=none`, `${route}?project_id=${id}&project_id=${id}`, `${route}?name=output.txt`, `${route}#view`,
+    route.replace('localhost', 'external.example'), route.replace(id, 'a'.repeat(36)), route.replace('/messages/', '/%2e/messages/')]) {
+    assert.equal(isExportURL(url), false, url);
+  }
+});
+
+test('macOS opens the ready workbench without requiring the gateway or supervisor', async () => {
+  const filename = path.join(__dirname, '../main.cjs');
+  const localRequire = createRequire(filename);
+  const source = fs.readFileSync(filename, 'utf8');
+  for (const initialAPIReady of [true, false]) {
+    let apiReady = initialAPIReady;
+    const actions = [];
+    const commands = [];
+    const probes = [];
+    const context = {
+      actions, __dirname: path.dirname(filename), process: { platform: 'darwin' }, AbortSignal,
+      console: { warn() {} },
+      async fetch(url) {
+        probes.push(url);
+        if (url.includes(':8001')) return { ok: apiReady, json: async () => ({ status: 'ok', service: 'ModelDesk API' }) };
+        return { ok: url.includes(':5173') };
+      },
+      require(name) {
+        if (name === 'electron') return { app: { setName() {}, enableSandbox() {}, requestSingleInstanceLock: () => false, quit() {} } };
+        if (name === 'node:fs') return { existsSync: () => true };
+        if (name === 'node:util') return {
+          promisify: () => async (_command, args) => {
+            commands.push(args);
+            if (args.includes('council-api')) apiReady = true;
+            if (args[0].endsWith('modeldesk_worker.py')) throw new Error('offline supervisor fixture');
+          },
+        };
+        if (name === './runtime.cjs') return { ...localRequire(name), workspaceRoot: () => '/test/llm-tools' };
+        return localRequire(name);
+      },
+    };
+    await runInNewContext(source + `
+      mainWindow = {
+        isDestroyed: () => false,
+        loadFile: (_, options) => actions.push(options.query.state),
+        loadURL: url => actions.push(url),
+      };
+      connectWorkbench();
+    `, context);
+    assert.deepEqual(actions, ['starting', 'http://localhost:5173/']);
+    assert.ok(probes.every(url => !url.includes(':8317')));
+    const serviceCommands = commands.filter(args => args[0].endsWith('/services.py'));
+    assert.deepEqual(serviceCommands.map(args => [...args].slice(1)), initialAPIReady ? [] : [['start', '--service', 'council-api']]);
+    assert.ok(commands.some(args => args[0].endsWith('/modeldesk_worker.py')));
+  }
+});
 
 test('media originals and portable bundles use canonical scoped export routes', () => {
   const id = 'df9d3857-3d01-4c24-9e64-b9343e217f9a';

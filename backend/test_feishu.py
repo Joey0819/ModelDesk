@@ -862,6 +862,19 @@ class FeishuTests(unittest.IsolatedAsyncioTestCase):
                          (self.room_id, "continue", "修改已排队任务"))
         self.assertEqual(last.kwargs["external_source"]["parent_job_id"], queued["job_id"])
 
+    async def test_idle_result_push_only_reads_the_config_once(self):
+        bindings = [{**self.binding, "chat_id": f"oc_fixture_{index}", "push_group_results": True} for index in range(10)]
+        self.store.save_config(ConfigInput(enabled=True, app_id="cli_test", bindings=bindings))
+        for index in range(1000):
+            self.jobs.jobs[str(index)] = {"mode": "chat", "created_at": "2099-01-01T00:00:00+00:00"}
+        with (patch.object(self.store, "config", wraps=self.store.config) as read_config,
+              patch.object(self.controller, "sdk_factory") as sdk_factory,
+              patch.object(feishu, "list_all_rooms") as read_rooms):
+            await self.controller.push_completed_group_jobs()
+        read_config.assert_called_once()
+        sdk_factory.assert_not_called()
+        read_rooms.assert_not_called()
+
     async def test_push_group_results_sends_desktop_output_once_and_keeps_chat_results_private(self):
         from backend import document_delivery
         from backend.document_exports import render_document

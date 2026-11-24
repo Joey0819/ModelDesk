@@ -20,11 +20,11 @@ export function WorkerStatus({ worker, machineShort: hostShort = machineShort() 
 export default function ReadinessPanel() {
   const [value, setValue] = useState(null), [error, setError] = useState(''), [loading, setLoading] = useState(false);
   const alive = useRef(false), pending = useRef(false);
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (force = false) => {
     if (pending.current) return;
     pending.current = true; setLoading(true);
     try {
-      const response = await apiFetch(`${API_BASE}/api/readiness`);
+      const response = await apiFetch(`${API_BASE}/api/readiness${force ? '?refresh=true' : ''}`);
       if (!response.ok) throw new Error('暂时无法检查，请确认后台服务已运行。');
       const result = await response.json();
       if (alive.current) { setValue(result); setError(''); }
@@ -39,7 +39,7 @@ export default function ReadinessPanel() {
   }, [refresh]);
   if (REMOTE_CLIENT) return null;
   return <section className="readiness-panel" aria-label="Agent 当前可用性">
-    <header><div><h3>开始前，确认谁可以接手</h3><p>检查连接、执行器和窗口，不发送创作任务。</p></div><button type="button" className="subtle-button" onClick={refresh} disabled={loading}><Icon name="refresh" size={14} />{loading ? '检查中…' : '重新检查'}</button></header>
+    <header><div><h3>开始前，确认谁可以接手</h3><p>检查连接、执行器和窗口，不发送创作任务。</p></div><button type="button" className="subtle-button" onClick={() => refresh(true)} disabled={loading}><Icon name="refresh" size={14} />{loading ? '检查中…' : '重新检查'}</button></header>
     {error && <p role="alert">{error} {value && '下方保留的是上次检查结果。'}</p>}
     {value && <><WorkerStatus worker={error ? null : value.worker} /><dl>{value.agents.map((item) => <div key={item.id}><dt>{item.label}</dt><dd><strong className={`readiness-${error ? 'unknown' : item.state}`}>{error ? '状态待刷新' : labels[item.state] || '待确认'}</strong><span>{item.reason}</span></dd></div>)}</dl><small>检查时间：{new Date(value.checked_at).toLocaleString()} · 每 30 秒更新，实际生成仍受模型权限与额度影响。</small></>}
   </section>;

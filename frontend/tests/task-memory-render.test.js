@@ -28,6 +28,17 @@ test('memory-only media stays discoverable and a fresh task clearly excludes pre
   assert.doesNotMatch(fresh, /已保留底稿/);
 });
 
+test('composer task memory follows the latest composer turn after Feishu and routine runs', () => {
+  const html = render(TaskContextControl, { value: 'continue', jobs: [
+    { task_context: memory },
+    { external_source: { platform: 'feishu' }, task_context: { ...memory, task_id: 'feishu-task', requests: [{ prompt: '飞书要求' }] } },
+    { external_source: { platform: 'routine' }, task_context: { ...memory, task_id: 'routine-task', requests: [{ prompt: '定时例程' }] } },
+  ] });
+  assert.match(html, /保留原稿/);
+  assert.match(html, /改成蓝色/);
+  assert.doesNotMatch(html, /飞书要求|定时例程/);
+});
+
 test('handoff receipt shows exact ancestor lineage without inventing execution success for legacy jobs', () => {
   assert.equal(render(HandoffReceipt, { step: { status: 'complete' } }), '');
   const html = render(HandoffReceipt, { step: { status: 'error', input_context: { user_request_count: 2, context_sha256: 'b'.repeat(64), reference_asset_ids: ['image-a'], sources: [

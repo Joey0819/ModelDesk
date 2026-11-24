@@ -210,6 +210,19 @@ const filename = path.join(root, 'tests/group-virtual.cjs');
 const module = new Module(filename); module.paths = Module._nodeModulePaths(path.dirname(filename)); module._compile(compiled.outputFiles[0].text, filename);
 const { GroupTurn, GroupMuseTurn, GroupAgentTaskTurn, GroupDeliveryProgress, GroupDeliveryModeSelector, GroupLiveActivityBar, WorkspaceNavigation, CommandPalette, buildCommandItems, filterCommandItems } = module.exports;
 
+test('a saved group report previews its own text without fetching its media or exposing raw HTML', () => {
+  const render = (delivery) => renderToStaticMarkup(React.createElement(GroupDeliveryProgress, {
+    job: { ...job, group_delivery_mode: 'auto', result: { delivery } }, onOpenArtifacts() {},
+  }));
+  const html = render({ status: 'partial', title: 'Review draft', preview_content: '# Review draft\n\nActual saved introduction.\n\n![figure](https://example.org/figure.png)' });
+  assert.match(html, /<h3[^>]*>Review draft<\/h3>/);
+  assert.match(html, /成果正文摘录/);
+  assert.match(html, /Actual saved introduction/);
+  assert.match(html, /查看部分成果/);
+  assert.doesNotMatch(html, /example.org|<img/);
+  assert.doesNotMatch(render({ status: 'complete', content: '<html><body>Source only</body></html>' }), /成果正文摘录|Source only/);
+});
+
 test('automatic delivery timeline distinguishes execution progress, full results, and blocked steps', () => {
   const delivery = { status: 'partial', title: '实际文章初稿', content: '完整收到的文章正文', steps: [
     { id: 'writing', member_id: 'writer', member_name: 'Writer', status: 'complete', instruction: '完成文章正文' },

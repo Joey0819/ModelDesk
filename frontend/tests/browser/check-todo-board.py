@@ -104,7 +104,9 @@ def exercise(origin, rooms, runs, screenshots):
         errors = []
         page.on("pageerror", lambda error: errors.append(str(error)))
         page.goto(origin)
-        page.locator("nav").get_by_role("button", name="任务看板 待办 / 进行中 / 已完成").click()
+        navigation = page.get_by_role("navigation", name="核心工作台切换")
+        board_button = navigation.get_by_role("button", name="任务看板", exact=True)
+        board_button.click()
         project = page.get_by_label("筛选项目")
         room = page.get_by_label("筛选群聊")
         first, empty, second = rooms[:3]
@@ -131,6 +133,12 @@ def exercise(origin, rooms, runs, screenshots):
         expect(column("review")).to_contain_text(title)
         expect(card).to_contain_text("手动放置")
         assert runs[0]["status"] == "running"
+        card.get_by_role("button", name=title, exact=True).click()
+        editor = page.get_by_role("dialog", name="编辑任务")
+        expect(editor).to_contain_text("来源任务尚未结束")
+        expect(editor.get_by_role("button", name="归档卡片")).to_have_count(0)
+        expect(editor.get_by_role("button", name="打开来源群聊")).to_be_visible()
+        editor.get_by_role("button", name="取消", exact=True).click()
         shot(page, "03-desktop-board")
         # A real source checkpoint races with the human's board decision, then the user reloads.
         runs[0]["status"] = "complete"
@@ -142,6 +150,9 @@ def exercise(origin, rooms, runs, screenshots):
         card.get_by_role("button", name="恢复跟随").click()
         expect(column("done")).to_contain_text(title)
         expect(card).to_contain_text("跟随来源")
+        card.get_by_role("button", name=title, exact=True).click()
+        expect(editor.get_by_role("button", name="归档卡片")).to_be_visible()
+        editor.get_by_role("button", name="取消", exact=True).click()
 
         project.select_option(second["project_id"])
         room.select_option(selector(second))
@@ -178,8 +189,8 @@ def exercise(origin, rooms, runs, screenshots):
                 title=f"历史交付 {number + 1:02d}", status="done",
                 project_id=second["project_id"], room_id=second["id"], tags=["飞书"],
             ))
-        page.locator("nav").get_by_role("button", name="项目群聊 多智能体协同").click()
-        page.locator("nav").get_by_role("button", name="任务看板 待办 / 进行中 / 已完成").click()
+        navigation.get_by_role("button", name="项目群聊", exact=True).click()
+        board_button.click()
         expect(project).to_have_value("")
         expect(room).to_have_value("")
         expect(column("done").get_by_role("button", name="展开其余 4 项已完成")).to_be_visible()
@@ -228,12 +239,15 @@ def exercise(origin, rooms, runs, screenshots):
         expect(bot_card).to_be_visible()
         source.select_option("feishu")
         project.select_option(first["project_id"])
-        page.locator("nav").get_by_role("button", name="任务看板 待办 / 进行中 / 已完成").click()
+        board_button.click()
         expect(project).to_have_value("")
         expect(source).to_have_value("")
 
         page.set_viewport_size({"width": 390, "height": 844})
+        filters = page.get_by_role("button", name="筛选任务")
+        filters.click()
         source.select_option("feishu")
+        filters.click()
         expect(column("done")).to_be_visible()
         expect(bot_card).to_be_visible()
         assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
@@ -245,12 +259,19 @@ def exercise(origin, rooms, runs, screenshots):
         retry.click()
         expect(retry).to_have_count(0)
 
+        filters.click()
         page.get_by_label("显示已完成").uncheck()
         expect(bot_card).to_have_count(0)
         page.get_by_role("button", name="清除筛选").click()
         expect(page.get_by_label("显示已完成")).to_be_checked()
         with page.expect_response(lambda response: response.url == origin + "/api/todo" and response.ok):
             page.get_by_role("button", name="刷新任务").click()
+        page.set_viewport_size({"width": 1440, "height": 900})
+        source.select_option("feishu")
+        bot_card.get_by_role("button", name=feishu_title, exact=True).click()
+        editor.get_by_role("button", name="归档卡片").click()
+        expect(bot_card).to_have_count(0)
+        assert bot["status"] == "complete"
         assert not errors, errors
         context.close()
         browser.close()

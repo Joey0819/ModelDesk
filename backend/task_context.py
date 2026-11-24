@@ -22,6 +22,10 @@ def is_feishu_task(job):
     return (job.get("external_source") or {}).get("platform") == "feishu"
 
 
+def is_composer_task(job):
+    return not (job.get("external_source") or {}).get("platform")
+
+
 def feishu_task_scope(job):
     source = job.get("external_source") or {}
     return (job.get("project_id"), job.get("group_room_id"), job.get("conversation_id"),
@@ -49,10 +53,11 @@ def feishu_task_ancestors(jobs, job):
 def task_records(jobs, job):
     if is_feishu_task(job):
         return feishu_task_ancestors(jobs, job)
-    if job.get("group_context_mode") == "fresh":
+    if job.get("group_context_mode") == "fresh" or not is_composer_task(job):
         return []
     records = sorted((item for item in jobs.values()
         if item.get("id") != job["id"] and item.get("mode") == "group"
+        and is_composer_task(item)
         and item.get("project_id") == job.get("project_id")
         and item.get("group_room_id") == job.get("group_room_id")
         and item.get("conversation_id") == job.get("conversation_id")

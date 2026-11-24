@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { startNavigationFixture } from './navigation-fixture.mjs';
+import { checkProjectNavigation } from './project-navigation.mjs';
 
 const { chromium } = await import(process.env.PLAYWRIGHT_MODULE || 'playwright-core');
 const screenshots = process.env.SCREENSHOT_DIR;
@@ -214,6 +215,8 @@ try {
 
   assert.deepEqual(fixture.writes, [], 'navigation must not send API writes');
   assert.deepEqual(faults, [], 'navigation must not throw client errors or contact another origin');
+  await checkProjectNavigation(browser);
+  console.log('Checked shared project and room selection, project-scoped editors, and SDK/review entry points.');
   console.log(`Checked 96 seeded desktop transitions across ${coverage.size} actions plus mobile focus and navigation.`);
 } finally {
   await browser?.close();

@@ -647,8 +647,9 @@ store = FleetStore()
 
 
 def fleet_admin_guard(request: Request):
-    """Same loopback + origin allowlist as require_local_admin, named for fleet."""
-    return require_local_admin(request)
+    require_local_admin(request)
+    if request.headers.get("x-modeldesk-remote"):
+        raise HTTPException(403, "节点任务只能在本机 ModelDesk 中停止")
 
 
 router = APIRouter(prefix="/api/fleet", tags=["fleet"])
@@ -718,7 +719,7 @@ async def get_fleet_job(job_id: str):
         raise HTTPException(500, str(error)) from None
 
 
-@router.post("/jobs/{job_id}/cancel", dependencies=[Depends(require_local_admin)])
+@router.post("/jobs/{job_id}/cancel", dependencies=[Depends(fleet_admin_guard)])
 async def cancel_fleet_job(job_id: str):
     try:
         return store.cancel_job(job_id)

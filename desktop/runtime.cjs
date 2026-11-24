@@ -32,19 +32,13 @@ function defaultWorkspace(start = __dirname, platform = process.platform) {
 
 const DEFAULT_WORKSPACE = defaultWorkspace();
 const UI_URL = 'http://localhost:5173/';
-const HEALTH_URLS = [
-  'http://127.0.0.1:8317/v1/models',
-  'http://127.0.0.1:8001/api/workbench/status',
-  'http://127.0.0.1:5173/',
-];
-// The local model gateway (8317) is a model source, not a UI precondition.
-// On Linux it usually is not installed; requiring it would block a perfectly
-// working workbench behind the error page.
-const LINUX_REQUIRED_HEALTH_URLS = HEALTH_URLS.filter(url => !url.includes(':8317/'));
-
-function healthURLsFor(platform = process.platform) {
-  return platform === 'darwin' ? HEALTH_URLS : LINUX_REQUIRED_HEALTH_URLS;
-}
+const REQUIRED_SERVICES = {
+  'council-api': 'http://127.0.0.1:8001/',
+  'council-ui': 'http://127.0.0.1:5173/',
+};
+const UUID_PATTERN = '[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}';
+const UUID = new RegExp(`^${UUID_PATTERN}$`, 'i');
+const MCP_DOCUMENT_PATH = new RegExp(`^/api/groups/${UUID_PATTERN}/messages/${UUID_PATTERN}/mcp-documents/${UUID_PATTERN}$`, 'i');
 
 function workspaceRoot(environment = process.env) {
   const candidate = environment.MODEL_DESK_WORKSPACE || DEFAULT_WORKSPACE;
@@ -89,6 +83,9 @@ function isExportURL(value) {
   const rawPath = value.match(/^[a-z][a-z0-9+.-]*:\/\/[^/?#]+([^?#]*)/i)?.[1];
   if (rawPath !== url.pathname) return false;
   const query = Array.from(url.searchParams.entries());
+  if (MCP_DOCUMENT_PATH.test(url.pathname)) {
+    return query.length === 0 || (query.length === 1 && query[0][0] === 'project_id' && UUID.test(query[0][1]));
+  }
   if (/^\/api\/workbench\/jobs\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/documents\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(url.pathname)) {
     return query.length === 0 || query.length === 1 && query[0][0] === 'project_id' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(query[0][1]);
   }
@@ -124,6 +121,7 @@ function isExportURL(value) {
 function exportFormat(value) {
   if (!isExportURL(value)) return null;
   const url = new URL(value);
+  if (MCP_DOCUMENT_PATH.test(url.pathname)) return 'attachment';
   if (url.pathname.endsWith('/content')) return 'attachment';
   if (url.pathname.endsWith('/bundle')) return 'zip';
   if (/\/documents\//.test(url.pathname)) return 'document';
@@ -153,4 +151,4 @@ function isTrustedWorkbenchIPC(event, contents) {
   }
 }
 
-module.exports = { DEFAULT_WORKSPACE, UI_URL, HEALTH_URLS, healthURLsFor, defaultWorkspace, workspaceRoot, serviceEnvironment, isWorkbenchURL, isOriginalFrameURL, isExportURL, exportFormat, isExternalURL, isStatusURL, isTrustedWorkbenchIPC };
+module.exports = { DEFAULT_WORKSPACE, UI_URL, REQUIRED_SERVICES, defaultWorkspace, workspaceRoot, serviceEnvironment, isWorkbenchURL, isOriginalFrameURL, isExportURL, exportFormat, isExternalURL, isStatusURL, isTrustedWorkbenchIPC };

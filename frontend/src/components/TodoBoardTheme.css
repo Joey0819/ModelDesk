@@ -504,6 +504,69 @@
   letter-spacing: 0.02em;
 }
 
+.todo-modal-fields {
+  min-inline-size: 0;
+  margin: 0;
+  border: 0;
+  padding: 0;
+}
+
+.todo-bound-locations {
+  margin-bottom: 16px;
+}
+
+.todo-location-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 0 6px;
+}
+
+.todo-location-action {
+  padding: 2px 0;
+  border: 0;
+  background: transparent;
+  color: var(--astryx-accent);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.todo-destination {
+  display: grid;
+  align-content: start;
+  gap: 5px;
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--astryx-line);
+  border-radius: var(--astryx-r-element);
+  background: var(--astryx-paper);
+  color: var(--astryx-accent);
+  font: inherit;
+  font-size: 12px;
+  text-align: start;
+  cursor: pointer;
+}
+
+.todo-destination strong {
+  color: var(--astryx-ink);
+  font-size: 14px;
+  overflow-wrap: anywhere;
+}
+
+.todo-destination:not(.todo-destination-static):hover {
+  border-color: var(--astryx-accent);
+}
+
+.todo-location-action:hover {
+  text-decoration: underline;
+}
+
+.todo-destination-static {
+  color: var(--astryx-muted);
+  cursor: default;
+}
+
 .modeldesk .todo-board .todo-field :is(input, textarea, select),
 .modeldesk[data-theme=dark] .todo-board .todo-field :is(input, textarea, select) {
   border: 1px solid var(--astryx-line);
@@ -605,7 +668,7 @@
   .todo-board .todo-card,
   .todo-board .todo-drag-grip,
   .todo-board .todo-card-action,
-  .todo-board .todo-room-link,
+  .todo-board .todo-location-link,
   .todo-board .todo-show-more,
   .todo-board .todo-new-task,
   .todo-board .todo-modal-actions button {
@@ -725,7 +788,8 @@
 
   .todo-board .todo-card-action,
   .todo-board .todo-card-status,
-  .todo-board .todo-room-link {
+  .todo-board .todo-location-action,
+  .todo-board .todo-location-link {
     min-block-size: 32px;
   }
 

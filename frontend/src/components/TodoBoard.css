@@ -338,7 +338,7 @@
   user-select: none;
 }
 
-.todo-room-link {
+.todo-location-link {
   display: inline-flex;
   align-items: center;
   flex: 0 1 auto;
@@ -461,7 +461,7 @@
   border-color: color-mix(in srgb, var(--accent) 32%, var(--line));
 }
 
-.todo-room-link:hover {
+.todo-location-link:hover {
   color: var(--astryx-info, var(--accent));
   background: var(--astryx-accent-wash, transparent);
   text-decoration: underline;
@@ -481,7 +481,7 @@
 
 .todo-card-title:focus-visible,
 .todo-card-action:focus-visible,
-.todo-room-link:focus-visible,
+.todo-location-link:focus-visible,
 .todo-card-status:focus-visible,
 .todo-show-more:focus-visible {
   outline: 2px solid var(--astryx-accent);

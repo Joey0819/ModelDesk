@@ -510,6 +510,7 @@ function ModelDeskWorkspace() {
     const projects = Array.isArray(listed) ? listed : listed.projects || [];
     if (!projects.some((project) => project.id === projectId)) throw new Error('项目已解除登记。请重新读取项目列表。');
     if (projectId !== activeProjectId) projectHub.selectProject(projectId);
+    openProjectTodo(projectId);
     openProjectMaterials();
   };
   const showMissionArtifact = useCallback((next, reveal = false) => { setArtifactJob(next); if (reveal) { setArtifactsOpen(true); setMobileArtifactsOpen(true); } }, []);

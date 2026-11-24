@@ -137,8 +137,18 @@ def exercise(origin, rooms, runs, screenshots):
         editor = page.get_by_role("dialog", name="编辑任务")
         expect(editor).to_contain_text("来源任务尚未结束")
         expect(editor.get_by_role("button", name="归档卡片")).to_have_count(0)
-        expect(editor.get_by_role("button", name="打开来源群聊")).to_be_visible()
-        editor.get_by_role("button", name="取消", exact=True).click()
+        enter_project = editor.get_by_role("button", name="进入项目：产品手册", exact=True)
+        expect(editor.get_by_role("button", name="进入群聊：编辑组", exact=True)).to_be_visible()
+        board_writes = []
+        page.on("request", lambda request: board_writes.append(request.method) if "/api/todo" in request.url and request.method != "GET" else None)
+        enter_project.click()
+        project_hub = page.get_by_role("dialog", name="项目资料与历史")
+        expect(project_hub.locator("header strong").first).to_have_text("产品手册")
+        expect(editor).to_have_count(0)
+        project_hub.get_by_role("button", name="关闭项目资料").click()
+        expect(project).to_have_value(first["project_id"])
+        expect(room).to_have_value("")
+        room.select_option(selector(first))
         shot(page, "03-desktop-board")
         # A real source checkpoint races with the human's board decision, then the user reloads.
         runs[0]["status"] = "complete"
@@ -158,8 +168,16 @@ def exercise(origin, rooms, runs, screenshots):
         room.select_option(selector(second))
         expect(page.locator("article.todo-card")).to_have_count(1)
         expect(column("done")).to_contain_text(runs[1]["prompt"])
-        page.get_by_role("button", name="打开群聊", exact=True).click()
+        column("done").get_by_role("button", name=runs[1]["prompt"], exact=True).click()
+        # Both projects have an 编辑组. A failed lookup must keep the task open for retry.
+        enter_room = editor.get_by_role("button", name="进入群聊：编辑组", exact=True)
+        page.route(origin + "/api/groups/" + second["id"] + "?*", lambda route: route.fulfill(status=503, json={"detail": "群聊暂时不可用"}), times=1)
+        enter_room.click()
+        expect(editor.get_by_role("alert")).to_contain_text("群聊暂时不可用")
+        enter_room.click()
         expect(page.get_by_label("打开项目群聊", exact=True)).to_have_value(second["id"])
+        expect(page.get_by_label("选择共享项目", exact=True)).to_have_value(second["project_id"])
+        assert board_writes == ["PUT"], board_writes  # The explicit 恢复跟随 above is the only edit.
         page.locator(".group-header-actions").get_by_role("button", name="任务看板").click()
         expect(room).to_have_value(selector(second))
         project.select_option(first["project_id"])
@@ -170,6 +188,7 @@ def exercise(origin, rooms, runs, screenshots):
         page.get_by_role("button", name="+ 新建任务").click()
         form = page.get_by_role("dialog", name="新建任务")
         expect(form.get_by_label("群聊", exact=True)).to_have_value(empty["id"])
+        expect(form.get_by_role("button", name="进入项目", exact=False)).to_have_count(0)
         form.get_by_label("标题").fill("检查印刷版式")
         form.get_by_role("button", name="保存", exact=True).click()
         expect(column("todo")).to_contain_text("检查印刷版式")
@@ -182,6 +201,14 @@ def exercise(origin, rooms, runs, screenshots):
         expect(project.locator("option:checked")).to_have_text("产品手册")
         assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
         shot(page, "04-phone-board")
+        page.get_by_role("button", name="检查印刷版式", exact=True).click()
+        editor.get_by_label("负责人").fill("主编")
+        save_and_enter = editor.get_by_role("button", name="保存并进入群聊：排版组", exact=True)
+        expect(save_and_enter).to_be_in_viewport()
+        save_and_enter.click()
+        expect(page.get_by_label("打开项目群聊", exact=True)).to_have_value(empty["id"])
+        record = next(task for task in page.request.get(origin + "/api/todo").json() if task["title"] == "检查印刷版式")
+        assert record["assignee"] == "主编" and record["status"] == "blocked"
 
         page.set_viewport_size({"width": 1440, "height": 900})
         for number in range(22):

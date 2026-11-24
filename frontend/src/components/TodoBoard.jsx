@@ -82,7 +82,7 @@ function ScopeFilters({ scope, projects, rooms, roomsLoading, onScopeChange }) {
   );
 }
 
-function TodoCard({ task, project, room, busy, onEdit, onDragStart, onDragEnd, onMove, onFollow, onReassign, onOpenResult, onOpenRoom }) {
+function TodoCard({ task, project, room, busy, onEdit, onDragStart, onDragEnd, onMove, onFollow, onReassign, onOpenResult, onOpenProject, onOpenRoom }) {
   const platform = task.external_source?.platform;
   const executionStatus = platform ? sourceStatus(task) : null;
   const pendingOutsideLane = sourceInProgress(task) && !['todo', 'doing'].includes(executionStatus);
@@ -108,10 +108,12 @@ function TodoCard({ task, project, room, busy, onEdit, onDragStart, onDragEnd, o
       </div>
       <div className="todo-card-badges">
         <span className="todo-location-trail">
-          <span className="todo-location-badge" title={project}>{project}</span>
+          {task.project_id && onOpenProject ?
+            <button type="button" className="todo-location-badge todo-location-link" aria-label={`打开项目：${project}`} title={project} onClick={(event) => { event.stopPropagation(); onOpenProject(task.project_id); }}>{project}</button> :
+            <span className="todo-location-badge" title={project}>{project}</span>}
           {groupTitle && <span className="todo-location-sep" aria-hidden="true">/</span>}
           {groupTitle && (room && onOpenRoom ?
-            <button type="button" className="todo-location-badge todo-room-link" aria-label={`打开群聊：${groupTitle}`} title={groupTitle} onClick={(event) => { event.stopPropagation(); onOpenRoom(room); }}>{groupTitle}</button> :
+            <button type="button" className="todo-location-badge todo-location-link" aria-label={`打开群聊：${groupTitle}`} title={groupTitle} onClick={(event) => { event.stopPropagation(); onOpenRoom(room); }}>{groupTitle}</button> :
             <span className="todo-location-badge" title={groupTitle}>{groupTitle}</span>)}
         </span>
         {label && <span className="todo-source-badge">{label}</span>}
@@ -165,111 +167,140 @@ function TodoCard({ task, project, room, busy, onEdit, onDragStart, onDragEnd, o
   );
 }
 
-function TaskModal({ task, projects, rooms, onClose, onSave, onArchive, onStopFleet, onVisitRoom, active, executionStatus, saving, error }) {
+function TaskLocationField({ label, name, inputId, dirty, onVisit, children }) {
+  const action = `${dirty ? '保存并' : ''}进入${label}`;
+  const link = onVisit && (
+    <button type="button" className={children ? 'todo-location-action' : 'todo-destination'} aria-label={`${action}：${name}`} onClick={onVisit}>
+      <span>{action} <span aria-hidden="true">→</span></span>
+      {!children && <strong>{name}</strong>}
+    </button>
+  );
+  if (!children) return link || <div className="todo-destination todo-destination-static"><span>{label}</span><strong>{name}</strong></div>;
+  return <div className="todo-field">
+    <div className="todo-location-heading"><label htmlFor={inputId}>{label}</label>{link}</div>
+    {children}
+  </div>;
+}
+
+function TaskModal({ task, projects, rooms, onClose, onSave, onArchive, onStopFleet, onOpenProject, onOpenRoom, active, executionStatus, saving, error }) {
   const titleRef = useRef(null);
   const [fields, setFields] = useState(task);
   const [tags, setTags] = useState((task.tags || []).join(', '));
   const [errors, setErrors] = useState([]);
   const [confirmStop, setConfirmStop] = useState(false);
+  const [visiting, setVisiting] = useState(false);
   const isNew = !task.id;
   const synced = Boolean(task.external_source);
   const shownRooms = rooms.filter((room) => (room.project_id || null) === (fields.project_id || null));
-  const hasSelectedRoom = shownRooms.some((room) => room.id === fields.room_id);
+  const selectedRoom = shownRooms.find((room) => room.id === fields.room_id);
+  const draftTags = tags === (task.tags || []).join(', ') ? task.tags : tags.split(/[,，]/).map((tag) => tag.trim()).filter(Boolean);
+  const draft = { ...fields, tags: draftTags };
+  const payload = buildTaskPayload(draft, task);
+  const dirty = !isNew && Object.keys(payload).length > 0;
 
   const handleChange = (key, value) => {
     setFields((prev) => ({ ...prev, [key]: value, ...(key === 'project_id' ? { room_id: null } : {}) }));
     setErrors([]);
   };
 
-  const handleSubmit = (event) => {
-    event.preventDefault();
-    if (saving) return;
-    const draft = { ...fields, tags: tags.split(/[,，]/).map((tag) => tag.trim()).filter(Boolean) };
-    if (draft.tags.length === task.tags?.length && draft.tags.every((tag, index) => task.tags[index] === tag)) draft.tags = task.tags;
-    const errs = validateTask(draft);
-    if (errs.length > 0) {
-      setErrors(errs);
-      return;
+  const submit = async (visit) => {
+    if (saving || visiting) return;
+    setErrors([]);
+    if (isNew || dirty) {
+      const errs = validateTask(draft);
+      if (errs.length) { setErrors(errs); return; }
+      const stored = await onSave(payload, isNew, Boolean(visit));
+      if (!stored || !visit) return;
+      setFields(stored);
+      setTags((stored.tags || []).join(', '));
     }
-    onSave(buildTaskPayload(draft, task), isNew);
+    if (visit) {
+      setVisiting(true);
+      try { await visit(); } catch (failure) {
+        setErrors([failure.message]);
+        return;
+      } finally { setVisiting(false); }
+    }
+    onClose();
   };
 
   return (
-    <WorkspaceDialog className="todo-modal" aria-labelledby="todo-modal-title" onDismiss={onClose} focusRef={titleRef} dismissOutside>
-      <form onSubmit={handleSubmit}>
+    <WorkspaceDialog className="todo-modal" aria-labelledby="todo-modal-title" onDismiss={() => { if (!visiting) onClose(); }} focusRef={titleRef} dismissOutside>
+      <form onSubmit={(event) => { event.preventDefault(); void submit(); }}>
         <h3 id="todo-modal-title">{isNew ? '新建任务' : '编辑任务'}</h3>
-        <div className="todo-field">
-          <label htmlFor="todo-title">标题 *</label>
-          <input id="todo-title" ref={titleRef} value={fields.title} onChange={(event) => handleChange('title', event.target.value)} placeholder="任务标题" />
-        </div>
-        <div className="todo-field">
-          <label htmlFor="todo-description">描述</label>
-          <textarea id="todo-description" value={fields.description || ''} onChange={(event) => handleChange('description', event.target.value)} placeholder="任务详情（可选）" />
-        </div>
-        <div className="todo-field-pair">
-          <div className="todo-field">
-            <label htmlFor="todo-project">项目</label>
-            <select id="todo-project" value={fields.project_id || ''} onChange={(event) => handleChange('project_id', event.target.value || null)} disabled={synced}>
-              <option value="">个人（无项目）</option>
-              {availableProjects(projects, fields.project_id).map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}
-            </select>
+        <fieldset className="todo-modal-fields" disabled={saving || visiting}>
+          <div className={`todo-field-pair todo-locations${synced ? ' todo-bound-locations' : ''}`}>
+            <TaskLocationField label="项目" name={fields.project_id ? projectName(projects, fields.project_id) : '个人（无项目）'} inputId="todo-project" dirty={dirty}
+              onVisit={!isNew && fields.project_id && onOpenProject ? () => submit(() => onOpenProject(fields.project_id)) : null}>
+              {!synced && <select id="todo-project" value={fields.project_id || ''} onChange={(event) => handleChange('project_id', event.target.value || null)}>
+                <option value="">个人（无项目）</option>
+                {availableProjects(projects, fields.project_id).map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}
+              </select>}
+            </TaskLocationField>
+            <TaskLocationField label="群聊" name={selectedRoom?.title || (fields.room_id ? '未知群聊' : '无群聊')} inputId="todo-room" dirty={dirty}
+              onVisit={!isNew && fields.room_id && onOpenRoom ? () => submit(() => onOpenRoom({ id: fields.room_id, project_id: fields.project_id || null })) : null}>
+              {!synced && <select id="todo-room" value={fields.room_id || ''} onChange={(event) => handleChange('room_id', event.target.value || null)}>
+                <option value="">无群聊</option>
+                {fields.room_id && !selectedRoom && <option value={fields.room_id}>未知群聊</option>}
+                {shownRooms.map((room) => <option key={room.id} value={room.id}>{room.title}</option>)}
+              </select>}
+            </TaskLocationField>
           </div>
           <div className="todo-field">
-            <label htmlFor="todo-room">群聊</label>
-            <select id="todo-room" value={fields.room_id || ''} onChange={(event) => handleChange('room_id', event.target.value || null)} disabled={synced}>
-              <option value="">无群聊</option>
-              {fields.room_id && !hasSelectedRoom && <option value={fields.room_id}>未知群聊</option>}
-              {shownRooms.map((room) => <option key={room.id} value={room.id}>{room.title}</option>)}
-            </select>
-          </div>
-        </div>
-        <div className="todo-field-pair">
-          <div className="todo-field">
-            <label htmlFor="todo-status">看板状态</label>
-            <select id="todo-status" value={fields.status} onChange={(event) => handleChange('status', event.target.value)} disabled={task.archived}>
-              {COLUMNS.map((column) => <option key={column.id} value={column.id}>{column.label}</option>)}
-            </select>
-            {synced && <small className="todo-field-hint">执行状态 · {STATUS_LABELS[executionStatus] || '未知'}</small>}
+            <label htmlFor="todo-title">标题 *</label>
+            <input id="todo-title" ref={titleRef} value={fields.title} onChange={(event) => handleChange('title', event.target.value)} placeholder="任务标题" />
           </div>
           <div className="todo-field">
-            <label htmlFor="todo-priority">优先级</label>
-            <select id="todo-priority" value={fields.priority} onChange={(event) => handleChange('priority', event.target.value)}>
-              {Object.entries(PRIORITY_LABELS).map(([key, label]) => <option key={key} value={key}>{label}</option>)}
-            </select>
+            <label htmlFor="todo-description">描述</label>
+            <textarea id="todo-description" value={fields.description || ''} onChange={(event) => handleChange('description', event.target.value)} placeholder="任务详情（可选）" />
           </div>
-        </div>
-        <div className="todo-field-pair">
+          <div className="todo-field-pair">
+            <div className="todo-field">
+              <label htmlFor="todo-status">看板状态</label>
+              <select id="todo-status" value={fields.status} onChange={(event) => handleChange('status', event.target.value)} disabled={task.archived}>
+                {COLUMNS.map((column) => <option key={column.id} value={column.id}>{column.label}</option>)}
+              </select>
+              {synced && <small className="todo-field-hint">执行状态 · {STATUS_LABELS[executionStatus] || '未知'}</small>}
+            </div>
+            <div className="todo-field">
+              <label htmlFor="todo-priority">优先级</label>
+              <select id="todo-priority" value={fields.priority} onChange={(event) => handleChange('priority', event.target.value)}>
+                {Object.entries(PRIORITY_LABELS).map(([key, label]) => <option key={key} value={key}>{label}</option>)}
+              </select>
+            </div>
+          </div>
+          <div className="todo-field-pair">
+            <div className="todo-field">
+              <label htmlFor="todo-assignee">负责人</label>
+              <input id="todo-assignee" value={fields.assignee || ''} onChange={(event) => handleChange('assignee', event.target.value)} placeholder="负责人姓名（可选）" />
+            </div>
+            <div className="todo-field">
+              <label htmlFor="todo-due">截止日期</label>
+              <input id="todo-due" type="date" value={fields.due_date || ''} onChange={(event) => handleChange('due_date', event.target.value)} />
+            </div>
+          </div>
           <div className="todo-field">
-            <label htmlFor="todo-assignee">负责人</label>
-            <input id="todo-assignee" value={fields.assignee || ''} onChange={(event) => handleChange('assignee', event.target.value)} placeholder="负责人姓名（可选）" />
+            <label htmlFor="todo-tags">标签（逗号分隔）</label>
+            <input id="todo-tags" value={tags} onChange={(event) => setTags(event.target.value)} placeholder="标签1, 标签2" />
           </div>
-          <div className="todo-field">
-            <label htmlFor="todo-due">截止日期</label>
-            <input id="todo-due" type="date" value={fields.due_date || ''} onChange={(event) => handleChange('due_date', event.target.value)} />
+          {(errors.length > 0 || error) && <div className="todo-field-error" role="alert">{errors.join('；') || error}</div>}
+          {active && <p className="todo-field-hint">
+            {task.external_source?.platform === 'fleet'
+              ? '节点任务尚未结束。可在本机停止任务，或等任务结束后再归档。'
+              : '来源任务尚未结束。请在任务来源停止执行，或等任务结束后再归档。'}
+          </p>}
+          {active && onStopFleet && confirmStop && <p className="todo-field-hint">
+            停止后，节点任务将标记为已停止。请在节点核对已经开始的工作。
+          </p>}
+          <div className="todo-modal-actions">
+            {onArchive && !active && <button type="button" className="todo-btn-secondary" onClick={onArchive} disabled={saving}>归档卡片</button>}
+            {active && onStopFleet && <button type="button" className="todo-btn-danger" onClick={() => confirmStop ? onStopFleet() : setConfirmStop(true)} disabled={saving}>
+              {confirmStop ? '确认停止节点任务' : '停止节点任务'}
+            </button>}
+            <button type="button" className="todo-btn-secondary" onClick={onClose} disabled={saving}>取消</button>
+            <button type="submit" className="todo-btn-primary" disabled={saving}>{saving ? '保存中…' : '保存'}</button>
           </div>
-        </div>
-        <div className="todo-field">
-          <label htmlFor="todo-tags">标签（逗号分隔）</label>
-          <input id="todo-tags" value={tags} onChange={(event) => setTags(event.target.value)} placeholder="标签1, 标签2" />
-        </div>
-        {(errors.length > 0 || error) && <div className="todo-field-error" role="alert">{errors.join('；') || error}</div>}
-        {active && <p className="todo-field-hint">
-          {task.external_source?.platform === 'fleet'
-            ? '节点任务尚未结束。可在本机停止任务，或等任务结束后再归档。'
-            : '来源任务尚未结束。请在任务来源停止执行，或等任务结束后再归档。'}
-        </p>}
-        {active && onVisitRoom && !onStopFleet && <button type="button" className="todo-card-action" onClick={onVisitRoom} disabled={saving}>打开来源群聊</button>}
-        {active && onStopFleet && confirmStop && <p className="todo-field-hint">
-          停止后，节点任务将标记为已停止。请在节点核对已经开始的工作。
-        </p>}
-        <div className="todo-modal-actions">
-          {onArchive && !active && <button type="button" className="todo-btn-secondary" onClick={onArchive} disabled={saving}>归档卡片</button>}
-          {active && onStopFleet && <button type="button" className="todo-btn-danger" onClick={() => confirmStop ? onStopFleet() : setConfirmStop(true)} disabled={saving}>
-            {confirmStop ? '确认停止节点任务' : '停止节点任务'}
-          </button>}
-          <button type="button" className="todo-btn-secondary" onClick={onClose} disabled={saving}>取消</button>
-          <button type="submit" className="todo-btn-primary" disabled={saving}>{saving ? '保存中…' : '保存'}</button>
-        </div>
+        </fieldset>
       </form>
     </WorkspaceDialog>
   );
@@ -402,9 +433,13 @@ export default function TodoBoard({
     if (!mutationPending.current) setEditTask(null);
   };
 
-  const handleSave = async (fields, isNew) => {
-    const saved = await runMutation(() => isNew ? todoApi.create(fields) : todoApi.update(editTask.id, fields), { report: setModalError });
-    if (saved) setEditTask(null);
+  const handleSave = async (fields, isNew, keepOpen) => {
+    let stored;
+    const saved = await runMutation(async () => {
+      stored = isNew ? await todoApi.create(fields) : await todoApi.update(editTask.id, fields);
+    }, { report: setModalError });
+    if (saved) setEditTask(keepOpen ? stored : null);
+    return saved ? stored : null;
   };
 
   const handleArchive = async () => {
@@ -503,7 +538,6 @@ export default function TodoBoard({
   const selectedRoom = scope.type === 'room' ? roomsByScope.get(roomKey(scope.projectId, scope.roomId)) : null;
   const selectedProject = scope.type === 'project' && projects.find((project) => project.id === scope.projectId);
   const liveEditTask = editTask && (tasks.find((task) => task.id === editTask.id) || editTask);
-  const editRoom = liveEditTask && roomsByScope.get(roomKey(liveEditTask.project_id, liveEditTask.room_id));
 
   return (
     <main className="workspace todo-board" ref={boardRef}>
@@ -596,6 +630,7 @@ export default function TodoBoard({
                         onFollow={(card) => runMutation(() => todoApi.followSource(card.id), { message: `${card.title} 已恢复跟随来源` })}
                         onReassign={REMOTE_CLIENT ? null : (card) => runMutation(() => todoApi.reassignFleetTask(card.external_source.task_id), { message: `${card.title} 已重新派发` })}
                         onOpenResult={onOpenResult && ((card) => openContext(onOpenResult, card))}
+                        onOpenProject={onOpenProject && ((id) => openContext(onOpenProject, id))}
                         onOpenRoom={onOpenRoom && ((room) => openContext(onOpenRoom, room))} />
                     </div>
                   ))}
@@ -611,7 +646,7 @@ export default function TodoBoard({
         active={sourceInProgress(liveEditTask)} executionStatus={sourceStatus(liveEditTask)}
         onArchive={liveEditTask.id && !liveEditTask.archived ? handleArchive : null}
         onStopFleet={!REMOTE_CLIENT && liveEditTask.external_source?.platform === 'fleet' ? handleStopFleet : null}
-        onVisitRoom={editRoom && onOpenRoom ? () => { closeEdit(); void openContext(onOpenRoom, editRoom); } : null}
+        onOpenProject={onOpenProject} onOpenRoom={onOpenRoom}
         saving={busy} error={modalError} />}
     </main>
   );
